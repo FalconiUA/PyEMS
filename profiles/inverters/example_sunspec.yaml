@@ -1,0 +1,81 @@
+# Solar inverter register-map profile (DATA, not code).
+# Channels follow Elum ePowerControl Manual §2.5.1 Table 3.
+# Addresses/scaling below are SunSpec-style EXAMPLES — replace with the
+# register map from your inverter manufacturer's datasheet.
+#
+# To add a new inverter model: copy this file, edit addresses/scale. No code change.
+
+model: "Example SunSpec Inverter"
+protocol: modbus_tcp        # modbus_tcp | modbus_rtu
+default_port: 502
+
+registers:
+  # ── Active power (Read Only) ──────────────────────────────────────────────
+  - channel: pv.W
+    address: 40083
+    type: int16
+    scale: 0.1
+    unit: W
+    access: read
+  - channel: pv.WphA
+    address: 40084
+    type: int16
+    scale: 0.1
+    unit: W
+    access: read
+  - channel: pv.WphB
+    address: 40085
+    type: int16
+    scale: 0.1
+    unit: W
+    access: read
+  - channel: pv.WphC
+    address: 40086
+    type: int16
+    scale: 0.1
+    unit: W
+    access: read
+
+  # ── Reactive power (Read Only) ────────────────────────────────────────────
+  - channel: pv.VAR
+    address: 40087
+    type: int16
+    scale: 0.1
+    unit: VAr
+    access: read
+
+  # ── Frequency (Read Only) ─────────────────────────────────────────────────
+  - channel: pv.Hz
+    address: 40095
+    type: uint16
+    scale: 0.01
+    unit: Hz
+    access: read
+
+  # ── Status / mode / alarms (Read Only) ────────────────────────────────────
+  - channel: pv.Status
+    address: 40107
+    type: uint16
+    scale: 1.0
+    unit: ""
+    access: read
+  - channel: pv.OperatingMode
+    address: 40108
+    type: uint16
+    scale: 1.0
+    unit: ""
+    access: read
+  - channel: pv.Alarm
+    address: 40109
+    type: uint16
+    scale: 1.0
+    unit: ""
+    access: read
+
+  # ── WSet: max active power setpoint — the only writable (Elum Table 3) ─────
+  - channel: pv.WSet
+    address: 40232
+    type: uint16
+    scale: 1.0
+    unit: W
+    access: read_write
