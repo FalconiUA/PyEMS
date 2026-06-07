@@ -1,0 +1,141 @@
+# Grid sensor register-map profile (DATA, not code).
+# Channels follow Elum ePowerControl Manual §2.5.3 Table 7 (non-exhaustive).
+# Measures the Point of Connection (POC) between the site and external grid.
+# Addresses/scaling below are EXAMPLES — replace with the register map
+# from your meter manufacturer's Modbus communication guide.
+#
+# Table 8 requirement (RS1): meter must support Modbus RTU or TCP.
+# All channels are Read Only — grid meters have no writable setpoints.
+#
+# To add a new meter model: copy this file, edit addresses/scale. No code change.
+
+model: "Example Grid Meter"
+protocol: modbus_tcp        # modbus_rtu | modbus_tcp
+default_port: 502
+
+registers:
+  # ── Active power (Read Only) ──────────────────────────────────────────────
+  - channel: grid.W
+    address: 40001
+    type: int32
+    scale: 1.0
+    unit: W
+    access: read
+  - channel: grid.WphA
+    address: 40003
+    type: int32
+    scale: 1.0
+    unit: W
+    access: read
+  - channel: grid.WphB
+    address: 40005
+    type: int32
+    scale: 1.0
+    unit: W
+    access: read
+  - channel: grid.WphC
+    address: 40007
+    type: int32
+    scale: 1.0
+    unit: W
+    access: read
+
+  # ── Reactive power (Read Only) ────────────────────────────────────────────
+  - channel: grid.VAR
+    address: 40009
+    type: int32
+    scale: 1.0
+    unit: VAr
+    access: read
+  - channel: grid.VARphA
+    address: 40011
+    type: int32
+    scale: 1.0
+    unit: VAr
+    access: read
+  - channel: grid.VARphB
+    address: 40013
+    type: int32
+    scale: 1.0
+    unit: VAr
+    access: read
+  - channel: grid.VARphC
+    address: 40015
+    type: int32
+    scale: 1.0
+    unit: VAr
+    access: read
+
+  # ── Apparent power (Read Only) ────────────────────────────────────────────
+  - channel: grid.VA
+    address: 40017
+    type: int32
+    scale: 1.0
+    unit: VA
+    access: read
+  - channel: grid.VAphA
+    address: 40019
+    type: int32
+    scale: 1.0
+    unit: VA
+    access: read
+  - channel: grid.VAphB
+    address: 40021
+    type: int32
+    scale: 1.0
+    unit: VA
+    access: read
+  - channel: grid.VAphC
+    address: 40023
+    type: int32
+    scale: 1.0
+    unit: VA
+    access: read
+
+  # ── Frequency (Read Only) ─────────────────────────────────────────────────
+  - channel: grid.Hz
+    address: 40025
+    type: uint16
+    scale: 0.01             # gain 100
+    unit: Hz
+    access: read
+
+  # ── Phase currents (Read Only) ────────────────────────────────────────────
+  - channel: grid.AphA
+    address: 40027
+    type: int32
+    scale: 0.001            # gain 1000, raw in mA
+    unit: A
+    access: read
+  - channel: grid.AphB
+    address: 40029
+    type: int32
+    scale: 0.001
+    unit: A
+    access: read
+  - channel: grid.AphC
+    address: 40031
+    type: int32
+    scale: 0.001
+    unit: A
+    access: read
+
+  # ── Line voltages (Read Only) ─────────────────────────────────────────────
+  - channel: grid.PhVphA
+    address: 40033
+    type: uint16
+    scale: 0.1              # gain 10
+    unit: V
+    access: read
+  - channel: grid.PhVphB
+    address: 40035
+    type: uint16
+    scale: 0.1
+    unit: V
+    access: read
+  - channel: grid.PhVphC
+    address: 40037
+    type: uint16
+    scale: 0.1
+    unit: V
+    access: read
