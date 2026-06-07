@@ -96,6 +96,14 @@ registers:
     unit: ""
     access: read
 
+  # ── Apparent power, total (Read Only) — Elum pv.VA ───────────────────────
+  - channel: pv.VA
+    address: 32078
+    type: int32
+    scale: 1.0              # gain 1, VA
+    unit: VA
+    access: read
+
   # ── WSet: max active power setpoint (Read/Write) — Elum pv.WSet ────────────
   # Huawei "Active power fixed value derated" @ 40126, UINT32, gain 1, W.
   # Absolute power limit in W → direct match for Elum WSet semantics.
@@ -111,6 +119,7 @@ registers:
     max_val: 100000
 
 # Not available in Huawei standard map (omit / derive if needed):
-#   pv.WphA/B/C  (per-phase active power)
-#   pv.VA, pv.VAphA/B/C (apparent power)
+#   pv.WphA/B/C    (per-phase active power — not exposed)
+#   pv.VARphA/B/C  (per-phase reactive power — not exposed)
+#   pv.VAphA/B/C   (per-phase apparent power — not exposed)
 #   pv.OperatingMode  (use pv.Status)

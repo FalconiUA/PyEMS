@@ -1,0 +1,167 @@
+# Genset controller register-map profile (DATA, not code).
+# Channels follow Elum ePowerControl Manual §2.5.1 Table 5.
+# Addresses/scaling below are EXAMPLES — replace with the register map
+# from your genset controller manufacturer's Modbus communication guide.
+#
+# Table 6 requirement (RS1): controller must support Modbus RTU or TCP.
+#
+# To add a new controller model: copy this file, edit addresses/scale. No code change.
+
+model: "Example Genset Controller"
+protocol: modbus_rtu        # modbus_rtu | modbus_tcp
+default_port: 502           # used only for modbus_tcp
+
+registers:
+  # ── Active power (Read Only) ──────────────────────────────────────────────
+  - channel: gen.W
+    address: 1003
+    type: int16
+    scale: 1000.0           # controller reports kW → convert to W
+    unit: W
+    access: read
+  - channel: gen.WphA
+    address: 1006
+    type: int16
+    scale: 1000.0
+    unit: W
+    access: read
+  - channel: gen.WphB
+    address: 1007
+    type: int16
+    scale: 1000.0
+    unit: W
+    access: read
+  - channel: gen.WphC
+    address: 1008
+    type: int16
+    scale: 1000.0
+    unit: W
+    access: read
+
+  # ── Reactive power (Read Only) ────────────────────────────────────────────
+  - channel: gen.VAR
+    address: 1004
+    type: int16
+    scale: 1000.0           # kVAr → VAr
+    unit: VAr
+    access: read
+  - channel: gen.VARphA
+    address: 1009
+    type: int16
+    scale: 1000.0
+    unit: VAr
+    access: read
+  - channel: gen.VARphB
+    address: 1010
+    type: int16
+    scale: 1000.0
+    unit: VAr
+    access: read
+  - channel: gen.VARphC
+    address: 1011
+    type: int16
+    scale: 1000.0
+    unit: VAr
+    access: read
+
+  # ── Apparent power (Read Only) ────────────────────────────────────────────
+  - channel: gen.VA
+    address: 1005
+    type: int16
+    scale: 1000.0           # kVA → VA
+    unit: VA
+    access: read
+  - channel: gen.VAphA
+    address: 1012
+    type: int16
+    scale: 1000.0
+    unit: VA
+    access: read
+  - channel: gen.VAphB
+    address: 1013
+    type: int16
+    scale: 1000.0
+    unit: VA
+    access: read
+  - channel: gen.VAphC
+    address: 1014
+    type: int16
+    scale: 1000.0
+    unit: VA
+    access: read
+
+  # ── Frequency (Read Only) ─────────────────────────────────────────────────
+  - channel: gen.Hz
+    address: 1002
+    type: uint16
+    scale: 0.01             # gain 100
+    unit: Hz
+    access: read
+
+  # ── Phase currents (Read Only) ────────────────────────────────────────────
+  - channel: gen.AphA
+    address: 1015
+    type: int16
+    scale: 1.0
+    unit: A
+    access: read
+  - channel: gen.AphB
+    address: 1016
+    type: int16
+    scale: 1.0
+    unit: A
+    access: read
+  - channel: gen.AphC
+    address: 1017
+    type: int16
+    scale: 1.0
+    unit: A
+    access: read
+
+  # ── Line voltages (Read Only) ─────────────────────────────────────────────
+  - channel: gen.PhVphA
+    address: 1018
+    type: uint16
+    scale: 1.0
+    unit: V
+    access: read
+  - channel: gen.PhVphB
+    address: 1019
+    type: uint16
+    scale: 1.0
+    unit: V
+    access: read
+  - channel: gen.PhVphC
+    address: 1020
+    type: uint16
+    scale: 1.0
+    unit: V
+    access: read
+
+  # ── Status / mode / alarms (Read Only) ────────────────────────────────────
+  - channel: gen.Status
+    address: 1000
+    type: uint16
+    scale: 1.0
+    unit: ""
+    access: read
+  - channel: gen.OperatingMode
+    address: 1001
+    type: uint16
+    scale: 1.0
+    unit: ""
+    access: read
+  - channel: gen.Alarm
+    address: 1021
+    type: uint16
+    scale: 1.0
+    unit: ""
+    access: read
+
+  # ── WSet: active power setpoint (Read/Write) — Elum Table 5 ──────────────
+  - channel: gen.WSet
+    address: 2000
+    type: int16
+    scale: 1000.0           # kW → W
+    unit: W
+    access: read_write
