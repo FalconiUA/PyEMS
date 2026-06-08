@@ -1,0 +1,26 @@
+# Site configuration — deployment-specific values for ONE installation.
+# Everything here changes per site (network, setpoints, safety thresholds);
+# the code does not. Device register maps stay in profiles/ (see those files).
+#
+# IEC 61131-3 analogy: this is the CONFIGURATION/RESOURCE binding — which
+# physical devices exist, at which addresses, and the tunable parameters.
+
+control:
+  fast_cycle_s: 1.0         # TASK fast interval (safety + balance)
+  poll_interval_s: 0.5      # background Modbus poll period (CachedDriver)
+
+export_limit:
+  limit_w: 50000.0          # max active power allowed to flow to the grid
+  pv_rated_w: 100000.0      # inverter rated power (upper clamp for pv.WSet)
+
+safety:
+  max_comms_age_s: 2.0      # trip to safe state if data older than this
+
+# Field devices on this site. profile = path under profiles/ (the register map).
+devices:
+  - profile: meters/example_grid_meter.yaml
+    host: 192.168.1.200
+    slave_id: 1
+  - profile: inverters/huawei_sun2000_100ktl_m1.yaml
+    host: 192.168.1.100
+    slave_id: 1
