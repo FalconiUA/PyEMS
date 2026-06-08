@@ -34,11 +34,14 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     fast_cycle_s = ctrl_cfg["fast_cycle_s"]
 
     # Field devices from site config — one ModbusDeviceDriver per entry.
+    # dev["id"] namespaces the device's tags (pv.W → pv1.W) so identical
+    # devices don't collide in the merged tag pool.
     device_drivers = [
         ModbusDeviceDriver.from_profile(
             PROFILES / dev["profile"],
             host=dev["host"],
             slave_id=dev["slave_id"],
+            prefix=dev.get("id"),
         )
         for dev in site["devices"]
     ]
@@ -66,7 +69,8 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
         controllers=[
             SafetyController(
                 max_comms_age_s=safe_cfg["max_comms_age_s"],
-                safe_wset_w=exp_cfg["limit_w"],  # export ≤ limit even at zero load
+                safe_active_power_w=exp_cfg["limit_w"],  # export ≤ limit even at zero load
+                unit_active_power_setpoint_channels=safe_cfg["unit_active_power_setpoint_channels"],
             ),
         ],
     )
@@ -79,7 +83,10 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
             GridExportLimitController(
                 cycle_s=fast_cycle_s,
                 export_limit_w=exp_cfg["limit_w"],
-                rated_w=exp_cfg["pv_rated_w"],
+                p_max_w=exp_cfg["p_max_w"],
+                connection_point_active_power_channel=exp_cfg["connection_point_active_power_channel"],
+                unit_active_power_channel=exp_cfg["unit_active_power_channel"],
+                unit_active_power_setpoint_channel=exp_cfg["unit_active_power_setpoint_channel"],
             ),
         ],
     )

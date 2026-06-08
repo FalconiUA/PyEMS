@@ -9,7 +9,7 @@ the I/O mapping is configuration of a resource, not a program.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import yaml
@@ -20,6 +20,20 @@ from src.drivers.base import Driver
 
 # registers per Modbus data type
 _REG_COUNT = {"int16": 1, "uint16": 1, "int32": 2, "uint32": 2}
+
+
+def namespaced(local: str, prefix: str | None) -> str:
+    """Apply a device instance prefix to a profile-local channel name.
+
+    Profiles name channels '<class>.<field>' (e.g. 'pv.W'). The site assigns
+    each device an instance id; that id replaces the class segment so two
+    identical devices get distinct tags ('pv1.W', 'pv2.W'). With no prefix the
+    profile name is kept verbatim (single-device sites need no id).
+    """
+    if not prefix:
+        return local
+    _head, dot, tail = local.partition(".")
+    return f"{prefix}.{tail}" if dot else f"{prefix}.{local}"
 
 
 @dataclass
@@ -98,14 +112,24 @@ def _encode(value: int, reg: RegisterDef) -> list[int]:
 
 
 class ModbusDeviceDriver(Driver):
-    def __init__(self, profile: DeviceProfile, client, slave_id: int = 1) -> None:
+    def __init__(
+        self, profile: DeviceProfile, client, slave_id: int = 1, prefix: str | None = None
+    ) -> None:
         self._profile = profile
         self._client = client
         self._slave = slave_id
+        self._prefix = prefix
+        # profile-local channel name → namespaced state tag (see namespaced()).
+        self._tag = {r.channel: namespaced(r.channel, prefix) for r in profile.registers}
 
     @classmethod
     def from_profile(
-        cls, profile_path: str | Path, host: str, port: int | None = None, slave_id: int = 1
+        cls,
+        profile_path: str | Path,
+        host: str,
+        port: int | None = None,
+        slave_id: int = 1,
+        prefix: str | None = None,
     ) -> "ModbusDeviceDriver":
         profile = DeviceProfile.load(profile_path)
         if profile.protocol == "modbus_tcp":
@@ -114,7 +138,7 @@ class ModbusDeviceDriver(Driver):
             client = ModbusSerialClient(port=host)  # host = serial port path
         else:
             raise ValueError(f"Unknown protocol: {profile.protocol}")
-        return cls(profile, client, slave_id)
+        return cls(profile, client, slave_id, prefix)
 
     def connect(self) -> None:
         self._client.connect()
@@ -123,7 +147,9 @@ class ModbusDeviceDriver(Driver):
         self._client.close()
 
     def channels(self) -> list[Channel]:
-        return self._profile.channels()
+        return [
+            replace(ch, name=self._tag[ch.name]) for ch in self._profile.channels()
+        ]
 
     def read_state(self, state: SystemState) -> None:
         for reg in self._profile.registers:
@@ -132,11 +158,13 @@ class ModbusDeviceDriver(Driver):
             )
             if result.isError():
                 continue
-            state._channels[reg.channel].value = _decode(result.registers, reg) * reg.scale
+            state._channels[self._tag[reg.channel]].value = (
+                _decode(result.registers, reg) * reg.scale
+            )
 
     def write_setpoints(self, state: SystemState) -> None:
         for reg in self._profile.registers:
             if not reg.writable:
                 continue
-            raw = int(state.get(reg.channel) / reg.scale)
+            raw = int(state.get(self._tag[reg.channel]) / reg.scale)
             self._client.write_registers(reg.address, _encode(raw, reg), slave=self._slave)
