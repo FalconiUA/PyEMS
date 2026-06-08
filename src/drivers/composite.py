@@ -11,13 +11,18 @@ so the merged pool has no collisions — controllers address any device by tag.
 """
 from __future__ import annotations
 
+import logging
+
 from src.channels import Channel, SystemState
 from src.drivers.base import Driver
+
+logger = logging.getLogger(__name__)
 
 
 class CompositeDriver(Driver):
     def __init__(self, drivers: list[Driver]) -> None:
         self._drivers = drivers
+        logger.debug("CompositeDriver wrapping %d device drivers", len(drivers))
 
     def connect(self) -> None:
         for d in self._drivers:

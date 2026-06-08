@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# Run from the project root; make `import src...` resolve without installation.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"

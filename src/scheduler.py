@@ -13,11 +13,14 @@ Rules from §2.7.2:
   - INTERVAL != 0 → periodic scheduling
   - Higher-priority tasks preempt lower-priority ones
 """
+import logging
 import time
 from dataclasses import dataclass, field
 
 from src.channels import SystemState
 from src.controllers.base import Controller
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -45,24 +48,43 @@ class Scheduler:
         self._tasks = sorted(tasks, key=lambda t: t.priority)
         self._state = state
         self._driver = driver
+        self._overrunning = False  # last cycle-overrun state — log on transition
+
+    def step(self, now: float) -> None:
+        """One IEC scan cycle: read inputs → run due tasks (priority order) →
+        write outputs. Extracted from run() so a single cycle is testable."""
+        # read all inputs first
+        self._driver.read_state(self._state)
+
+        # execute due tasks in priority order
+        for task in self._tasks:
+            if task.is_due(now):
+                for ctrl in task.controllers:
+                    ctrl.execute(self._state)
+                task.mark_ran(now)
+
+        # write all outputs last
+        self._driver.write_setpoints(self._state)
 
     def run(self) -> None:
         tick = min(t.interval_s for t in self._tasks)
-        while True:
-            now = time.monotonic()
+        logger.info(
+            "Scheduler start: %d tasks, tick %.3fs, priorities %s",
+            len(self._tasks), tick, [t.priority for t in self._tasks],
+        )
+        try:
+            while True:
+                now = time.monotonic()
+                self.step(now)
 
-            # IEC scan cycle: read all inputs first
-            self._driver.read_state(self._state)
-
-            # execute due tasks in priority order
-            for task in self._tasks:
-                if task.is_due(now):
-                    for ctrl in task.controllers:
-                        ctrl.execute(self._state)
-                    task.mark_ran(now)
-
-            # write all outputs last
-            self._driver.write_setpoints(self._state)
-
-            elapsed = time.monotonic() - now
-            time.sleep(max(0.0, tick - elapsed))
+                elapsed = time.monotonic() - now
+                if elapsed > tick:
+                    if not self._overrunning:  # log only on transition into overrun
+                        logger.warning("Cycle overrun: %.3fs > %.3fs tick", elapsed, tick)
+                        self._overrunning = True
+                elif self._overrunning:
+                    self._overrunning = False
+                time.sleep(max(0.0, tick - elapsed))
+        except KeyboardInterrupt:
+            logger.info("Scheduler stopping (interrupt)")
+            self._driver.disconnect()

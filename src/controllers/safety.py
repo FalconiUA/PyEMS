@@ -24,9 +24,13 @@ IEC 61131-3 equivalent:
     VAR_OUTPUT safe_mode : BOOL; p_setpoint_w : REAL; END_VAR
   END_FUNCTION_BLOCK
 """
+import logging
+
 from src.channels import SystemState
 from src.controllers.base import Controller
 from src.drivers.cached import COMMS_AGE_CHANNEL
+
+logger = logging.getLogger(__name__)
 
 SAFE_MODE_CHANNEL = "sys.safe_mode"  # 1.0 = tripped, 0.0 = healthy
 
@@ -42,6 +46,7 @@ class SafetyController(Controller):
         self._safe_active_power_w = safe_active_power_w
         # Generating-unit active-power setpoint tags to cap on trip — one per unit.
         self._setpoint_channels = unit_active_power_setpoint_channels
+        self._tripped = False  # last state — log only on transition, not per cycle
 
     def execute(self, state: SystemState) -> None:
         # VAR_INPUT
@@ -52,5 +57,15 @@ class SafetyController(Controller):
             state.set(SAFE_MODE_CHANNEL, 1.0)
             for ch in self._setpoint_channels:
                 state.set(ch, self._safe_active_power_w)
+            if not self._tripped:
+                logger.warning(
+                    "SAFETY TRIP: comms age %.1fs > %.1fs limit; capping %s to %.0f W",
+                    comms_age, self._max_age, self._setpoint_channels,
+                    self._safe_active_power_w,
+                )
+                self._tripped = True
         else:
             state.set(SAFE_MODE_CHANNEL, 0.0)
+            if self._tripped:
+                logger.info("SAFETY RELEASE: comms age %.1fs back within limit", comms_age)
+                self._tripped = False

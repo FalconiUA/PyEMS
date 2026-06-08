@@ -41,9 +41,13 @@ Control law (feed-forward, self-correcting each scan):
   When not over-exporting this exceeds p_unit → clamps to P_max → unit runs
   free. Because p_unit is re-measured every cycle, the loop converges (deadbeat).
 """
+import logging
+
 from src.channels import SystemState
 from src.controllers.base import Controller
 from src.controllers.safety import SAFE_MODE_CHANNEL
+
+logger = logging.getLogger(__name__)
 
 
 class GridExportLimitController(Controller):
@@ -72,6 +76,7 @@ class GridExportLimitController(Controller):
         self._max_ramp = ramp_rate_w_per_s * cycle_s  # active power gradient limit
         # Fail-safe default: full power = no curtailment until first scan computes.
         self._last_setpoint = p_max_w  # VAR RETAIN
+        self._curtailing = False  # last state — log only on transition, not per cycle
 
     def execute(self, state: SystemState) -> None:
         # Yield to the PRIORITY 0 safety interlock: when tripped, the
@@ -101,6 +106,23 @@ class GridExportLimitController(Controller):
         setpoint = self._last_setpoint + delta
 
         self._last_setpoint = setpoint  # persist for next cycle (RETAIN)
+
+        # Log curtailment as a state transition. We are actually curtailing only
+        # when the cap holds production BELOW what the unit is currently making
+        # (setpoint < measured P) — not merely when setpoint < P_max, since the
+        # deadbeat law usually sits below P_max even when running free.
+        curtailing = setpoint < p_unit - self._deadband_w
+        if curtailing and not self._curtailing:
+            logger.info(
+                "Export-limit ENGAGED: P_cp=%.0f W, capping %s to %.0f W (limit %.0f W)",
+                p_cp, self._setpoint_ch, setpoint, self._export_limit_w,
+            )
+        elif not curtailing and self._curtailing:
+            logger.info("Export-limit RELEASED: %s back to P_max", self._setpoint_ch)
+        self._curtailing = curtailing
+        logger.debug(
+            "%s: P_cp=%.0f P_unit=%.0f -> setpoint=%.0f W", self._setpoint_ch, p_cp, p_unit, setpoint
+        )
 
         # VAR_OUTPUT write
         state.set(self._setpoint_ch, setpoint)

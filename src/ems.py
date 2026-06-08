@@ -8,6 +8,7 @@ from profiles/ (data). This module only wires objects together.
 IEC 61131-3 analogy: build_ems() assembles the RESOURCE (Scheduler) with its
 TASKs and FUNCTION_BLOCKs, binding I/O per the CONFIGURATION in site.yaml.
 """
+import logging
 from pathlib import Path
 
 import yaml
@@ -18,7 +19,10 @@ from src.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
 from src.drivers.cached import CachedDriver
 from src.drivers.composite import CompositeDriver
 from src.drivers.modbus_device import ModbusDeviceDriver
+from src.logging_config import setup_logging
 from src.scheduler import Scheduler, Task
+
+logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 PROFILES = ROOT / "profiles"
@@ -26,6 +30,7 @@ DEFAULT_SITE = ROOT / "config" / "site.yaml"
 
 
 def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
+    logger.info("Building EMS from %s", site_path)
     site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8"))
 
     ctrl_cfg = site["control"]
@@ -91,8 +96,13 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
         ],
     )
 
+    logger.info(
+        "EMS built: %d devices, %d channels, tasks=%s",
+        len(device_drivers), len(channels), [safety_task.name, fast_task.name],
+    )
     return Scheduler(tasks=[safety_task, fast_task], state=state, driver=driver)
 
 
 if __name__ == "__main__":
+    setup_logging()
     build_ems().run()

@@ -9,6 +9,7 @@ the I/O mapping is configuration of a resource, not a program.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from pymodbus.client import ModbusSerialClient, ModbusTcpClient
 
 from src.channels import Channel, SystemState
 from src.drivers.base import Driver
+
+logger = logging.getLogger(__name__)
 
 # registers per Modbus data type
 _REG_COUNT = {"int16": 1, "uint16": 1, "int32": 2, "uint32": 2}
@@ -141,7 +144,12 @@ class ModbusDeviceDriver(Driver):
         return cls(profile, client, slave_id, prefix)
 
     def connect(self) -> None:
-        self._client.connect()
+        ok = self._client.connect()
+        logger.info(
+            "Connecting %s (%s, slave %d, prefix %r): %s",
+            self._profile.model, self._profile.protocol, self._slave, self._prefix,
+            "ok" if ok else "FAILED",
+        )
 
     def disconnect(self) -> None:
         self._client.close()
@@ -157,6 +165,7 @@ class ModbusDeviceDriver(Driver):
                 reg.address, count=reg.count, slave=self._slave
             )
             if result.isError():
+                logger.debug("Read error %s @%d (%s)", reg.channel, reg.address, result)
                 continue
             state._channels[self._tag[reg.channel]].value = (
                 _decode(result.registers, reg) * reg.scale

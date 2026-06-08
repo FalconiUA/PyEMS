@@ -22,11 +22,14 @@ run OUTSIDE the lock, so the foreground cycle never waits on the bus.
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
 from src.channels import Channel, SystemState
 from src.drivers.base import Driver
+
+logger = logging.getLogger(__name__)
 
 # System diagnostic tag (IEC system status word, not a device register):
 # seconds since the last successful bus read. Safety logic reads it to detect a
@@ -55,6 +58,7 @@ class CachedDriver(Driver):
         self._sp_cache: dict[str, float] = {}          # setpoints published by controllers
         self._sp_ready = False                          # gate: don't write before first setpoint
         self._last_ok = 0.0                             # monotonic ts of last good read
+        self._bus_down = False                          # last bus health — log on transition
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="modbus-io", daemon=True)
 
@@ -62,11 +66,13 @@ class CachedDriver(Driver):
     def connect(self) -> None:
         self._inner.connect()
         self._thread.start()
+        logger.info("CachedDriver started: %d channels, poll %.2fs", len(self._channels), self._poll)
 
     def disconnect(self) -> None:
         self._stop.set()
         self._thread.join(timeout=2 * self._poll + 1.0)
         self._inner.disconnect()
+        logger.info("CachedDriver stopped")
 
     def channels(self) -> list[Channel]:
         return self._channels
@@ -106,8 +112,15 @@ class CachedDriver(Driver):
                 with self._lock:
                     self._meas_cache.update(snap)
                     self._last_ok = time.monotonic()
+                if self._bus_down:  # recovered — log the up transition once
+                    logger.warning("Modbus bus RECOVERED after failure")
+                    self._bus_down = False
             except Exception:
-                pass  # keep last cached values; age_s() grows so safety can react
+                # keep last cached values; age_s() grows so safety can react.
+                # Log only the down transition — never every failed poll (spam).
+                if not self._bus_down:
+                    logger.exception("Modbus READ failed; serving stale cache, comms age growing")
+                    self._bus_down = True
 
             # WRITE: flush pending setpoints (only after a controller produced one)
             if self._sp_ready:
@@ -118,6 +131,6 @@ class CachedDriver(Driver):
                 try:
                     self._inner.write_setpoints(self._io_state)
                 except Exception:
-                    pass
+                    logger.exception("Modbus WRITE failed; setpoints not flushed this cycle")
 
             self._stop.wait(max(0.0, self._poll - (time.monotonic() - t0)))
