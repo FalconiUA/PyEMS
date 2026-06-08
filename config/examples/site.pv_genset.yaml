@@ -1,0 +1,57 @@
+# EXAMPLE scenario — different equipment combination, SAME code.
+# Demonstrates the flexible architecture: a second site running PV + genset
+# behind one grid meter, assembled purely from data. Copy to config/site.yaml
+# (and set real hosts/addresses) to use. Not loaded by the test suite.
+#
+# Equipment combination here:
+#   - grid : connection-point meter (POC)
+#   - pv   : Huawei PV inverter (export-limited generating unit)
+#   - gen  : genset controller (RS485/RTU) — present in the tag pool; add a
+#            control task for it when its dispatch logic exists.
+#
+# Note the SAME controller types (`safety`, `grid_export_limit`) are reused on a
+# different device wiring — controllers are unit-agnostic, bound by tag.
+
+control:
+  poll_interval_s: 0.5
+
+devices:
+  - id: grid
+    profile: meters/example_grid_meter.yaml
+    host: 192.168.1.200
+    slave_id: 1
+  - id: pv
+    profile: inverters/huawei_sun2000_100ktl_m1.yaml
+    host: 192.168.1.100
+    slave_id: 1
+  - id: gen
+    profile: gensets/example_genset.yaml
+    host: /dev/ttyUSB0          # modbus_rtu: host = serial port path
+    slave_id: 2
+
+tasks:
+  # PRIORITY 0 interlock — cap every generating unit on a stale field bus.
+  - name: safety
+    priority: 0
+    interval_s: 1.0
+    controllers:
+      - type: safety
+        params:
+          max_comms_age_s: 2.0
+          safe_active_power_w: 50000.0
+          unit_active_power_setpoint_channels:
+            - pv.WSet
+            - gen.WSet
+
+  # Export-limit the PV inverter at the connection point.
+  - name: fast
+    priority: 1
+    interval_s: 1.0
+    controllers:
+      - type: grid_export_limit
+        params:
+          export_limit_w: 50000.0
+          p_max_w: 100000.0
+          connection_point_active_power_channel: grid.W
+          unit_active_power_channel: pv.W
+          unit_active_power_setpoint_channel: pv.WSet

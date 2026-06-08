@@ -45,11 +45,13 @@ import logging
 
 from pyems.channels import SystemState
 from pyems.controllers.base import Controller
+from pyems.controllers.registry import BuildContext, register
 from pyems.controllers.safety import SAFE_MODE_CHANNEL
 
 logger = logging.getLogger(__name__)
 
 
+@register("grid_export_limit")
 class GridExportLimitController(Controller):
     def __init__(
         self,
@@ -77,6 +79,25 @@ class GridExportLimitController(Controller):
         # Fail-safe default: full power = no curtailment until first scan computes.
         self._last_setpoint = p_max_w  # VAR RETAIN
         self._curtailing = False  # last state — log only on transition, not per cycle
+
+    @classmethod
+    def from_config(cls, params: dict, ctx: BuildContext) -> "GridExportLimitController":
+        """Build from a site.yaml `controllers[].params` block. cycle_s comes
+        from the owning TASK; tag bindings are validated against the pool."""
+        return cls(
+            cycle_s=ctx.cycle_s,
+            export_limit_w=params["export_limit_w"],
+            p_max_w=params["p_max_w"],
+            connection_point_active_power_channel=ctx.channel(
+                params["connection_point_active_power_channel"]
+            ),
+            unit_active_power_channel=ctx.channel(params["unit_active_power_channel"]),
+            unit_active_power_setpoint_channel=ctx.writable(
+                params["unit_active_power_setpoint_channel"]
+            ),
+            deadband_w=params.get("deadband_w", 200.0),
+            ramp_rate_w_per_s=params.get("ramp_rate_w_per_s", 5000.0),
+        )
 
     def execute(self, state: SystemState) -> None:
         # Yield to the PRIORITY 0 safety interlock: when tripped, the

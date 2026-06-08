@@ -1,9 +1,11 @@
 """
 EMS configuration loader.
 
-Nothing here is site-specific: device addresses, setpoints and safety
-thresholds all come from config/site.yaml (data). Device register maps come
-from profiles/ (data). This module only wires objects together.
+Nothing here is site-specific or scenario-specific. Device addresses come from
+profiles/ (data); which devices exist, the tunable setpoints/thresholds, AND
+which controllers run in which tasks all come from config/site.yaml (data).
+This module only wires objects together — no controller, task or binding is
+hardcoded, so a new scenario or equipment combination is a YAML change.
 
 IEC 61131-3 analogy: build_ems() assembles the RESOURCE (Scheduler) with its
 TASKs and FUNCTION_BLOCKs, binding I/O per the CONFIGURATION in site.yaml.
@@ -13,9 +15,10 @@ from pathlib import Path
 
 import yaml
 
+import pyems.controllers  # noqa: F401  — import populates the controller registry
 from pyems.channels import Channel, SystemState
-from pyems.controllers.grid_export_limit import GridExportLimitController
-from pyems.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
+from pyems.controllers import BuildContext, build_controller
+from pyems.controllers.safety import SAFE_MODE_CHANNEL
 from pyems.drivers.cached import CachedDriver
 from pyems.drivers.composite import CompositeDriver
 from pyems.drivers.modbus_device import ModbusDeviceDriver
@@ -35,9 +38,6 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8"))
 
     ctrl_cfg = site["control"]
-    exp_cfg = site["export_limit"]
-    safe_cfg = site["safety"]
-    fast_cycle_s = ctrl_cfg["fast_cycle_s"]
 
     # Field devices from site config — one ModbusDeviceDriver per entry.
     # dev["id"] namespaces the device's tags (pv.W → pv1.W) so identical
@@ -67,41 +67,37 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     ]
     state = SystemState(channels)
 
-    # PRIORITY 0 interlock — runs first, asserts safe state on a dead bus.
-    safety_task = Task(
-        name="safety",
-        interval_s=fast_cycle_s,
-        priority=0,
-        controllers=[
-            SafetyController(
-                max_comms_age_s=safe_cfg["max_comms_age_s"],
-                safe_active_power_w=exp_cfg["limit_w"],  # export ≤ limit even at zero load
-                unit_active_power_setpoint_channels=safe_cfg["unit_active_power_setpoint_channels"],
-            ),
-        ],
-    )
+    # Tag pool the scenario's bindings are validated against (fail fast on a
+    # mistyped tag, rather than KeyError mid-cycle on hardware).
+    channel_names = frozenset(ch.name for ch in channels)
+    writable_names = frozenset(ch.name for ch in channels if ch.writable)
 
-    fast_task = Task(
-        name="fast",
-        interval_s=fast_cycle_s,
-        priority=1,
-        controllers=[
-            GridExportLimitController(
-                cycle_s=fast_cycle_s,
-                export_limit_w=exp_cfg["limit_w"],
-                p_max_w=exp_cfg["p_max_w"],
-                connection_point_active_power_channel=exp_cfg["connection_point_active_power_channel"],
-                unit_active_power_channel=exp_cfg["unit_active_power_channel"],
-                unit_active_power_setpoint_channel=exp_cfg["unit_active_power_setpoint_channel"],
-            ),
-        ],
-    )
+    # Build TASKs and their FUNCTION_BLOCKs declaratively from site.yaml.
+    # PRIORITY 0 runs first (e.g. safety interlock); higher number = lower
+    # priority. Each controller is resolved by `type` via the registry.
+    tasks = []
+    for tcfg in site["tasks"]:
+        ctx = BuildContext(
+            cycle_s=tcfg["interval_s"],
+            channel_names=channel_names,
+            writable_names=writable_names,
+        )
+        controllers = [build_controller(spec, ctx) for spec in tcfg["controllers"]]
+        tasks.append(
+            Task(
+                name=tcfg["name"],
+                interval_s=tcfg["interval_s"],
+                priority=tcfg["priority"],
+                controllers=controllers,
+            )
+        )
 
     logger.info(
         "EMS built: %d devices, %d channels, tasks=%s",
-        len(device_drivers), len(channels), [safety_task.name, fast_task.name],
+        len(device_drivers), len(channels),
+        [(t.name, t.priority, [type(c).__name__ for c in t.controllers]) for t in tasks],
     )
-    return Scheduler(tasks=[safety_task, fast_task], state=state, driver=driver)
+    return Scheduler(tasks=tasks, state=state, driver=driver)
 
 
 def main() -> None:

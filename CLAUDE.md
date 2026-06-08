@@ -54,6 +54,30 @@ Modbus register maps live in `profiles/*.yaml`, never hardcoded in Python.
 Adding a device model = add a YAML, zero code changes. Site-specific values
 (addresses, setpoints, safety thresholds) live in `config/site.yaml`.
 
+## Control scenarios are data
+
+The control *scenario* — which controllers run, in which TASKs, with which tag
+bindings — is declared in `site.yaml` under `tasks:`, never hardcoded in
+`build_ems()`. `build_ems()` is generic: it loads devices/channels, then
+assembles TASKs and FUNCTION_BLOCKs from the `tasks:` block via the controller
+registry (`controllers/registry.py`), validating every binding against the tag
+pool at build time.
+
+- Each task: `name`, `priority` (0 = highest, runs first), `interval_s`.
+- Each controller: `type` (resolved via the registry) + `params` (its tunables
+  and tag bindings). Reuse the same controller `type` on different devices —
+  controllers are unit-agnostic.
+- Adding a scenario that reuses existing logic = a `tasks:` entry, zero code.
+- Adding new control logic = a `Controller` subclass decorated `@register("<type>")`
+  with a `from_config(params, ctx)` classmethod, imported in
+  `controllers/__init__.py` (which populates the registry on import). Then bind
+  it in YAML. `build_ems()` is never edited.
+- `ctx` (`BuildContext`) carries `cycle_s` (owning task interval) and validates
+  bindings: `ctx.channel(name)` (read) / `ctx.writable(name)` (setpoint).
+
+`config/examples/` holds alternative scenarios (e.g. PV + genset) showing the
+same code on a different equipment combination.
+
 ## Project layout & packaging
 
 src-layout, installable package `pyems`:
@@ -61,7 +85,7 @@ src-layout, installable package `pyems`:
     src/pyems/        # the package — import as `from pyems.<module> import ...`
     tests/            # pytest suite (in-memory fakes, no hardware)
     profiles/         # device register maps (YAML data)
-    config/           # site.yaml (per-installation values)
+    config/           # site.yaml (devices + control scenario); examples/
 
 Imports use the real package name (`from pyems.drivers... import`), never
 `from src...`. The package is resolved via an editable install, not sys.path

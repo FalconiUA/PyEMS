@@ -1,29 +1,14 @@
 # Site configuration — deployment-specific values for ONE installation.
-# Everything here changes per site (network, setpoints, safety thresholds);
-# the code does not. Device register maps stay in profiles/ (see those files).
+# Everything here changes per site (network, setpoints, safety thresholds) AND
+# per control scenario (which controllers run, how they are bound); the code
+# does not. Device register maps stay in profiles/ (see those files).
 #
 # IEC 61131-3 analogy: this is the CONFIGURATION/RESOURCE binding — which
-# physical devices exist, at which addresses, and the tunable parameters.
+# physical devices exist, at which addresses, and which TASKs/FUNCTION_BLOCKs
+# run with which I/O bindings.
 
 control:
-  fast_cycle_s: 1.0         # TASK fast interval (safety + balance)
   poll_interval_s: 0.5      # background Modbus poll period (CachedDriver)
-
-export_limit:
-  limit_w: 50000.0          # max active power export at the connection point
-  p_max_w: 100000.0         # unit maximum active power (RfG Maximum Capacity)
-  # Tag bindings (IEC VAR_INPUT/VAR_OUTPUT mapping). These name the namespaced
-  # channels (<device id>.<field>) the controller reads and drives, so the same
-  # controller class serves any device wiring.
-  connection_point_active_power_channel: grid.W   # P at connection point (+import/-export)
-  unit_active_power_channel: pv.W                  # generating-unit active power
-  unit_active_power_setpoint_channel: pv.WSet      # active power setpoint to the unit
-
-safety:
-  max_comms_age_s: 2.0      # trip to safe state if data older than this
-  # Generating-unit active-power setpoints the interlock caps on a stale-bus trip.
-  unit_active_power_setpoint_channels:
-    - pv.WSet
 
 # Field devices on this site. profile = path under profiles/ (the register map).
 # id = instance namespace: it replaces the profile's class prefix so identical
@@ -38,3 +23,39 @@ devices:
     profile: inverters/huawei_sun2000_100ktl_m1.yaml
     host: 192.168.1.100
     slave_id: 1
+
+# Control scenario — TASKs and the FUNCTION_BLOCKs they run, as DATA.
+# Each task: name, priority (0 = highest, runs first), interval_s (scan period).
+# Each controller: type (resolved via the controller registry) + params.
+# params name the namespaced channels (<device id>.<field>) the controller
+# reads/drives — the IEC VAR_INPUT/VAR_OUTPUT binding — so the same controller
+# class serves any device wiring. Bindings are validated at build time.
+#
+# This site runs grid export-limitation on the PV inverter, with a PRIORITY 0
+# safety interlock guarding a stale field bus. Swap/extend equipment and control
+# by editing `devices:` and `tasks:` — no code change.
+tasks:
+  # PRIORITY 0 interlock — runs first, asserts a safe state on a dead bus.
+  - name: safety
+    priority: 0
+    interval_s: 1.0
+    controllers:
+      - type: safety
+        params:
+          max_comms_age_s: 2.0          # trip if data older than this
+          safe_active_power_w: 50000.0  # cap so export ≤ limit even at zero load
+          unit_active_power_setpoint_channels:
+            - pv.WSet
+
+  # Normal control: cap active power export at the connection point.
+  - name: fast
+    priority: 1
+    interval_s: 1.0
+    controllers:
+      - type: grid_export_limit
+        params:
+          export_limit_w: 50000.0       # max export at the connection point
+          p_max_w: 100000.0             # unit P_max (RfG Maximum Capacity)
+          connection_point_active_power_channel: grid.W  # P at POC (+import/-export)
+          unit_active_power_channel: pv.W                # generating-unit P
+          unit_active_power_setpoint_channel: pv.WSet    # P setpoint to the unit

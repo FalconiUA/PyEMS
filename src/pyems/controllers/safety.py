@@ -28,6 +28,7 @@ import logging
 
 from pyems.channels import SystemState
 from pyems.controllers.base import Controller
+from pyems.controllers.registry import BuildContext, register
 from pyems.drivers.cached import COMMS_AGE_CHANNEL
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 SAFE_MODE_CHANNEL = "sys.safe_mode"  # 1.0 = tripped, 0.0 = healthy
 
 
+@register("safety")
 class SafetyController(Controller):
     def __init__(
         self,
@@ -47,6 +49,18 @@ class SafetyController(Controller):
         # Generating-unit active-power setpoint tags to cap on trip — one per unit.
         self._setpoint_channels = unit_active_power_setpoint_channels
         self._tripped = False  # last state — log only on transition, not per cycle
+
+    @classmethod
+    def from_config(cls, params: dict, ctx: BuildContext) -> "SafetyController":
+        """Build from a site.yaml `controllers[].params` block. Every capped
+        setpoint tag is validated as writable against the pool."""
+        return cls(
+            max_comms_age_s=params["max_comms_age_s"],
+            safe_active_power_w=params["safe_active_power_w"],
+            unit_active_power_setpoint_channels=[
+                ctx.writable(ch) for ch in params["unit_active_power_setpoint_channels"]
+            ],
+        )
 
     def execute(self, state: SystemState) -> None:
         # VAR_INPUT
