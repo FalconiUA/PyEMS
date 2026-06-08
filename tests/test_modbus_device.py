@@ -1,8 +1,8 @@
 """Tests for the profile-driven Modbus driver (src/drivers/modbus_device.py)."""
 import pytest
 
-from src.channels import SystemState
-from src.drivers.modbus_device import (
+from pyems.channels import SystemState
+from pyems.drivers.modbus_device import (
     DeviceProfile,
     ModbusDeviceDriver,
     RegisterDef,
@@ -65,7 +65,10 @@ def test_registerdef_properties():
 
 
 # ── profile loading + namespaced channels ────────────────────────────────────
-HUAWEI = "profiles/inverters/huawei_sun2000_100ktl_m1.yaml"
+# Anchor to the repo root so the test does not depend on the working directory.
+from pathlib import Path
+
+HUAWEI = Path(__file__).resolve().parents[1] / "profiles" / "inverters" / "huawei_sun2000_100ktl_m1.yaml"
 
 
 def test_profile_load():

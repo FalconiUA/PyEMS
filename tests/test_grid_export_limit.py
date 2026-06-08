@@ -1,8 +1,8 @@
 """Tests for the export-limit control law (src/controllers/grid_export_limit.py)."""
 import pytest
 
-from src.controllers.grid_export_limit import GridExportLimitController
-from src.controllers.safety import SAFE_MODE_CHANNEL
+from pyems.controllers.grid_export_limit import GridExportLimitController
+from pyems.controllers.safety import SAFE_MODE_CHANNEL
 
 
 def make_ctrl(**kw):

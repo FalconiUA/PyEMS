@@ -1,5 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyems"
+version = "0.1.0"
+description = "Local energy management system controlling energy sources over Modbus"
+requires-python = ">=3.10"
+dependencies = [
+    "pymodbus>=3.6",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+pyems = "pyems.ems:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.pytest.ini_options]
-# Run from the project root; make `import src...` resolve without installation.
-pythonpath = ["."]
+# No sys.path hacks: the package is found via the editable install
+# (`pip install -e .`). pytest only needs to know where the tests live.
 testpaths = ["tests"]
 addopts = "-q"

@@ -14,7 +14,7 @@ Controllers never talk to hardware directly — only through SystemState.
 """
 from abc import ABC, abstractmethod
 
-from src.channels import SystemState
+from pyems.channels import SystemState
 
 
 class Controller(ABC):

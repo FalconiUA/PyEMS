@@ -43,9 +43,9 @@ Control law (feed-forward, self-correcting each scan):
 """
 import logging
 
-from src.channels import SystemState
-from src.controllers.base import Controller
-from src.controllers.safety import SAFE_MODE_CHANNEL
+from pyems.channels import SystemState
+from pyems.controllers.base import Controller
+from pyems.controllers.safety import SAFE_MODE_CHANNEL
 
 logger = logging.getLogger(__name__)
 

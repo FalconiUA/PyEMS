@@ -1,7 +1,7 @@
 """Wiring test for build_ems() (src/ems.py) — no real network."""
-import src.drivers.modbus_device as md
-from src.ems import build_ems
-from src.scheduler import Scheduler
+import pyems.drivers.modbus_device as md
+from pyems.ems import build_ems
+from pyems.scheduler import Scheduler
 
 
 class FakeTcpClient:

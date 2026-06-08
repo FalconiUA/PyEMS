@@ -1,9 +1,9 @@
 """Tests for the multi-device merge (src/drivers/composite.py)."""
 import pytest
 
-from src.channels import Channel, SystemState
-from src.drivers.base import Driver
-from src.drivers.composite import CompositeDriver
+from pyems.channels import Channel, SystemState
+from pyems.drivers.base import Driver
+from pyems.drivers.composite import CompositeDriver
 
 
 class StubDevice(Driver):

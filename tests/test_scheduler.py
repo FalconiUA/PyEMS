@@ -1,8 +1,7 @@
 """Tests for Task scheduling and the scan cycle (src/scheduler.py)."""
-from src.channels import Channel, SystemState
-from src.controllers.base import Controller
-from src.scheduler import Scheduler, Task
-from tests.conftest import FakeDriver
+from pyems.channels import Channel, SystemState
+from pyems.controllers.base import Controller
+from pyems.scheduler import Scheduler, Task
 
 
 class RecordingController(Controller):
@@ -24,9 +23,9 @@ def test_task_is_due_and_mark_ran():
     assert task.is_due(now=11.0)
 
 
-def test_step_runs_tasks_in_priority_order():
+def test_step_runs_tasks_in_priority_order(fake_driver_cls):
     order: list[str] = []
-    driver = FakeDriver([Channel("x")])
+    driver = fake_driver_cls([Channel("x")])
     state = SystemState([Channel("x")])
     # Build out of priority order; scheduler must sort 0 before 5.
     low = Task("low", 1.0, priority=5, controllers=[RecordingController("low", order)])
@@ -35,9 +34,9 @@ def test_step_runs_tasks_in_priority_order():
     assert order == ["high", "low"]
 
 
-def test_step_skips_tasks_not_due():
+def test_step_skips_tasks_not_due(fake_driver_cls):
     order: list[str] = []
-    driver = FakeDriver([Channel("x")])
+    driver = fake_driver_cls([Channel("x")])
     state = SystemState([Channel("x")])
     task = Task("slow", 100.0, priority=1, controllers=[RecordingController("slow", order)])
     sched = Scheduler(tasks=[task], state=state, driver=driver)

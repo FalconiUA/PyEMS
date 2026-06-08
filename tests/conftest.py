@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.channels import Channel, SystemState
-from src.drivers.base import Driver
+from pyems.channels import Channel, SystemState
+from pyems.drivers.base import Driver
 
 
 class FakeDriver(Driver):
@@ -65,3 +65,10 @@ def state(channels) -> SystemState:
 @pytest.fixture
 def fake_driver(channels) -> FakeDriver:
     return FakeDriver(channels)
+
+
+@pytest.fixture
+def fake_driver_cls() -> type[FakeDriver]:
+    """The FakeDriver class itself, for tests that build it with custom channels
+    (avoids importing across the tests package, which isn't on sys.path)."""
+    return FakeDriver

@@ -1,7 +1,7 @@
 """Tests for the SystemState tag database (src/channels.py)."""
 import pytest
 
-from src.channels import Channel, SystemState
+from pyems.channels import Channel, SystemState
 
 
 def test_get_returns_channel_value():

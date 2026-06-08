@@ -17,8 +17,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from src.channels import SystemState
-from src.controllers.base import Controller
+from pyems.channels import SystemState
+from pyems.controllers.base import Controller
 
 logger = logging.getLogger(__name__)
 

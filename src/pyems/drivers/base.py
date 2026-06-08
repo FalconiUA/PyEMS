@@ -5,7 +5,7 @@ Modbus registers, CAN frames, MQTT topics — all hidden behind this interface.
 """
 from abc import ABC, abstractmethod
 
-from src.channels import SystemState
+from pyems.channels import SystemState
 
 
 class Driver(ABC):

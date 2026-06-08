@@ -54,8 +54,26 @@ Modbus register maps live in `profiles/*.yaml`, never hardcoded in Python.
 Adding a device model = add a YAML, zero code changes. Site-specific values
 (addresses, setpoints, safety thresholds) live in `config/site.yaml`.
 
+## Project layout & packaging
+
+src-layout, installable package `pyems`:
+
+    src/pyems/        # the package — import as `from pyems.<module> import ...`
+    tests/            # pytest suite (in-memory fakes, no hardware)
+    profiles/         # device register maps (YAML data)
+    config/           # site.yaml (per-installation values)
+
+Imports use the real package name (`from pyems.drivers... import`), never
+`from src...`. The package is resolved via an editable install, not sys.path
+hacks. Data dirs (`profiles/`, `config/`) live at the repo root, outside the
+package; `ems.py` anchors to them via `Path(__file__).parents[2]`.
+
 ## Environment
 
 Run with `.venv/Scripts/python.exe` (global `py`/`python` lacks deps).
+Setup:  `.venv/Scripts/python.exe -m pip install -e .[dev]`
+Tests:  `.venv/Scripts/python.exe -m pytest`  (config in pyproject.toml)
+Run:    `pyems` console script, or `python -m pyems.ems`.
+
 Production target: Raspberry Pi + PREEMPT_RT; keep the fast control loop free of
 blocking bus I/O (see `CachedDriver`).

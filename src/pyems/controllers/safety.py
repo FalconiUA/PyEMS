@@ -26,9 +26,9 @@ IEC 61131-3 equivalent:
 """
 import logging
 
-from src.channels import SystemState
-from src.controllers.base import Controller
-from src.drivers.cached import COMMS_AGE_CHANNEL
+from pyems.channels import SystemState
+from pyems.controllers.base import Controller
+from pyems.drivers.cached import COMMS_AGE_CHANNEL
 
 logger = logging.getLogger(__name__)
 

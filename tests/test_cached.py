@@ -2,9 +2,9 @@
 import threading
 import time
 
-from src.channels import Channel, SystemState
-from src.drivers.base import Driver
-from src.drivers.cached import COMMS_AGE_CHANNEL, CachedDriver
+from pyems.channels import Channel, SystemState
+from pyems.drivers.base import Driver
+from pyems.drivers.cached import COMMS_AGE_CHANNEL, CachedDriver
 
 
 class FakeInner(Driver):

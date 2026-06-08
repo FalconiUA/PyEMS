@@ -13,18 +13,19 @@ from pathlib import Path
 
 import yaml
 
-from src.channels import Channel, SystemState
-from src.controllers.grid_export_limit import GridExportLimitController
-from src.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
-from src.drivers.cached import CachedDriver
-from src.drivers.composite import CompositeDriver
-from src.drivers.modbus_device import ModbusDeviceDriver
-from src.logging_config import setup_logging
-from src.scheduler import Scheduler, Task
+from pyems.channels import Channel, SystemState
+from pyems.controllers.grid_export_limit import GridExportLimitController
+from pyems.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
+from pyems.drivers.cached import CachedDriver
+from pyems.drivers.composite import CompositeDriver
+from pyems.drivers.modbus_device import ModbusDeviceDriver
+from pyems.logging_config import setup_logging
+from pyems.scheduler import Scheduler, Task
 
 logger = logging.getLogger(__name__)
 
-ROOT = Path(__file__).resolve().parent.parent
+# src/pyems/ems.py → parents[2] is the repo root holding profiles/ and config/.
+ROOT = Path(__file__).resolve().parents[2]
 PROFILES = ROOT / "profiles"
 DEFAULT_SITE = ROOT / "config" / "site.yaml"
 
@@ -103,6 +104,11 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     return Scheduler(tasks=[safety_task, fast_task], state=state, driver=driver)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console entry point (see [project.scripts] in pyproject.toml)."""
     setup_logging()
     build_ems().run()
+
+
+if __name__ == "__main__":
+    main()

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import logging
 
-from src.channels import Channel, SystemState
-from src.drivers.base import Driver
+from pyems.channels import Channel, SystemState
+from pyems.drivers.base import Driver
 
 logger = logging.getLogger(__name__)
 

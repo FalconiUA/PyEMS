@@ -16,8 +16,8 @@ from pathlib import Path
 import yaml
 from pymodbus.client import ModbusSerialClient, ModbusTcpClient
 
-from src.channels import Channel, SystemState
-from src.drivers.base import Driver
+from pyems.channels import Channel, SystemState
+from pyems.drivers.base import Driver
 
 logger = logging.getLogger(__name__)
 

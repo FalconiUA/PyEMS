@@ -1,6 +1,6 @@
 """Tests for the PRIORITY 0 safety interlock (src/controllers/safety.py)."""
-from src.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
-from src.drivers.cached import COMMS_AGE_CHANNEL
+from pyems.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
+from pyems.drivers.cached import COMMS_AGE_CHANNEL
 
 
 def make_safety():
@@ -35,7 +35,7 @@ def test_trip_then_release(state):
 
 
 def test_caps_multiple_units():
-    from src.channels import Channel, SystemState
+    from pyems.channels import Channel, SystemState
 
     chans = [
         Channel("pv1.WSet", writable=True, min_val=0, max_val=1e5),
