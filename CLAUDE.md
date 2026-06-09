@@ -48,6 +48,33 @@ controller class reusable across any device. Example: `GridExportLimitController
 binds `connection_point_active_power_channel`, `unit_active_power_channel`,
 `unit_active_power_setpoint_channel`.
 
+## Setpoint arbitration (PowerAllocator)
+
+Controllers do **not** write unit setpoint channels (e.g. `pv.WSet`) directly —
+several scenarios may legitimately command the same setpoint in one scan cycle,
+so "last writer wins" is unacceptable. Instead each controller **posts a
+request** onto a `RequestBoard`: a standing claim on one setpoint channel keyed
+by the requester's name, carrying a hard range (`min_w`/`max_w`), an optional
+preferred value (`target_w`), a `priority` (0 = highest, reserved for safety),
+and an optional `ttl_s`. A claim persists across cycles until replaced,
+withdrawn, or expired, so a slow task can keep a claim alive between its runs.
+All requests use the **generating-unit convention**: positive active power =
+injection into the AC bus (for storage, `P > 0` discharge, `P < 0` charge).
+
+Once per cycle, after all tasks and before the driver flush, the `PowerAllocator`
+resolves each channel and is its **sole writer**. Resolution (see
+`src/pyems/allocation/`): sort requests by `(priority, requester)`; intersect
+ranges starting from the device envelope `[p_min_w, p_max_w]` — a higher-priority
+constraint that conflicts discards the lower one entirely (never split the
+difference); take the target from the first honored request that has one, else
+hold the last setpoint (or `default_w` when there are no requests at all); then
+apply per-unit deadband and ramp gradient. A priority-0 (safety) forced value
+bypasses deadband and ramp so it lands exactly, in one cycle. Per-channel
+envelope, ramp, deadband and default live in the `allocation:` section of
+`site.yaml`, not in any controller. Controllers still read measurements and write
+status tags (e.g. `sys.safe_mode`) via `state`; only writable unit setpoints go
+through the board.
+
 ## Device profiles are data
 
 Modbus register maps live in `profiles/*.yaml`, never hardcoded in Python.

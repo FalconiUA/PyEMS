@@ -44,24 +44,47 @@ class Scheduler:
     Tasks execute in priority order (lowest number first) each cycle tick.
     """
 
-    def __init__(self, tasks: list[Task], state: SystemState, driver) -> None:
+    def __init__(
+        self,
+        tasks: list[Task],
+        state: SystemState,
+        driver,
+        allocator=None,
+        board=None,
+    ) -> None:
         self._tasks = sorted(tasks, key=lambda t: t.priority)
         self._state = state
         self._driver = driver
+        # Optional setpoint-arbitration stage. When None, behavior is as before
+        # (direct controller writes) — keeps the class usable standalone and lets
+        # pre-allocator tests pass unchanged.
+        self._allocator = allocator
+        self._board = board
         self._overrunning = False  # last cycle-overrun state — log on transition
 
     def step(self, now: float) -> None:
         """One IEC scan cycle: read inputs → run due tasks (priority order) →
-        write outputs. Extracted from run() so a single cycle is testable."""
+        arbitrate setpoint requests → write outputs. Extracted from run() so a
+        single cycle is testable."""
         # read all inputs first
         self._driver.read_state(self._state)
+
+        # stamp the board's cycle time so controllers can post without `now`
+        if self._board is not None:
+            self._board.tick(now)
 
         # execute due tasks in priority order
         for task in self._tasks:
             if task.is_due(now):
                 for ctrl in task.controllers:
-                    ctrl.execute(self._state)
+                    ctrl.execute(self._state, self._board)
                 task.mark_ran(now)
+
+        # arbitrate contending requests into one setpoint per channel. Runs every
+        # cycle unconditionally — tasks may skip cycles, arbitration may not
+        # (TTLs and ramps evolve every cycle).
+        if self._allocator is not None:
+            self._allocator.resolve(self._state, now)
 
         # write all outputs last
         self._driver.write_setpoints(self._state)

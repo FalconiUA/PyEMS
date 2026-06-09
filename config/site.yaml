@@ -11,7 +11,7 @@ control:
 
 export_limit:
   limit_w: 50000.0          # max active power export at the connection point
-  p_max_w: 100000.0         # unit maximum active power (RfG Maximum Capacity)
+  priority: 5               # grid-code compliance band (0 safety, 1-9 compliance)
   # Tag bindings (IEC VAR_INPUT/VAR_OUTPUT mapping). These name the namespaced
   # channels (<device id>.<field>) the controller reads and drives, so the same
   # controller class serves any device wiring.
@@ -24,6 +24,19 @@ safety:
   # Generating-unit active-power setpoints the interlock caps on a stale-bus trip.
   unit_active_power_setpoint_channels:
     - pv.WSet
+
+# Setpoint arbitration (PowerAllocator). The allocator is the SOLE writer of
+# these setpoint channels: controllers post requests, it merges them by priority
+# and applies the per-unit device envelope, ramp gradient and deadband here
+# (formerly scattered across controllers).
+allocation:
+  channels:
+    - setpoint_channel: pv.WSet
+      p_min_w: 0.0             # device envelope lower bound
+      p_max_w: 100000.0        # device envelope upper bound (RfG Maximum Capacity)
+      default_w: 100000.0      # value when no request exists (PV: run free)
+      ramp_rate_w_per_s: 5000.0
+      deadband_w: 200.0
 
 # Field devices on this site. profile = path under profiles/ (the register map).
 # id = instance namespace: it replaces the profile's class prefix so identical
