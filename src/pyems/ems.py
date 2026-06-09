@@ -13,6 +13,8 @@ from pathlib import Path
 
 import yaml
 
+from pyems.allocation.allocator import PowerAllocator, SetpointChannelConfig
+from pyems.allocation.request import RequestBoard
 from pyems.channels import Channel, SystemState
 from pyems.controllers.grid_export_limit import GridExportLimitController
 from pyems.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
@@ -30,14 +32,99 @@ PROFILES = ROOT / "profiles"
 DEFAULT_SITE = ROOT / "config" / "site.yaml"
 
 
+def required_channels(site: dict) -> list[str]:
+    """All tags the controllers will read/drive, per site.yaml bindings.
+
+    Used to fail fast at startup: a typo in a binding must blow up here, not
+    mid-control as a KeyError deep inside a controller on live hardware.
+    """
+    exp_cfg = site["export_limit"]
+    safe_cfg = site["safety"]
+    alloc_cfg = site["allocation"]
+    tags = [
+        exp_cfg["connection_point_active_power_channel"],
+        exp_cfg["unit_active_power_channel"],
+        exp_cfg["unit_active_power_setpoint_channel"],
+        SAFE_MODE_CHANNEL,
+        *safe_cfg["unit_active_power_setpoint_channels"],
+        *(ch["setpoint_channel"] for ch in alloc_cfg["channels"]),
+    ]
+    return tags
+
+
+def validate_bindings(site: dict, available: list[str]) -> None:
+    """Raise if any controller-bound tag is absent from the tag pool."""
+    pool = set(available)
+    missing = [t for t in required_channels(site) if t not in pool]
+    if missing:
+        raise ValueError(
+            f"site.yaml binds tags not present in the device tag pool: {missing}. "
+            f"Check the bindings against the device profile channels."
+        )
+
+
+def build_tasks(site: dict) -> list[Task]:
+    """Build the control tasks (safety + export-limit) from a site config dict.
+
+    Shared by build_ems() (real Modbus) and the simulation harness, so both
+    exercise the *same* controllers and tuning — the sim verifies production.
+    """
+    exp_cfg = site["export_limit"]
+    safe_cfg = site["safety"]
+    fast_cycle_s = site["control"]["fast_cycle_s"]
+
+    # PRIORITY 0 interlock — runs first, asserts safe state on a dead bus.
+    safety_task = Task(
+        name="safety",
+        interval_s=fast_cycle_s,
+        priority=0,
+        controllers=[
+            SafetyController(
+                max_comms_age_s=safe_cfg["max_comms_age_s"],
+                safe_active_power_w=exp_cfg["limit_w"],  # export ≤ limit even at zero load
+                unit_active_power_setpoint_channels=safe_cfg["unit_active_power_setpoint_channels"],
+            ),
+        ],
+    )
+
+    fast_task = Task(
+        name="fast",
+        interval_s=fast_cycle_s,
+        priority=1,
+        controllers=[
+            GridExportLimitController(
+                name="export_limit",
+                priority=exp_cfg["priority"],
+                export_limit_w=exp_cfg["limit_w"],
+                connection_point_active_power_channel=exp_cfg["connection_point_active_power_channel"],
+                unit_active_power_channel=exp_cfg["unit_active_power_channel"],
+                unit_active_power_setpoint_channel=exp_cfg["unit_active_power_setpoint_channel"],
+            ),
+        ],
+    )
+    return [safety_task, fast_task]
+
+
+def build_allocation(site: dict) -> tuple[PowerAllocator, RequestBoard]:
+    """Build the RequestBoard + PowerAllocator from the `allocation` section.
+
+    The board (where controllers post) and the allocator (sole writer of the
+    setpoint channels) share the same channel list, so a typo is impossible.
+    """
+    fast_cycle_s = site["control"]["fast_cycle_s"]
+    configs = [
+        SetpointChannelConfig(**ch) for ch in site["allocation"]["channels"]
+    ]
+    board = RequestBoard([c.setpoint_channel for c in configs])
+    allocator = PowerAllocator(configs, board, cycle_s=fast_cycle_s)
+    return allocator, board
+
+
 def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     logger.info("Building EMS from %s", site_path)
     site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8"))
 
     ctrl_cfg = site["control"]
-    exp_cfg = site["export_limit"]
-    safe_cfg = site["safety"]
-    fast_cycle_s = ctrl_cfg["fast_cycle_s"]
 
     # Field devices from site config — one ModbusDeviceDriver per entry.
     # dev["id"] namespaces the device's tags (pv.W → pv1.W) so identical
@@ -67,41 +154,21 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     ]
     state = SystemState(channels)
 
-    # PRIORITY 0 interlock — runs first, asserts safe state on a dead bus.
-    safety_task = Task(
-        name="safety",
-        interval_s=fast_cycle_s,
-        priority=0,
-        controllers=[
-            SafetyController(
-                max_comms_age_s=safe_cfg["max_comms_age_s"],
-                safe_active_power_w=exp_cfg["limit_w"],  # export ≤ limit even at zero load
-                unit_active_power_setpoint_channels=safe_cfg["unit_active_power_setpoint_channels"],
-            ),
-        ],
-    )
+    # Fail fast: every controller-bound tag must exist before we start driving
+    # hardware (a typo must fail here, not as a mid-cycle KeyError on the bus).
+    validate_bindings(site, [c.name for c in channels])
 
-    fast_task = Task(
-        name="fast",
-        interval_s=fast_cycle_s,
-        priority=1,
-        controllers=[
-            GridExportLimitController(
-                cycle_s=fast_cycle_s,
-                export_limit_w=exp_cfg["limit_w"],
-                p_max_w=exp_cfg["p_max_w"],
-                connection_point_active_power_channel=exp_cfg["connection_point_active_power_channel"],
-                unit_active_power_channel=exp_cfg["unit_active_power_channel"],
-                unit_active_power_setpoint_channel=exp_cfg["unit_active_power_setpoint_channel"],
-            ),
-        ],
-    )
+    tasks = build_tasks(site)
+    allocator, board = build_allocation(site)
 
     logger.info(
-        "EMS built: %d devices, %d channels, tasks=%s",
-        len(device_drivers), len(channels), [safety_task.name, fast_task.name],
+        "EMS built: %d devices, %d channels, tasks=%s, allocator channels=%s",
+        len(device_drivers), len(channels), [t.name for t in tasks],
+        allocator.channels,
     )
-    return Scheduler(tasks=[safety_task, fast_task], state=state, driver=driver)
+    return Scheduler(
+        tasks=tasks, state=state, driver=driver, allocator=allocator, board=board
+    )
 
 
 def main() -> None:

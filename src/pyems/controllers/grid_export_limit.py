@@ -25,10 +25,7 @@ IEC 61131-3 equivalent:
       export_limit_w       : REAL;   (* allowed export magnitude, >= 0 *)
     END_VAR
     VAR_OUTPUT
-      p_setpoint_w : REAL;           (* active power setpoint to the unit *)
-    END_VAR
-    VAR
-      last_setpoint : REAL;          (* RETAIN: persists between cycles *)
+      p_setpoint_cap_w : REAL;       (* upper bound posted as a request *)
     END_VAR
   END_FUNCTION_BLOCK
 
@@ -38,14 +35,21 @@ Control law (feed-forward, self-correcting each scan):
   power setpoint is:
         p_setpoint = p_unit + (P_cp - P_cp_min)
                    = p_unit + P_cp + export_limit_w
-  When not over-exporting this exceeds p_unit → clamps to P_max → unit runs
-  free. Because p_unit is re-measured every cycle, the loop converges (deadbeat).
+  Because p_unit is re-measured every cycle, the loop converges (deadbeat).
+
+This controller is a **pure constraint**: it computes the cap and posts it as an
+upper bound (`max_w`) request, expressing no preferred value. The PowerAllocator
+owns the setpoint channel and applies the device envelope (P_max), ramp limit,
+deadband, and arbitration against other requesters. A lower-priority target
+request (e.g. a TOU plan) naturally clamps under this cap — no special-casing.
+The old safe-mode yield is gone: safety now posts a priority-0 claim the
+allocator honors above this one.
 """
 import logging
 
+from pyems.allocation.request import ActivePowerRequest, RequestBoard
 from pyems.channels import SystemState
 from pyems.controllers.base import Controller
-from pyems.controllers.safety import SAFE_MODE_CHANNEL
 
 logger = logging.getLogger(__name__)
 
@@ -53,76 +57,62 @@ logger = logging.getLogger(__name__)
 class GridExportLimitController(Controller):
     def __init__(
         self,
-        cycle_s: float,
+        name: str,
+        priority: int,
         export_limit_w: float,
-        p_max_w: float,
         connection_point_active_power_channel: str,
         unit_active_power_channel: str,
         unit_active_power_setpoint_channel: str,
         deadband_w: float = 200.0,
-        ramp_rate_w_per_s: float = 5000.0,
     ) -> None:
         if export_limit_w < 0:
             raise ValueError("export_limit_w must be >= 0 (magnitude)")
+        self._name = name              # requester key on the board (unique per instance)
+        self._priority = priority      # grid-code compliance band (e.g. 5)
         self._export_limit_w = export_limit_w
-        self._p_max_w = p_max_w  # unit maximum active power (RfG Maximum Capacity)
         # IEC VAR_INPUT/VAR_OUTPUT binding — which tags this instance reads/drives.
         # Set per device from site.yaml, so the same class serves any unit.
-        # All three are ACTIVE power (P, W) — distinct from reactive (Q) / apparent (S).
+        # All are ACTIVE power (P, W) — distinct from reactive (Q) / apparent (S).
         self._cp_active_power_ch = connection_point_active_power_channel
         self._unit_active_power_ch = unit_active_power_channel
         self._setpoint_ch = unit_active_power_setpoint_channel
+        # Hysteresis for the ENGAGED/RELEASED log transition only (control
+        # deadband lives in the channel's allocator config, not here).
         self._deadband_w = deadband_w
-        self._max_ramp = ramp_rate_w_per_s * cycle_s  # active power gradient limit
-        # Fail-safe default: full power = no curtailment until first scan computes.
-        self._last_setpoint = p_max_w  # VAR RETAIN
         self._curtailing = False  # last state — log only on transition, not per cycle
 
-    def execute(self, state: SystemState) -> None:
-        # Yield to the PRIORITY 0 safety interlock: when tripped, the
-        # SafetyController owns the setpoint. Resync RETAIN so we resume smoothly
-        # (ramp up from the forced safe value, not from a stale pre-trip target).
-        if state.get(SAFE_MODE_CHANNEL) >= 0.5:
-            self._last_setpoint = state.get(self._setpoint_ch)
-            return
-
+    def execute(self, state: SystemState, board: RequestBoard) -> None:
         # VAR_INPUT reads (P = active power)
         p_cp = state.get(self._cp_active_power_ch)      # + import, - export (connection point)
         p_unit = state.get(self._unit_active_power_ch)  # actual unit active power
 
-        # feed-forward target setpoint (see module docstring derivation)
-        target = p_unit + p_cp + self._export_limit_w
+        # feed-forward cap (see module docstring derivation). Lower-bounded at 0
+        # (a negative export cap would be meaningless); the unit's P_max upper
+        # bound is enforced by the allocator's device envelope.
+        cap = max(0.0, p_unit + p_cp + self._export_limit_w)
 
-        # clamp to unit active-power limits (0 .. P_max)
-        target = max(0.0, min(self._p_max_w, target))
-
-        # deadband: ignore micro-adjustments to avoid hunting the setpoint
-        if abs(target - self._last_setpoint) < self._deadband_w:
-            target = self._last_setpoint
-
-        # rate-limit (active power gradient) — never slam the setpoint
-        delta = target - self._last_setpoint
-        delta = max(-self._max_ramp, min(self._max_ramp, delta))
-        setpoint = self._last_setpoint + delta
-
-        self._last_setpoint = setpoint  # persist for next cycle (RETAIN)
+        # VAR_OUTPUT: post the cap as a pure upper-bound constraint (no target).
+        board.post(
+            self._setpoint_ch,
+            ActivePowerRequest(
+                requester=self._name,
+                priority=self._priority,
+                max_w=cap,  # min stays -inf; no target_w
+            ),
+        )
 
         # Log curtailment as a state transition. We are actually curtailing only
         # when the cap holds production BELOW what the unit is currently making
-        # (setpoint < measured P) — not merely when setpoint < P_max, since the
-        # deadbeat law usually sits below P_max even when running free.
-        curtailing = setpoint < p_unit - self._deadband_w
+        # (cap < measured P) — with hysteresis so the log does not flap.
+        curtailing = cap < p_unit - self._deadband_w
         if curtailing and not self._curtailing:
             logger.info(
                 "Export-limit ENGAGED: P_cp=%.0f W, capping %s to %.0f W (limit %.0f W)",
-                p_cp, self._setpoint_ch, setpoint, self._export_limit_w,
+                p_cp, self._setpoint_ch, cap, self._export_limit_w,
             )
         elif not curtailing and self._curtailing:
-            logger.info("Export-limit RELEASED: %s back to P_max", self._setpoint_ch)
+            logger.info("Export-limit RELEASED: %s cap above production", self._setpoint_ch)
         self._curtailing = curtailing
         logger.debug(
-            "%s: P_cp=%.0f P_unit=%.0f -> setpoint=%.0f W", self._setpoint_ch, p_cp, p_unit, setpoint
+            "%s: P_cp=%.0f P_unit=%.0f -> cap=%.0f W", self._setpoint_ch, p_cp, p_unit, cap
         )
-
-        # VAR_OUTPUT write
-        state.set(self._setpoint_ch, setpoint)

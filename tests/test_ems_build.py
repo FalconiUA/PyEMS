@@ -41,5 +41,9 @@ def test_build_ems_wires_scheduler(monkeypatch):
         names = set(sched._state.snapshot())
         for tag in ("grid.W", "pv.W", "pv.WSet", "sys.safe_mode", "sys.comms_age_s"):
             assert tag in names
+        # allocator + board wired from the allocation section, owning pv.WSet
+        assert sched._allocator is not None
+        assert sched._board is not None
+        assert sched._allocator.channels == ["pv.WSet"]
     finally:
         sched._driver.disconnect()

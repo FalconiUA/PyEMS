@@ -11,7 +11,7 @@ class RecordingController(Controller):
         self._label = label
         self._order = order
 
-    def execute(self, state: SystemState) -> None:
+    def execute(self, state: SystemState, board=None) -> None:
         self._order.append(self._label)
 
 
@@ -51,10 +51,38 @@ def test_step_reads_then_writes(state, fake_driver):
     fake_driver.measurements = {"grid.W": -60000.0, "pv.W": 60000.0}
 
     class CopyController(Controller):
-        def execute(self, s: SystemState) -> None:
+        def execute(self, s: SystemState, board=None) -> None:
             # echo a measurement into the writable setpoint
             s.set("pv.WSet", s.get("pv.W"))
 
     task = Task("t", 1.0, priority=1, controllers=[CopyController()])
     Scheduler([task], state, fake_driver).step(now=0.0)
     assert fake_driver.written["pv.WSet"] == 60000.0
+
+
+def test_step_runs_allocator_after_tasks_before_write(state, fake_driver):
+    """Cycle order: tasks → allocator.resolve → driver write. The allocator's
+    resolved value (not a controller's direct write) is what reaches the driver."""
+    events: list[str] = []
+
+    class TaskController(Controller):
+        def execute(self, s: SystemState, board) -> None:
+            events.append("task")
+
+    class RecordingAllocator:
+        def resolve(self, s: SystemState, now: float) -> None:
+            events.append("resolve")
+            s.set("pv.WSet", 42000.0)
+
+    class RecordingBoard:
+        def tick(self, now: float) -> None:
+            events.append("tick")
+
+    task = Task("t", 1.0, priority=1, controllers=[TaskController()])
+    sched = Scheduler(
+        [task], state, fake_driver,
+        allocator=RecordingAllocator(), board=RecordingBoard(),
+    )
+    sched.step(now=0.0)
+    assert events == ["tick", "task", "resolve"]
+    assert fake_driver.written["pv.WSet"] == 42000.0  # allocator's value, flushed last
