@@ -2,6 +2,7 @@ let site = null;
 let profiles = [];
 let profileRequirements = [];
 let liveRows = [];
+let errorLog = [];
 let currentProfile = null;
 let liveTimer = null;
 const $ = (id) => document.getElementById(id);
@@ -13,6 +14,27 @@ function setStatus(message, kind = "") {
   const el = $("status");
   el.textContent = message;
   el.className = "status" + (kind ? " " + kind : "");
+}
+function rememberErrorEntry(entry) {
+  if (!entry) return false;
+  const exists = errorLog.some((item) => item.id === entry.id && item.source === entry.source);
+  if (!exists) errorLog = [entry, ...errorLog].slice(0, 100);
+  renderLogs();
+  return true;
+}
+function rememberClientError(message) {
+  return rememberErrorEntry({
+    id: `browser-${Date.now()}`,
+    logged_at: new Date().toLocaleString(),
+    level: "error",
+    source: "browser",
+    message,
+  });
+}
+function handleError(error) {
+  const message = error && error.message ? error.message : String(error);
+  if (!error || !error.logged) rememberClientError(message);
+  setStatus(message, "error");
 }
 function parseNum(value) {
   const normalized = String(value ?? "").replace(",", ".").trim();
@@ -73,6 +95,7 @@ function renderAll() {
   renderSiteYaml();
   renderProfileSelector();
   renderRealtime();
+  renderLogs();
 }
 
 function renderScenario() {
@@ -202,6 +225,20 @@ function renderLiveRows(rows) {
     </tr>
   `).join("");
 }
+function renderLogs() {
+  const rows = $("errorLogRows");
+  if (!rows) return;
+  const empty = $("errorLogEmpty");
+  if (empty) empty.hidden = errorLog.length > 0;
+  rows.innerHTML = errorLog.map((entry) => `
+    <tr>
+      <td class="nowrap">${esc(entry.logged_at)}</td>
+      <td>${esc(entry.source)}</td>
+      <td><span class="tag bad">${esc(entry.level || "error")}</span></td>
+      <td class="log-message">${esc(entry.message)}</td>
+    </tr>
+  `).join("");
+}
 
 function gatherDevices() {
   return [...document.querySelectorAll("[data-device-index]")].map((row) => {
@@ -277,8 +314,23 @@ function gatherProfile() {
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || response.statusText);
+  let data = {};
+  try {
+    data = await response.json();
+  } catch {
+    data = {};
+  }
+  if (!response.ok) {
+    const error = new Error(data.error || response.statusText);
+    if (data.error_entry) error.logged = rememberErrorEntry(data.error_entry);
+    throw error;
+  }
+  return data;
+}
+async function loadErrorLog() {
+  const data = await api("/api/error-log");
+  errorLog = data.entries || [];
+  renderLogs();
   return data;
 }
 async function loadConfig() {
@@ -290,6 +342,7 @@ async function loadConfig() {
   liveRows = data.live_rows;
   renderAll();
   await loadSelectedProfile();
+  await loadErrorLog();
   setStatus(data.validation.ok ? "Configuration loaded." : data.validation.error, data.validation.ok ? "ok" : "warn");
 }
 async function saveConfig() {
@@ -335,7 +388,7 @@ async function startLive() {
   await api("/api/live/start", { method: "POST", body: "{}" });
   await refreshLive();
   if (liveTimer) clearInterval(liveTimer);
-  liveTimer = setInterval(refreshLive, 1000);
+  liveTimer = setInterval(() => refreshLive().catch(handleError), 1000);
   setStatus("Live read is running.", "ok");
 }
 async function refreshLive() {
@@ -348,6 +401,12 @@ async function stopLive() {
   liveTimer = null;
   await api("/api/live/stop", { method: "POST", body: "{}" });
   setStatus("Live read stopped.", "ok");
+}
+async function clearErrorLog() {
+  const data = await api("/api/error-log/clear", { method: "POST", body: "{}" });
+  errorLog = data.entries || [];
+  renderLogs();
+  setStatus("Error log cleared.", "ok");
 }
 function showView(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === name));
@@ -362,18 +421,20 @@ document.addEventListener("change", async (event) => {
     renderRealtime();
   }
   if (id === "scenario.pid_tuning") renderSiteYaml();
-  if (event.target.id === "profileDeviceSelect") loadSelectedProfile().catch((error) => setStatus(error.message, "error"));
+  if (event.target.id === "profileDeviceSelect") loadSelectedProfile().catch(handleError);
 });
 document.addEventListener("click", async (event) => {
   const target = event.target;
   if (target.matches(".tab")) showView(target.dataset.view);
-  if (target.id === "reloadBtn") loadConfig().catch((error) => setStatus(error.message, "error"));
-  if (target.id === "saveBtn" || target.id === "saveSiteBtn") saveConfig().catch((error) => setStatus(error.message, "error"));
-  if (target.id === "testReadBtn") testRead().catch((error) => setStatus(error.message, "error"));
-  if (target.id === "startLiveBtn") startLive().catch((error) => setStatus(error.message, "error"));
-  if (target.id === "refreshLiveBtn") refreshLive().catch((error) => setStatus(error.message, "error"));
-  if (target.id === "stopLiveBtn") stopLive().catch((error) => setStatus(error.message, "error"));
-  if (target.id === "saveProfileBtn") saveProfile().catch((error) => setStatus(error.message, "error"));
+  if (target.id === "reloadBtn") loadConfig().catch(handleError);
+  if (target.id === "saveBtn" || target.id === "saveSiteBtn") saveConfig().catch(handleError);
+  if (target.id === "testReadBtn") testRead().catch(handleError);
+  if (target.id === "startLiveBtn") startLive().catch(handleError);
+  if (target.id === "refreshLiveBtn") refreshLive().catch(handleError);
+  if (target.id === "stopLiveBtn") stopLive().catch(handleError);
+  if (target.id === "saveProfileBtn") saveProfile().catch(handleError);
+  if (target.id === "refreshErrorLogBtn") loadErrorLog().catch(handleError);
+  if (target.id === "clearErrorLogBtn") clearErrorLog().catch(handleError);
   if (target.id === "addDeviceBtn") {
     site.devices.push({ id: "unit" + (site.devices.length + 1), profile: profiles[0] || "", host: "", slave_id: 1 });
     renderAll();
@@ -394,4 +455,4 @@ document.addEventListener("click", async (event) => {
 
 loadPages()
   .then(loadConfig)
-  .catch((error) => setStatus(error.message, "error"));
+  .catch(handleError);

@@ -56,3 +56,21 @@ def test_profile_requirements_report_needed_registers():
     assert ("pv", "pv.W") in expected
     assert ("pv", "pv.WSet") in expected
     assert all(item["present"] for item in requirements)
+
+
+def test_ui_app_error_log_keeps_recent_entries_newest_first(tmp_path):
+    app = ui.UIApp(tmp_path / "site.yaml")
+
+    for idx in range(ui.MAX_ERROR_LOG_ENTRIES + 1):
+        app.record_error("POST /api/test-read", RuntimeError(f"Modbus Error {idx}"))
+
+    entries = app.error_log()
+
+    assert len(entries) == ui.MAX_ERROR_LOG_ENTRIES
+    assert entries[0]["message"] == f"Modbus Error {ui.MAX_ERROR_LOG_ENTRIES}"
+    assert entries[0]["source"] == "POST /api/test-read"
+    assert entries[0]["level"] == "error"
+    assert entries[-1]["message"] == "Modbus Error 1"
+
+    assert app.clear_error_log() == {"ok": True, "entries": []}
+    assert app.error_log() == []

@@ -122,6 +122,8 @@ td input, td select { min-height: 32px; }
 .tag.ok { color: var(--ok); background: #eaf8ef; }
 .tag.warn { color: var(--warn); background: #fff4d5; }
 .tag.bad { color: var(--danger); background: #fff0ef; }
+.empty-state { color: var(--muted); margin: 8px 0 12px; }
+.log-message { white-space: pre-wrap; overflow-wrap: anywhere; }
 .divider { height: 1px; background: var(--line); margin: 14px 0; }
 @media (max-width: 940px) {
   header { align-items: flex-start; flex-direction: column; }

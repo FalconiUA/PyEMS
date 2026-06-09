@@ -35,6 +35,7 @@ DEFAULT_SITE_TEMPLATE = DEFAULT_SITE.parent / "default_site.yaml"
 STATIC_ROOT = Path(__file__).with_name("ui_static")
 AUTO_PID_GAINS = {"kp": 0.4, "ki": 0.08, "kd": 0.0, "tt": 5.0}
 VERY_HIGH_IMPORT_LIMIT_W = 1_000_000_000.0
+MAX_ERROR_LOG_ENTRIES = 100
 
 
 def _deep_merge(default: Any, value: Any) -> Any:
@@ -474,6 +475,8 @@ class UIApp:
         self.site_path = Path(site_path)
         self._lock = threading.Lock()
         self._session: ReadOnlyDeviceSession | None = None
+        self._error_log: list[dict[str, Any]] = []
+        self._next_error_id = 1
 
     def close(self) -> None:
         with self._lock:
@@ -485,6 +488,30 @@ class UIApp:
         saved = save_site(site, self.site_path)
         self.close()
         return saved
+
+    def record_error(self, source: str, exc: Exception) -> dict[str, Any]:
+        message = str(exc) or exc.__class__.__name__
+        with self._lock:
+            entry = {
+                "id": self._next_error_id,
+                "logged_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "level": "error",
+                "source": source.strip() or "ui",
+                "message": message,
+            }
+            self._next_error_id += 1
+            self._error_log.append(entry)
+            self._error_log = self._error_log[-MAX_ERROR_LOG_ENTRIES:]
+            return dict(entry)
+
+    def error_log(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(entry) for entry in reversed(self._error_log)]
+
+    def clear_error_log(self) -> dict[str, Any]:
+        with self._lock:
+            self._error_log.clear()
+        return {"ok": True, "entries": []}
 
     def start_live(self) -> dict[str, Any]:
         with self._lock:
@@ -567,7 +594,9 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def _send_error_json(self, exc: Exception, status: int = HTTPStatus.BAD_REQUEST) -> None:
-            self._send_json({"ok": False, "error": str(exc)}, status)
+            path = urlparse(self.path).path
+            entry = app.record_error(f"{self.command} {path}", exc)
+            self._send_json({"ok": False, "error": str(exc), "error_entry": entry}, status)
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
@@ -581,6 +610,8 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                 elif path == "/api/profile":
                     device_id = query.get("device_id", [""])[0]
                     self._send_json(profile_payload(load_site(app.site_path), device_id))
+                elif path == "/api/error-log":
+                    self._send_json({"ok": True, "entries": app.error_log()})
                 elif path == "/api/live":
                     self._send_json(app.read_live())
                 else:
@@ -606,6 +637,8 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(app.start_live())
                 elif path == "/api/live/stop":
                     self._send_json(app.stop_live())
+                elif path == "/api/error-log/clear":
+                    self._send_json(app.clear_error_log())
                 else:
                     self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
             except Exception as exc:

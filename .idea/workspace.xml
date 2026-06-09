@@ -59,9 +59,16 @@
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
     "vue.rearranger.settings.migration": "true"
+  },
+  "keyToStringList": {
+    "GitStage.ChangesTree.GroupingKeys": [
+      "directory",
+      "module",
+      "repository"
+    ]
   }
 }]]></component>
-  <component name="RunManager" selected="Python tests.Python tests in test_ramp_rate.py">
+  <component name="RunManager" selected="Python tests.All tests (pytest)">
     <configuration name="conftest" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="PyEMS" />
       <option name="ENV_FILES" value="" />
@@ -177,7 +184,7 @@
       <workItem from="1780842314825" duration="2947000" />
       <workItem from="1780950253472" duration="4763000" />
       <workItem from="1780955306525" duration="1350000" />
-      <workItem from="1781032342164" duration="4478000" />
+      <workItem from="1781032342164" duration="8269000" />
     </task>
     <servers />
   </component>
@@ -199,7 +206,7 @@
     </option>
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/PyEMS$All_tests__pytest_.coverage" NAME="All tests (pytest) Coverage Results" MODIFIED="1781035973386" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/PyEMS$All_tests__pytest_.coverage" NAME="All tests (pytest) Coverage Results" MODIFIED="1781042841199" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/PyEMS$conftest.coverage" NAME="conftest Coverage Results" MODIFIED="1780955154098" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/tests" />
     <SUITE FILE_PATH="coverage/PyEMS$.coverage" NAME=" Coverage Results" MODIFIED="1781037978795" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/tests" />
   </component>
