@@ -1,5 +1,7 @@
 """Wiring test for build_ems() (src/ems.py) — no real network."""
 import pyems.drivers.modbus_device as md
+from pyems.controllers.connection_point_power import ConnectionPointPowerController
+from pyems.controllers.grid_export_limit import GridExportLimitController
 from pyems.ems import build_device_drivers, build_ems
 from pyems.scheduler import Scheduler
 
@@ -51,6 +53,9 @@ def test_build_ems_wires_scheduler(monkeypatch):
         assert sched._allocator is not None
         assert sched._board is not None
         assert sched._allocator.channels == ["pv.WSet"]
+        fast_task = next(t for t in sched._tasks if t.name == "fast")
+        assert any(isinstance(c, GridExportLimitController) for c in fast_task.controllers)
+        assert any(isinstance(c, ConnectionPointPowerController) for c in fast_task.controllers)
     finally:
         sched._driver.disconnect()
 

@@ -16,6 +16,8 @@ import yaml
 from pyems.allocation.allocator import PowerAllocator, SetpointChannelConfig
 from pyems.allocation.request import RequestBoard
 from pyems.channels import Channel, SystemState
+from pyems.control.pid import PIDGains
+from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.grid_export_limit import GridExportLimitController
 from pyems.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
 from pyems.drivers.cached import CachedDriver
@@ -32,6 +34,17 @@ PROFILES = ROOT / "profiles"
 DEFAULT_SITE = ROOT / "config" / "site.yaml"
 
 
+_ACTIVE_POWER_BINDING_KEYS = (
+    "connection_point_active_power_channel",
+    "unit_active_power_channel",
+    "unit_active_power_setpoint_channel",
+)
+
+
+def _active_power_binding_channels(controller_cfg: dict) -> list[str]:
+    return [controller_cfg[key] for key in _ACTIVE_POWER_BINDING_KEYS]
+
+
 def required_channels(site: dict) -> list[str]:
     """All tags the controllers will read/drive, per site.yaml bindings.
 
@@ -39,12 +52,12 @@ def required_channels(site: dict) -> list[str]:
     mid-control as a KeyError deep inside a controller on live hardware.
     """
     exp_cfg = site["export_limit"]
+    cp_cfg = site["connection_point_active_power"]
     safe_cfg = site["safety"]
     alloc_cfg = site["allocation"]
     tags = [
-        exp_cfg["connection_point_active_power_channel"],
-        exp_cfg["unit_active_power_channel"],
-        exp_cfg["unit_active_power_setpoint_channel"],
+        *_active_power_binding_channels(exp_cfg),
+        *_active_power_binding_channels(cp_cfg),
         SAFE_MODE_CHANNEL,
         *safe_cfg["unit_active_power_setpoint_channels"],
         *(ch["setpoint_channel"] for ch in alloc_cfg["channels"]),
@@ -64,12 +77,13 @@ def validate_bindings(site: dict, available: list[str]) -> None:
 
 
 def build_tasks(site: dict) -> list[Task]:
-    """Build the control tasks (safety + export-limit) from a site config dict.
+    """Build the control tasks from a site config dict.
 
     Shared by build_ems() (real Modbus) and the simulation harness, so both
     exercise the *same* controllers and tuning — the sim verifies production.
     """
     exp_cfg = site["export_limit"]
+    cp_cfg = site["connection_point_active_power"]
     safe_cfg = site["safety"]
     fast_cycle_s = site["control"]["fast_cycle_s"]
 
@@ -99,6 +113,16 @@ def build_tasks(site: dict) -> list[Task]:
                 connection_point_active_power_channel=exp_cfg["connection_point_active_power_channel"],
                 unit_active_power_channel=exp_cfg["unit_active_power_channel"],
                 unit_active_power_setpoint_channel=exp_cfg["unit_active_power_setpoint_channel"],
+            ),
+            ConnectionPointPowerController(
+                name="connection_point_active_power",
+                priority=cp_cfg["priority"],
+                export_limit_w=cp_cfg["export_limit_w"],
+                import_limit_w=cp_cfg["import_limit_w"],
+                connection_point_active_power_channel=cp_cfg["connection_point_active_power_channel"],
+                unit_active_power_channel=cp_cfg["unit_active_power_channel"],
+                unit_active_power_setpoint_channel=cp_cfg["unit_active_power_setpoint_channel"],
+                gains=PIDGains(**cp_cfg["gains"]),
             ),
         ],
     )

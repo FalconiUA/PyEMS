@@ -19,6 +19,19 @@ export_limit:
   unit_active_power_channel: pv.W                  # generating-unit active power
   unit_active_power_setpoint_channel: pv.WSet      # active power setpoint to the unit
 
+connection_point_active_power:
+  export_limit_w: 50000.0    # max active power export at the connection point
+  import_limit_w: 100000.0   # max active power import at the connection point
+  priority: 10               # target control below the hard export cap
+  gains:
+    kp: 0.4
+    ki: 0.08
+    kd: 0.0
+    tt: 5.0
+  connection_point_active_power_channel: grid.W
+  unit_active_power_channel: pv.W
+  unit_active_power_setpoint_channel: pv.WSet
+
 safety:
   max_comms_age_s: 2.0      # trip to safe state if data older than this
   # Generating-unit active-power setpoints the interlock caps on a stale-bus trip.

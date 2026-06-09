@@ -9,7 +9,16 @@ def make_site():
         "control": {"fast_cycle_s": 1.0},
         "export_limit": {
             "limit_w": 50000.0,
-            "p_max_w": 100000.0,
+            "priority": 5,
+            "connection_point_active_power_channel": "grid.W",
+            "unit_active_power_channel": "pv.W",
+            "unit_active_power_setpoint_channel": "pv.WSet",
+        },
+        "connection_point_active_power": {
+            "export_limit_w": 50000.0,
+            "import_limit_w": 100000.0,
+            "priority": 10,
+            "gains": {"kp": 0.4, "ki": 0.08, "kd": 0.0, "tt": 5.0},
             "connection_point_active_power_channel": "grid.W",
             "unit_active_power_channel": "pv.W",
             "unit_active_power_setpoint_channel": "pv.WSet",
@@ -47,4 +56,12 @@ def test_validate_raises_on_missing_tag():
     site["export_limit"]["unit_active_power_channel"] = "pv.Wx"  # typo
     pool = ["grid.W", "pv.W", "pv.WSet", "sys.safe_mode"]
     with pytest.raises(ValueError, match="pv.Wx"):
+        validate_bindings(site, pool)
+
+
+def test_validate_raises_on_missing_connection_point_active_power_tag():
+    site = make_site()
+    site["connection_point_active_power"]["unit_active_power_setpoint_channel"] = "pv.WSetx"
+    pool = ["grid.W", "pv.W", "pv.WSet", "sys.safe_mode"]
+    with pytest.raises(ValueError, match="pv.WSetx"):
         validate_bindings(site, pool)
