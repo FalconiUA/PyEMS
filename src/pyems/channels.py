@@ -2,7 +2,7 @@
 Channels = IEC 61131-3 §2.4 typed variables with engineering units.
 Each channel is a named tag: battery.soc, inverter.setpoint_w, etc.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

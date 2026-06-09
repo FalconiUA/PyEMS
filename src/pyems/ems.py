@@ -17,10 +17,11 @@ from pyems.allocation.allocator import PowerAllocator, SetpointChannelConfig
 from pyems.allocation.request import RequestBoard
 from pyems.channels import Channel, SystemState
 from pyems.control.pid import PIDGains
+from pyems.controllers.connection_point_import_limit import ConnectionPointImportLimitController
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.grid_export_limit import GridExportLimitController
 from pyems.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
-from pyems.drivers.cached import CachedDriver
+from pyems.drivers.cached import COMMS_AGE_CHANNEL, CachedDriver
 from pyems.drivers.composite import CompositeDriver
 import pyems.drivers.modbus_device as md
 from pyems.logging_config import setup_logging
@@ -40,6 +41,19 @@ _ACTIVE_POWER_BINDING_KEYS = (
     "unit_active_power_setpoint_channel",
 )
 
+EXPORT_LIMIT_MODE = "export_limit"
+IMPORT_LIMIT_MODE = "import_limit"
+
+
+def control_mode(site: dict) -> str:
+    mode = site.get("scenario", {}).get("control_mode", EXPORT_LIMIT_MODE)
+    if mode not in (EXPORT_LIMIT_MODE, IMPORT_LIMIT_MODE):
+        raise ValueError(
+            "scenario.control_mode must be 'export_limit' or 'import_limit', "
+            f"got {mode!r}"
+        )
+    return mode
+
 
 def _active_power_binding_channels(controller_cfg: dict) -> list[str]:
     return [controller_cfg[key] for key in _ACTIVE_POWER_BINDING_KEYS]
@@ -58,6 +72,7 @@ def required_channels(site: dict) -> list[str]:
     tags = [
         *_active_power_binding_channels(exp_cfg),
         *_active_power_binding_channels(cp_cfg),
+        COMMS_AGE_CHANNEL,
         SAFE_MODE_CHANNEL,
         *safe_cfg["unit_active_power_setpoint_channels"],
         *(ch["setpoint_channel"] for ch in alloc_cfg["channels"]),
@@ -86,6 +101,19 @@ def build_tasks(site: dict) -> list[Task]:
     cp_cfg = site["connection_point_active_power"]
     safe_cfg = site["safety"]
     fast_cycle_s = site["control"]["fast_cycle_s"]
+    mode = control_mode(site)
+
+    safe_active_power_w = exp_cfg["limit_w"]
+    if mode == IMPORT_LIMIT_MODE:
+        guarded_channel = safe_cfg["unit_active_power_setpoint_channels"][0]
+        safe_active_power_w = next(
+            (
+                ch["p_min_w"]
+                for ch in site["allocation"]["channels"]
+                if ch["setpoint_channel"] == guarded_channel
+            ),
+            0.0,
+        )
 
     # PRIORITY 0 interlock — runs first, asserts safe state on a dead bus.
     safety_task = Task(
@@ -95,36 +123,54 @@ def build_tasks(site: dict) -> list[Task]:
         controllers=[
             SafetyController(
                 max_comms_age_s=safe_cfg["max_comms_age_s"],
-                safe_active_power_w=exp_cfg["limit_w"],  # export ≤ limit even at zero load
+                safe_active_power_w=safe_active_power_w,
                 unit_active_power_setpoint_channels=safe_cfg["unit_active_power_setpoint_channels"],
             ),
         ],
     )
 
-    fast_task = Task(
-        name="fast",
-        interval_s=fast_cycle_s,
-        priority=1,
-        controllers=[
-            GridExportLimitController(
-                name="export_limit",
-                priority=exp_cfg["priority"],
-                export_limit_w=exp_cfg["limit_w"],
-                connection_point_active_power_channel=exp_cfg["connection_point_active_power_channel"],
-                unit_active_power_channel=exp_cfg["unit_active_power_channel"],
-                unit_active_power_setpoint_channel=exp_cfg["unit_active_power_setpoint_channel"],
-            ),
-            ConnectionPointPowerController(
-                name="connection_point_active_power",
+    fast_controllers = []
+    if mode == EXPORT_LIMIT_MODE:
+        fast_controllers.extend(
+            [
+                GridExportLimitController(
+                    name="export_limit",
+                    priority=exp_cfg["priority"],
+                    export_limit_w=exp_cfg["limit_w"],
+                    connection_point_active_power_channel=exp_cfg["connection_point_active_power_channel"],
+                    unit_active_power_channel=exp_cfg["unit_active_power_channel"],
+                    unit_active_power_setpoint_channel=exp_cfg["unit_active_power_setpoint_channel"],
+                ),
+                ConnectionPointPowerController(
+                    name="connection_point_active_power",
+                    priority=cp_cfg["priority"],
+                    export_limit_w=cp_cfg["export_limit_w"],
+                    import_limit_w=cp_cfg["import_limit_w"],
+                    connection_point_active_power_channel=cp_cfg["connection_point_active_power_channel"],
+                    unit_active_power_channel=cp_cfg["unit_active_power_channel"],
+                    unit_active_power_setpoint_channel=cp_cfg["unit_active_power_setpoint_channel"],
+                    gains=PIDGains(**cp_cfg["gains"]),
+                ),
+            ]
+        )
+    else:
+        fast_controllers.append(
+            ConnectionPointImportLimitController(
+                name="connection_point_import_limit",
                 priority=cp_cfg["priority"],
-                export_limit_w=cp_cfg["export_limit_w"],
                 import_limit_w=cp_cfg["import_limit_w"],
                 connection_point_active_power_channel=cp_cfg["connection_point_active_power_channel"],
                 unit_active_power_channel=cp_cfg["unit_active_power_channel"],
                 unit_active_power_setpoint_channel=cp_cfg["unit_active_power_setpoint_channel"],
-                gains=PIDGains(**cp_cfg["gains"]),
-            ),
-        ],
+                deadband_w=site["allocation"]["channels"][0].get("deadband_w", 200.0),
+            )
+        )
+
+    fast_task = Task(
+        name="fast",
+        interval_s=fast_cycle_s,
+        priority=1,
+        controllers=fast_controllers,
     )
     return [safety_task, fast_task]
 

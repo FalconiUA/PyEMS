@@ -1,0 +1,45 @@
+<div class="toolbar">
+  <label style="min-width:320px">Device profile
+    <select id="profileDeviceSelect"></select>
+  </label>
+  <button class="primary" id="saveProfileBtn">Save profile YAML</button>
+  <button id="addRegisterBtn">Add register</button>
+</div>
+<div class="grid">
+  <div class="panel full">
+    <h2>Required registers for current scenario</h2>
+    <table>
+      <thead><tr><th>Required field</th><th>Expected runtime tag</th><th>Profile channel</th><th>Status</th></tr></thead>
+      <tbody id="profileRequiredRows"></tbody>
+    </table>
+  </div>
+  <div class="panel full">
+    <h2>Profile settings</h2>
+    <div class="fields">
+      <label>model
+        <input id="profile.model" required>
+      </label>
+      <label>protocol
+        <select id="profile.protocol">
+          <option value="modbus_tcp">modbus_tcp</option>
+          <option value="modbus_rtu">modbus_rtu</option>
+        </select>
+      </label>
+      <label>default_port
+        <input id="profile.default_port" type="number" step="1" required>
+      </label>
+    </div>
+  </div>
+  <div class="panel full">
+    <h2>Registers</h2>
+    <p class="lead">Edit device YAML here. Required rows are marked; other rows are optional live measurements.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>required</th><th>channel</th><th>address</th><th>type</th><th>scale</th><th>unit</th><th>access</th><th>min</th><th>max</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="registerRows"></tbody>
+    </table>
+  </div>
+</div>

@@ -1,8 +1,9 @@
 """Wiring test for build_ems() (src/ems.py) — no real network."""
 import pyems.drivers.modbus_device as md
+from pyems.controllers.connection_point_import_limit import ConnectionPointImportLimitController
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.grid_export_limit import GridExportLimitController
-from pyems.ems import build_device_drivers, build_ems
+from pyems.ems import build_device_drivers, build_ems, build_tasks
 from pyems.scheduler import Scheduler
 
 
@@ -83,3 +84,47 @@ def test_build_device_drivers_shares_tcp_client_by_endpoint(monkeypatch):
     assert len(drivers) == 2
     assert len(FakeTcpClient.instances) == 1
     assert drivers[0].connection_identity() is drivers[1].connection_identity()
+
+
+def test_build_tasks_import_mode_uses_only_import_controller():
+    site = {
+        "scenario": {"control_mode": "import_limit"},
+        "control": {"fast_cycle_s": 1.0},
+        "export_limit": {
+            "limit_w": 0.0,
+            "priority": 5,
+            "connection_point_active_power_channel": "grid.W",
+            "unit_active_power_channel": "pv.W",
+            "unit_active_power_setpoint_channel": "pv.WSet",
+        },
+        "connection_point_active_power": {
+            "export_limit_w": 0.0,
+            "import_limit_w": 50000.0,
+            "priority": 10,
+            "gains": {"kp": 0.4, "ki": 0.08, "kd": 0.0, "tt": 5.0},
+            "connection_point_active_power_channel": "grid.W",
+            "unit_active_power_channel": "pv.W",
+            "unit_active_power_setpoint_channel": "pv.WSet",
+        },
+        "safety": {
+            "max_comms_age_s": 2.0,
+            "unit_active_power_setpoint_channels": ["pv.WSet"],
+        },
+        "allocation": {
+            "channels": [
+                {
+                    "setpoint_channel": "pv.WSet",
+                    "p_min_w": 0.0,
+                    "p_max_w": 100000.0,
+                    "default_w": 100000.0,
+                    "deadband_w": 200.0,
+                }
+            ]
+        },
+    }
+
+    fast_task = next(task for task in build_tasks(site) if task.name == "fast")
+
+    assert any(isinstance(c, ConnectionPointImportLimitController) for c in fast_task.controllers)
+    assert not any(isinstance(c, GridExportLimitController) for c in fast_task.controllers)
+    assert not any(isinstance(c, ConnectionPointPowerController) for c in fast_task.controllers)

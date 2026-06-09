@@ -1,0 +1,72 @@
+<div class="toolbar">
+  <button class="primary" id="saveBtn">Save site.yaml</button>
+  <button id="reloadBtn">Reload</button>
+  <button id="testReadBtn">Test read</button>
+</div>
+<div class="grid">
+  <div class="panel full">
+    <h2>Scenario</h2>
+    <p class="lead">Choose one active-power mode. PyEMS derives controller channels, safety claim, and allocation from the selected devices.</p>
+    <div class="fields">
+      <label>Mode
+        <select id="scenario.control_mode">
+          <option value="export_limit">Export limit</option>
+          <option value="import_limit">Import limit</option>
+        </select>
+        <span class="hint">Export limit curtails generation. Import limit raises generation only when grid import is too high.</span>
+      </label>
+      <label id="limitLabel">Limit at connection point, W
+        <input id="scenario.active_power_limit_w" type="number" step="1" min="0" required>
+        <span class="hint">Positive magnitude in watts at the grid connection point.</span>
+      </label>
+      <label>Connection point meter
+        <select id="scenario.connection_point_device_id"></select>
+        <span class="hint">Device that measures P at the grid connection point; expected channel is device.W.</span>
+      </label>
+      <label>Controlled generating unit
+        <select id="scenario.unit_device_id"></select>
+        <span class="hint">Unit that has active power measurement device.W and writable setpoint device.WSet.</span>
+      </label>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Unit envelope</h2>
+    <p class="lead">These values become the single allocation channel for the selected scenario.</p>
+    <div class="fields">
+      <label>Minimum active power, W
+        <input id="allocation.p_min_w" type="number" step="1" required>
+      </label>
+      <label>P_max, W
+        <input id="allocation.p_max_w" type="number" step="1" required>
+      </label>
+      <label>Default active power, W
+        <input id="allocation.default_w" type="number" step="1" required>
+        <span class="hint">Value used when no controller requests a setpoint.</span>
+      </label>
+      <label>Active power gradient, W/s
+        <input id="allocation.ramp_rate_w_per_s" type="number" step="1" min="0" required>
+      </label>
+      <label>Deadband, W
+        <input id="allocation.deadband_w" type="number" step="1" min="0" required>
+      </label>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Generated bindings</h2>
+    <p class="lead">These are generated from the selected devices and written to site.yaml on save.</p>
+    <table>
+      <tbody id="bindingRows"></tbody>
+    </table>
+  </div>
+
+  <div class="panel full">
+    <h2>Required device registers</h2>
+    <p class="lead">Each selected device profile must expose these fields. Open Device profiles to edit addresses, scales, access, and units.</p>
+    <table>
+      <thead><tr><th>Device</th><th>Profile</th><th>Required field</th><th>Expected tag</th><th>Status</th></tr></thead>
+      <tbody id="requirementRows"></tbody>
+    </table>
+  </div>
+</div>

@@ -1,0 +1,376 @@
+let site = null;
+let profiles = [];
+let profileRequirements = [];
+let liveRows = [];
+let currentProfile = null;
+let liveTimer = null;
+const $ = (id) => document.getElementById(id);
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch]));
+}
+function setStatus(message, kind = "") {
+  const el = $("status");
+  el.textContent = message;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+function parseNum(value) {
+  const normalized = String(value ?? "").replace(",", ".").trim();
+  return Number(normalized || 0);
+}
+function setValue(id, value) {
+  const el = $(id);
+  if (el) el.value = value ?? "";
+}
+function scenarioCfg() {
+  site.scenario ||= {};
+  return site.scenario;
+}
+function allocationCfg() {
+  site.allocation ||= { channels: [] };
+  if (!site.allocation.channels.length) {
+    site.allocation.channels.push({ setpoint_channel: "pv.WSet", p_min_w: 0, p_max_w: 100000, default_w: 100000, ramp_rate_w_per_s: 5000, deadband_w: 200 });
+  }
+  return site.allocation.channels[0];
+}
+function deviceOptions(selected, filter = null) {
+  return site.devices
+    .filter((device) => !filter || filter(device))
+    .map((device) => `<option value="${esc(device.id)}"${device.id === selected ? " selected" : ""}>${esc(device.id)} (${esc(device.profile)})</option>`)
+    .join("");
+}
+function profileOptions(selected) {
+  return profiles.map((profile) => `<option value="${esc(profile)}"${profile === selected ? " selected" : ""}>${esc(profile)}</option>`).join("");
+}
+
+async function loadPages() {
+  const views = [...document.querySelectorAll("[data-page]")];
+  await Promise.all(views.map(async (view) => {
+    const response = await fetch(view.dataset.page);
+    if (!response.ok) throw new Error(`Cannot load ${view.dataset.page}`);
+    view.innerHTML = await response.text();
+  }));
+}
+
+function renderAll() {
+  renderScenario();
+  renderSiteYaml();
+  renderProfileSelector();
+  renderRealtime();
+}
+
+function renderScenario() {
+  const scen = scenarioCfg();
+  const alloc = allocationCfg();
+  setValue("scenario.control_mode", scen.control_mode || "export_limit");
+  setValue("scenario.active_power_limit_w", scen.active_power_limit_w ?? 0);
+  $("scenario.connection_point_device_id").innerHTML = deviceOptions(scen.connection_point_device_id, (d) => !String(d.profile).startsWith("inverters/"));
+  $("scenario.unit_device_id").innerHTML = deviceOptions(scen.unit_device_id, (d) => String(d.profile).startsWith("inverters/") || d.id !== scen.connection_point_device_id);
+  setValue("scenario.connection_point_device_id", scen.connection_point_device_id);
+  setValue("scenario.unit_device_id", scen.unit_device_id);
+  setValue("allocation.p_min_w", alloc.p_min_w);
+  setValue("allocation.p_max_w", alloc.p_max_w);
+  setValue("allocation.default_w", alloc.default_w);
+  setValue("allocation.ramp_rate_w_per_s", alloc.ramp_rate_w_per_s);
+  setValue("allocation.deadband_w", alloc.deadband_w);
+  $("limitLabel").firstChild.textContent = scen.control_mode === "import_limit" ? "Import limit at connection point, W" : "Export limit at connection point, W";
+  const cp = scen.connection_point_device_id || "grid";
+  const unit = scen.unit_device_id || "pv";
+  $("bindingRows").innerHTML = [
+    ["Connection point active power input", `${cp}.W`, "Read from the grid connection meter."],
+    ["Unit active power input", `${unit}.W`, "Read from the controlled generating unit."],
+    ["Unit active power setpoint", `${unit}.WSet`, "Only PowerAllocator writes this channel."],
+    ["Safety status", "sys.safe_mode", "1 means communication safety trip."],
+    ["Comms age", "sys.comms_age_s", "Seconds since the last successful Modbus read."],
+  ].map(([name, tag, hint]) => `<tr><td>${esc(name)}</td><td class="nowrap"><strong>${esc(tag)}</strong></td><td>${esc(hint)}</td></tr>`).join("");
+  renderRequirementRows(profileRequirements, "requirementRows");
+}
+
+function renderSiteYaml() {
+  const scen = scenarioCfg();
+  const gains = site.connection_point_active_power.gains || {};
+  setValue("control.fast_cycle_s", site.control.fast_cycle_s);
+  setValue("control.poll_interval_s", site.control.poll_interval_s);
+  setValue("safety.max_comms_age_s", site.safety.max_comms_age_s);
+  setValue("scenario.pid_tuning", scen.pid_tuning || "auto");
+  setValue("scenario.export_priority", scen.export_priority ?? 5);
+  setValue("scenario.regulation_priority", scen.regulation_priority ?? 10);
+  setValue("pid.kp", gains.kp);
+  setValue("pid.ki", gains.ki);
+  setValue("pid.kd", gains.kd);
+  setValue("pid.tt", gains.tt);
+  const manual = (scen.pid_tuning || "auto") === "manual";
+  document.querySelectorAll("#pidFields input").forEach((input) => input.readOnly = !manual);
+  $("deviceRows").innerHTML = site.devices.map((device, idx) => `
+    <tr data-device-index="${idx}">
+      <td><input data-field="id" value="${esc(device.id)}" required></td>
+      <td><select data-field="profile" required>${profileOptions(device.profile)}</select></td>
+      <td><input data-field="host" value="${esc(device.host)}" required></td>
+      <td><input data-field="port" type="number" step="1" value="${device.port ?? ""}"></td>
+      <td><input data-field="slave_id" type="number" step="1" min="0" value="${device.slave_id ?? 1}" required></td>
+      <td><button type="button" data-remove-device="${idx}">Remove</button></td>
+    </tr>
+  `).join("");
+}
+
+function renderProfileSelector() {
+  $("profileDeviceSelect").innerHTML = site.devices.map((device) => `<option value="${esc(device.id)}">${esc(device.id)} - ${esc(device.profile)}</option>`).join("");
+  if (!$("profileDeviceSelect").value && site.devices[0]) $("profileDeviceSelect").value = site.devices[0].id;
+}
+
+function renderRequirementRows(requirements, targetId) {
+  $(targetId).innerHTML = requirements.map((item) => {
+    const tagClass = item.present ? "ok" : "bad";
+    const label = item.present ? `OK @ ${item.address}` : "Missing";
+    return `<tr>
+      <td>${esc(item.device_id)}</td>
+      <td>${esc(item.profile)}</td>
+      <td>${esc(item.field)}</td>
+      <td><strong>${esc(item.expected_tag)}</strong></td>
+      <td><span class="tag ${tagClass}">${esc(label)}</span></td>
+    </tr>`;
+  }).join("");
+}
+
+function renderProfile(profilePayload) {
+  currentProfile = profilePayload;
+  setValue("profile.model", profilePayload.profile.model);
+  setValue("profile.protocol", profilePayload.profile.protocol);
+  setValue("profile.default_port", profilePayload.profile.default_port);
+  $("profileRequiredRows").innerHTML = profilePayload.requirements.map((item) => {
+    const tagClass = item.present ? "ok" : "bad";
+    return `<tr><td>${esc(item.field)}</td><td>${esc(item.expected_tag)}</td><td>${esc(item.profile_channel || "")}</td><td><span class="tag ${tagClass}">${item.present ? "OK" : "Missing"}</span></td></tr>`;
+  }).join("");
+  $("registerRows").innerHTML = profilePayload.profile.registers.map((reg, idx) => {
+    const required = profilePayload.requirements.some((item) => item.register_index === idx);
+    return `<tr data-register-index="${idx}">
+      <td>${required ? '<span class="tag ok">required</span>' : ""}</td>
+      <td><input data-field="channel" value="${esc(reg.channel)}" required></td>
+      <td><input data-field="address" type="number" step="1" value="${reg.address}" required></td>
+      <td><select data-field="type">${["int16","uint16","int32","uint32"].map((t) => `<option value="${t}"${reg.type === t ? " selected" : ""}>${t}</option>`).join("")}</select></td>
+      <td><input data-field="scale" type="number" step="0.0001" value="${reg.scale}" required></td>
+      <td><input data-field="unit" value="${esc(reg.unit ?? "")}"></td>
+      <td><select data-field="access"><option value="read"${reg.access === "read" ? " selected" : ""}>read</option><option value="read_write"${reg.access === "read_write" ? " selected" : ""}>read_write</option></select></td>
+      <td><input data-field="min_val" type="number" step="1" value="${Number.isFinite(reg.min_val) ? reg.min_val : ""}"></td>
+      <td><input data-field="max_val" type="number" step="1" value="${Number.isFinite(reg.max_val) ? reg.max_val : ""}"></td>
+      <td><button type="button" data-remove-register="${idx}">Remove</button></td>
+    </tr>`;
+  }).join("");
+}
+
+function renderRealtime(readData = null) {
+  const scen = scenarioCfg();
+  const devices = site.devices.map((device) => device.id).join(", ");
+  const modeLabel = scen.control_mode === "import_limit" ? "Import limit" : "Export limit";
+  const lastRead = readData ? readData.read_at : "not read yet";
+  $("summary").innerHTML = [
+    [modeLabel, `${scen.active_power_limit_w ?? 0} W`],
+    ["Connection point meter", scen.connection_point_device_id || ""],
+    ["Controlled unit", scen.unit_device_id || ""],
+    ["Devices", devices || "none"],
+    ["Last read", lastRead],
+  ].map(([name, value]) => `<div class="metric"><div class="name">${esc(name)}</div><div class="value">${esc(value)}</div></div>`).join("");
+  renderLiveRows(readData ? readData.rows : liveRows);
+}
+
+function formatValue(value) {
+  if (value === null || value === undefined) return "0";
+  if (typeof value === "number") return Math.abs(value) >= 1000 ? value.toFixed(1) : (Number.isInteger(value) ? String(value) : value.toFixed(3));
+  return String(value);
+}
+function renderLiveRows(rows) {
+  $("liveRows").innerHTML = (rows || []).map((row) => `
+    <tr>
+      <td>${esc(row.device)}</td><td>${esc(row.channel)}</td><td>${esc(formatValue(row.value))}</td>
+      <td>${esc(row.unit)}</td><td><span class="tag">${esc(row.access)}</span></td><td>${esc(row.role)}</td>
+    </tr>
+  `).join("");
+}
+
+function gatherDevices() {
+  return [...document.querySelectorAll("[data-device-index]")].map((row) => {
+    const data = {};
+    for (const input of row.querySelectorAll("[data-field]")) {
+      const field = input.dataset.field;
+      if (field === "port") {
+        if (input.value !== "") data[field] = parseNum(input.value);
+      } else if (field === "slave_id") {
+        data[field] = parseNum(input.value);
+      } else {
+        data[field] = input.value.trim();
+      }
+    }
+    return data;
+  });
+}
+
+function gatherSite() {
+  const next = JSON.parse(JSON.stringify(site));
+  next.devices = gatherDevices();
+  next.scenario = {
+    control_mode: $("scenario.control_mode").value,
+    active_power_limit_w: parseNum($("scenario.active_power_limit_w").value),
+    connection_point_device_id: $("scenario.connection_point_device_id").value,
+    unit_device_id: $("scenario.unit_device_id").value,
+    pid_tuning: $("scenario.pid_tuning").value,
+    export_priority: parseNum($("scenario.export_priority").value),
+    regulation_priority: parseNum($("scenario.regulation_priority").value),
+  };
+  next.control = {
+    fast_cycle_s: parseNum($("control.fast_cycle_s").value),
+    poll_interval_s: parseNum($("control.poll_interval_s").value),
+  };
+  next.safety = { max_comms_age_s: parseNum($("safety.max_comms_age_s").value), unit_active_power_setpoint_channels: [] };
+  next.connection_point_active_power ||= {};
+  next.connection_point_active_power.gains = {
+    kp: parseNum($("pid.kp").value),
+    ki: parseNum($("pid.ki").value),
+    kd: parseNum($("pid.kd").value),
+    tt: parseNum($("pid.tt").value),
+  };
+  next.allocation = { channels: [{
+    setpoint_channel: "",
+    p_min_w: parseNum($("allocation.p_min_w").value),
+    p_max_w: parseNum($("allocation.p_max_w").value),
+    default_w: parseNum($("allocation.default_w").value),
+    ramp_rate_w_per_s: parseNum($("allocation.ramp_rate_w_per_s").value),
+    deadband_w: parseNum($("allocation.deadband_w").value),
+  }] };
+  return next;
+}
+
+function gatherProfile() {
+  return {
+    model: $("profile.model").value.trim(),
+    protocol: $("profile.protocol").value,
+    default_port: parseNum($("profile.default_port").value),
+    registers: [...document.querySelectorAll("[data-register-index]")].map((row) => {
+      const data = {};
+      for (const input of row.querySelectorAll("[data-field]")) {
+        const field = input.dataset.field;
+        if (["address", "scale", "min_val", "max_val"].includes(field)) {
+          if (input.value !== "") data[field] = parseNum(input.value);
+        } else {
+          data[field] = input.value;
+        }
+      }
+      return data;
+    }),
+  };
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+async function loadConfig() {
+  setStatus("Loading configuration...");
+  const data = await api("/api/config");
+  site = data.site;
+  profiles = data.profiles;
+  profileRequirements = data.profile_requirements;
+  liveRows = data.live_rows;
+  renderAll();
+  await loadSelectedProfile();
+  setStatus(data.validation.ok ? "Configuration loaded." : data.validation.error, data.validation.ok ? "ok" : "warn");
+}
+async function saveConfig() {
+  setStatus("Saving site.yaml...");
+  const data = await api("/api/config", { method: "POST", body: JSON.stringify({ site: gatherSite() }) });
+  site = data.site;
+  profiles = data.profiles;
+  profileRequirements = data.profile_requirements;
+  liveRows = data.live_rows;
+  renderAll();
+  await loadSelectedProfile();
+  setStatus("site.yaml saved.", "ok");
+  return data;
+}
+async function loadSelectedProfile() {
+  if (!site || !site.devices.length) return;
+  const deviceId = $("profileDeviceSelect").value || site.devices[0].id;
+  const data = await api(`/api/profile?device_id=${encodeURIComponent(deviceId)}`);
+  renderProfile(data);
+}
+async function saveProfile() {
+  if (!currentProfile) return;
+  setStatus("Saving profile YAML...");
+  const data = await api("/api/profile", { method: "POST", body: JSON.stringify({ profile_path: currentProfile.profile_path, profile: gatherProfile(), device_id: currentProfile.device_id }) });
+  currentProfile = data;
+  renderProfile(data);
+  const cfg = await api("/api/config");
+  profileRequirements = cfg.profile_requirements;
+  renderRequirementRows(profileRequirements, "requirementRows");
+  setStatus("Profile YAML saved.", "ok");
+}
+async function testRead() {
+  await saveConfig();
+  setStatus("Reading devices once...");
+  const data = await api("/api/test-read", { method: "POST", body: "{}" });
+  renderRealtime(data);
+  setStatus(`Read ${data.rows.length} channels in ${data.read_s.toFixed(3)} s.`, "ok");
+  showView("realtime");
+}
+async function startLive() {
+  await saveConfig();
+  setStatus("Starting live read...");
+  await api("/api/live/start", { method: "POST", body: "{}" });
+  await refreshLive();
+  if (liveTimer) clearInterval(liveTimer);
+  liveTimer = setInterval(refreshLive, 1000);
+  setStatus("Live read is running.", "ok");
+}
+async function refreshLive() {
+  const data = await api("/api/live");
+  renderRealtime(data);
+  return data;
+}
+async function stopLive() {
+  if (liveTimer) clearInterval(liveTimer);
+  liveTimer = null;
+  await api("/api/live/stop", { method: "POST", body: "{}" });
+  setStatus("Live read stopped.", "ok");
+}
+function showView(name) {
+  document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === name));
+  document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === name));
+}
+
+document.addEventListener("change", async (event) => {
+  if (event.target.id === "scenario.control_mode") renderScenario();
+  if (event.target.id === "scenario.pid_tuning") renderSiteYaml();
+  if (event.target.id === "profileDeviceSelect") loadSelectedProfile().catch((error) => setStatus(error.message, "error"));
+});
+document.addEventListener("click", async (event) => {
+  const target = event.target;
+  if (target.matches(".tab")) showView(target.dataset.view);
+  if (target.id === "reloadBtn") loadConfig().catch((error) => setStatus(error.message, "error"));
+  if (target.id === "saveBtn" || target.id === "saveSiteBtn") saveConfig().catch((error) => setStatus(error.message, "error"));
+  if (target.id === "testReadBtn") testRead().catch((error) => setStatus(error.message, "error"));
+  if (target.id === "startLiveBtn") startLive().catch((error) => setStatus(error.message, "error"));
+  if (target.id === "refreshLiveBtn") refreshLive().catch((error) => setStatus(error.message, "error"));
+  if (target.id === "stopLiveBtn") stopLive().catch((error) => setStatus(error.message, "error"));
+  if (target.id === "saveProfileBtn") saveProfile().catch((error) => setStatus(error.message, "error"));
+  if (target.id === "addDeviceBtn") {
+    site.devices.push({ id: "unit" + (site.devices.length + 1), profile: profiles[0] || "", host: "", slave_id: 1 });
+    renderAll();
+  }
+  if (target.id === "addRegisterBtn" && currentProfile) {
+    currentProfile.profile.registers.push({ channel: "device.W", address: 0, type: "int32", scale: 1, unit: "W", access: "read" });
+    renderProfile(currentProfile);
+  }
+  if (target.dataset.removeDevice !== undefined) {
+    site.devices.splice(Number(target.dataset.removeDevice), 1);
+    renderAll();
+  }
+  if (target.dataset.removeRegister !== undefined && currentProfile) {
+    currentProfile.profile.registers.splice(Number(target.dataset.removeRegister), 1);
+    renderProfile(currentProfile);
+  }
+});
+
+loadPages()
+  .then(loadConfig)
+  .catch((error) => setStatus(error.message, "error"));

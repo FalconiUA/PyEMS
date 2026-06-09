@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PyEMS</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <h1>PyEMS local interface</h1>
+    <nav class="tabs" aria-label="Views">
+      <button class="tab active" data-view="scenario">Scenario</button>
+      <button class="tab" data-view="siteYaml">Site YAML</button>
+      <button class="tab" data-view="profiles">Device profiles</button>
+      <button class="tab" data-view="realtime">Realtime</button>
+    </nav>
+  </header>
+  <main>
+    <div id="status" class="status">Loading interface...</div>
+    <section id="scenario" class="view active" data-page="/static/pages/scenario.html"></section>
+    <section id="siteYaml" class="view" data-page="/static/pages/site-yaml.html"></section>
+    <section id="profiles" class="view" data-page="/static/pages/profiles.html"></section>
+    <section id="realtime" class="view" data-page="/static/pages/realtime.html"></section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

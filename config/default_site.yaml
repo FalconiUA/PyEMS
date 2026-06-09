@@ -6,18 +6,21 @@ scenario:
   pid_tuning: auto
   export_priority: 5
   regulation_priority: 10
+
 control:
-  fast_cycle_s: 1
+  fast_cycle_s: 1.0
   poll_interval_s: 0.5
+
 export_limit:
   limit_w: 50000.0
   priority: 5
   connection_point_active_power_channel: grid.W
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
+
 connection_point_active_power:
   export_limit_w: 50000.0
-  import_limit_w: 1000000000.0
+  import_limit_w: 100000.0
   priority: 10
   gains:
     kp: 0.4
@@ -27,24 +30,27 @@ connection_point_active_power:
   connection_point_active_power_channel: grid.W
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
+
 safety:
-  max_comms_age_s: 2
+  max_comms_age_s: 2.0
   unit_active_power_setpoint_channels:
-  - pv.WSet
+    - pv.WSet
+
 allocation:
   channels:
-  - setpoint_channel: pv.WSet
-    p_min_w: 0
-    p_max_w: 100000
-    default_w: 100000
-    ramp_rate_w_per_s: 5000
-    deadband_w: 200
+    - setpoint_channel: pv.WSet
+      p_min_w: 0.0
+      p_max_w: 100000.0
+      default_w: 100000.0
+      ramp_rate_w_per_s: 5000.0
+      deadband_w: 200.0
+
 devices:
-- id: grid
-  profile: meters/example_grid_meter.yaml
-  host: 192.168.1.200
-  slave_id: 1
-- id: pv
-  profile: inverters/huawei_sun2000_100ktl_m1.yaml
-  host: 192.168.1.100
-  slave_id: 1
+  - id: grid
+    profile: meters/example_grid_meter.yaml
+    host: 192.168.1.200
+    slave_id: 1
+  - id: pv
+    profile: inverters/huawei_sun2000_100ktl_m1.yaml
+    host: 192.168.1.100
+    slave_id: 1

@@ -10,6 +10,7 @@ the I/O mapping is configuration of a resource, not a program.
 from __future__ import annotations
 
 import logging
+import inspect
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -114,6 +115,34 @@ def _encode(value: int, reg: RegisterDef) -> list[int]:
     return [value & 0xFFFF]
 
 
+def _modbus_unit_kw(method) -> str | None:
+    """Return the unit/slave keyword accepted by this pymodbus client version."""
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return "device_id"
+    for name in ("device_id", "slave", "unit"):
+        if name in params:
+            return name
+    return None
+
+
+def _read_holding_registers(client, address: int, count: int, slave_id: int):
+    method = client.read_holding_registers
+    unit_kw = _modbus_unit_kw(method)
+    if unit_kw is None:
+        return method(address, count=count)
+    return method(address, count=count, **{unit_kw: slave_id})
+
+
+def _write_registers(client, address: int, values: list[int], slave_id: int):
+    method = client.write_registers
+    unit_kw = _modbus_unit_kw(method)
+    if unit_kw is None:
+        return method(address, values)
+    return method(address, values, **{unit_kw: slave_id})
+
+
 class ModbusDeviceDriver(Driver):
     def __init__(
         self, profile: DeviceProfile, client, slave_id: int = 1, prefix: str | None = None
@@ -167,9 +196,7 @@ class ModbusDeviceDriver(Driver):
 
     def read_state(self, state: SystemState) -> None:
         for reg in self._profile.registers:
-            result = self._client.read_holding_registers(
-                reg.address, count=reg.count, slave=self._slave
-            )
+            result = _read_holding_registers(self._client, reg.address, reg.count, self._slave)
             if result.isError():
                 logger.debug("Read error %s @%d (%s)", reg.channel, reg.address, result)
                 continue
@@ -182,4 +209,4 @@ class ModbusDeviceDriver(Driver):
             if not reg.writable:
                 continue
             raw = int(state.get(self._tag[reg.channel]) / reg.scale)
-            self._client.write_registers(reg.address, _encode(raw, reg), slave=self._slave)
+            _write_registers(self._client, reg.address, _encode(raw, reg), self._slave)

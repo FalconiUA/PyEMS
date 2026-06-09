@@ -1,0 +1,72 @@
+<div class="toolbar">
+  <button class="primary" id="saveSiteBtn">Save site.yaml</button>
+  <button id="addDeviceBtn">Add device</button>
+</div>
+<div class="grid">
+  <div class="panel full">
+    <h2>Site devices</h2>
+    <p class="lead">This table is the devices section of site.yaml. Register maps are edited on Device profiles.</p>
+    <table>
+      <thead><tr><th>id</th><th>profile</th><th>host / serial port</th><th>TCP port</th><th>Modbus device id</th><th></th></tr></thead>
+      <tbody id="deviceRows"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Control timing</h2>
+    <div class="fields">
+      <label>Fast control cycle, s
+        <input id="control.fast_cycle_s" type="number" step="0.1" min="0.1" required>
+        <span class="hint">How often control logic runs.</span>
+      </label>
+      <label>Modbus poll interval, s
+        <input id="control.poll_interval_s" type="number" step="0.1" min="0.1" required>
+        <span class="hint">How often the background Modbus reader polls devices.</span>
+      </label>
+      <label>Communication timeout, s
+        <input id="safety.max_comms_age_s" type="number" step="0.1" min="0" required>
+        <span class="hint">If data is older than this, safety writes the safe active-power setpoint.</span>
+      </label>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Advanced control</h2>
+    <div class="fields">
+      <label>PID tuning
+        <select id="scenario.pid_tuning">
+          <option value="auto">Auto</option>
+          <option value="manual">Manual</option>
+        </select>
+        <span class="hint">Auto fills PID values with conservative defaults.</span>
+      </label>
+      <label>Export safety priority
+        <input id="scenario.export_priority" type="number" step="1" min="1" required>
+        <span class="hint">Lower number wins. 0 is reserved for safety; default export cap is 5.</span>
+      </label>
+      <label>Regulation priority
+        <input id="scenario.regulation_priority" type="number" step="1" min="1" required>
+        <span class="hint">Lower-priority target regulation; default is 10.</span>
+      </label>
+    </div>
+    <div class="divider"></div>
+    <div class="fields" id="pidFields">
+      <label>PID proportional gain kp
+        <input id="pid.kp" type="number" step="0.01" required>
+        <span class="hint">Immediate correction from connection-point active-power error.</span>
+      </label>
+      <label>PID integral gain ki
+        <input id="pid.ki" type="number" step="0.01" required>
+        <span class="hint">Slow correction that removes steady error.</span>
+      </label>
+      <label>PID derivative gain kd
+        <input id="pid.kd" type="number" step="0.01" required>
+        <span class="hint">Damping term. Usually 0 for noisy power measurements.</span>
+      </label>
+      <label>Anti-windup tracking time tt, s
+        <input id="pid.tt" type="number" step="0.1" min="0" required>
+        <span class="hint">How quickly the PID integral follows allocator ramp/deadband limits.</span>
+      </label>
+    </div>
+  </div>
+</div>
