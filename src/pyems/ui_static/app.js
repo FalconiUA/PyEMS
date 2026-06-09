@@ -42,6 +42,22 @@ function deviceOptions(selected, filter = null) {
 function profileOptions(selected) {
   return profiles.map((profile) => `<option value="${esc(profile)}"${profile === selected ? " selected" : ""}>${esc(profile)}</option>`).join("");
 }
+function syncScenarioForm() {
+  const scen = scenarioCfg();
+  const alloc = allocationCfg();
+  if ($("scenario.control_mode")) scen.control_mode = $("scenario.control_mode").value || "export_limit";
+  if ($("scenario.active_power_limit_w")) scen.active_power_limit_w = parseNum($("scenario.active_power_limit_w").value);
+  if ($("scenario.connection_point_device_id")) scen.connection_point_device_id = $("scenario.connection_point_device_id").value;
+  if ($("scenario.unit_device_id")) scen.unit_device_id = $("scenario.unit_device_id").value;
+  if ($("scenario.pid_tuning")) scen.pid_tuning = $("scenario.pid_tuning").value || "auto";
+  if ($("scenario.export_priority")) scen.export_priority = parseNum($("scenario.export_priority").value);
+  if ($("scenario.regulation_priority")) scen.regulation_priority = parseNum($("scenario.regulation_priority").value);
+  if ($("allocation.p_min_w")) alloc.p_min_w = parseNum($("allocation.p_min_w").value);
+  if ($("allocation.p_max_w")) alloc.p_max_w = parseNum($("allocation.p_max_w").value);
+  if ($("allocation.default_w")) alloc.default_w = parseNum($("allocation.default_w").value);
+  if ($("allocation.ramp_rate_w_per_s")) alloc.ramp_rate_w_per_s = parseNum($("allocation.ramp_rate_w_per_s").value);
+  if ($("allocation.deadband_w")) alloc.deadband_w = parseNum($("allocation.deadband_w").value);
+}
 
 async function loadPages() {
   const views = [...document.querySelectorAll("[data-page]")];
@@ -339,8 +355,13 @@ function showView(name) {
 }
 
 document.addEventListener("change", async (event) => {
-  if (event.target.id === "scenario.control_mode") renderScenario();
-  if (event.target.id === "scenario.pid_tuning") renderSiteYaml();
+  const id = event.target.id || "";
+  if (id.startsWith("scenario.") || id.startsWith("allocation.")) {
+    syncScenarioForm();
+    renderScenario();
+    renderRealtime();
+  }
+  if (id === "scenario.pid_tuning") renderSiteYaml();
   if (event.target.id === "profileDeviceSelect") loadSelectedProfile().catch((error) => setStatus(error.message, "error"));
 });
 document.addEventListener("click", async (event) => {
