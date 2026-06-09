@@ -107,6 +107,10 @@ class CachedDriver(Driver):
 
             # READ: slow Modbus into private io_state, then publish under lock
             try:
+                if self._bus_down:
+                    # SmartLogger / TCP gateways drop idle or overloaded sessions.
+                    # Re-establish before reading; connect() is off the control loop.
+                    self._inner.connect()
                 self._inner.read_state(self._io_state)
                 snap = {n: self._io_state.get(n) for n in self._measured}
                 with self._lock:

@@ -83,6 +83,11 @@ class RequestBoard:
         calls this once at cycle start; `post()` stamps claims with this time."""
         self._now = now
 
+    @property
+    def now(self) -> float:
+        """Current scan-cycle timestamp set by `tick()`."""
+        return self._now
+
     def post(self, channel: str, request: ActivePowerRequest, now: float | None = None) -> None:
         """Post (or replace) a requester's claim on a channel.
 

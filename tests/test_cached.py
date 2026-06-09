@@ -19,11 +19,12 @@ class FakeInner(Driver):
             Channel("pv.WSet", writable=True, min_val=0, max_val=1e5)
         ]
         self.fail = False
+        self.connect_calls = 0
         self.read_event = threading.Event()
         self.written: dict[str, float] = {}
 
     def connect(self) -> None:
-        pass
+        self.connect_calls += 1
 
     def disconnect(self) -> None:
         pass
@@ -111,5 +112,24 @@ def test_stale_bus_grows_age_and_keeps_last_value():
         read = SystemState(drv.channels())
         drv.read_state(read)
         assert read.get("grid.W") == 50.0
+    finally:
+        drv.disconnect()
+
+
+def test_worker_reconnects_after_bus_failure():
+    inner = FakeInner({"grid.W": 50.0})
+    drv = CachedDriver(inner, poll_interval_s=0.01)
+    drv.connect()  # connect_calls == 1
+    try:
+        assert inner.read_event.wait(timeout=2.0)
+        inner.fail = True
+        time.sleep(0.05)               # worker notices the bus is down
+        calls_before = inner.connect_calls
+        inner.fail = False             # bus comes back
+        deadline = time.monotonic() + 2.0
+        while inner.connect_calls <= calls_before and time.monotonic() < deadline:
+            time.sleep(0.01)
+        # worker called connect() again to re-establish the dropped session
+        assert inner.connect_calls > calls_before
     finally:
         drv.disconnect()

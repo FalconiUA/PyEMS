@@ -28,6 +28,25 @@ class StubDevice(Driver):
         pass
 
 
+class SharedConnectionDevice(StubDevice):
+    def __init__(self, channels: list[Channel], identity: object) -> None:
+        super().__init__(channels)
+        self._identity = identity
+        self.connect_calls = 0
+        self.disconnect_calls = 0
+
+    def connection_identity(self) -> object:
+        return self._identity
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+        super().connect()
+
+    def disconnect(self) -> None:
+        self.disconnect_calls += 1
+        super().disconnect()
+
+
 def test_merges_channels_from_all_devices():
     a = StubDevice([Channel("grid.W")])
     b = StubDevice([Channel("pv.W"), Channel("pv.WSet", writable=True)])
@@ -49,6 +68,19 @@ def test_connect_disconnect_fan_out():
     assert a.connected and b.connected
     comp.disconnect()
     assert not a.connected and not b.connected
+
+
+def test_shared_connection_connects_once_per_composite_call():
+    identity = object()
+    a = SharedConnectionDevice([Channel("a")], identity)
+    b = SharedConnectionDevice([Channel("b")], identity)
+    comp = CompositeDriver([a, b])
+
+    comp.connect()
+    comp.disconnect()
+
+    assert a.connect_calls + b.connect_calls == 1
+    assert a.disconnect_calls + b.disconnect_calls == 1
 
 
 def test_read_fans_out_to_all_devices():

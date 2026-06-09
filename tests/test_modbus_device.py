@@ -100,8 +100,19 @@ class FakeModbusClient:
     def __init__(self, reads: dict[int, list[int]]):
         self._reads = reads
         self.writes: dict[int, list[int]] = {}
+        self.reads: list[tuple[int, int, int]] = []
+        self.connect_calls = 0
+        self.close_calls = 0
+
+    def connect(self):
+        self.connect_calls += 1
+        return True
+
+    def close(self):
+        self.close_calls += 1
 
     def read_holding_registers(self, address, count, slave):
+        self.reads.append((address, count, slave))
         if address not in self._reads:
             return FakeResult([], error=True)
         return FakeResult(self._reads[address])
@@ -139,3 +150,16 @@ def test_read_error_keeps_value_unchanged():
     st._channels["pv1.W"].value = 42.0
     drv.read_state(st)
     assert st.get("pv1.W") == 42.0  # untouched on error
+
+
+def test_shared_client_keeps_per_driver_slave_id():
+    prof = DeviceProfile.load(HUAWEI)
+    client = FakeModbusClient({32080: [0x0000, 0x03E8]})
+    d1 = ModbusDeviceDriver(prof, client=client, slave_id=0, prefix="plant")
+    d2 = ModbusDeviceDriver(prof, client=client, slave_id=11, prefix="meter")
+
+    d1.read_state(SystemState(d1.channels()))
+    d2.read_state(SystemState(d2.channels()))
+
+    assert any(slave == 0 for _, _, slave in client.reads)
+    assert any(slave == 11 for _, _, slave in client.reads)

@@ -20,7 +20,7 @@ from pyems.controllers.grid_export_limit import GridExportLimitController
 from pyems.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
 from pyems.drivers.cached import CachedDriver
 from pyems.drivers.composite import CompositeDriver
-from pyems.drivers.modbus_device import ModbusDeviceDriver
+import pyems.drivers.modbus_device as md
 from pyems.logging_config import setup_logging
 from pyems.scheduler import Scheduler, Task
 
@@ -120,24 +120,46 @@ def build_allocation(site: dict) -> tuple[PowerAllocator, RequestBoard]:
     return allocator, board
 
 
+def build_device_drivers(devices_cfg: list[dict]) -> list[md.ModbusDeviceDriver]:
+    """Build field-device drivers, sharing one TCP client per endpoint."""
+    clients: dict[tuple[str, str, int | None], object] = {}
+    drivers: list[md.ModbusDeviceDriver] = []
+    for dev in devices_cfg:
+        profile = md.DeviceProfile.load(PROFILES / dev["profile"])
+        port = dev.get(
+            "port",
+            profile.default_port if profile.protocol == "modbus_tcp" else None,
+        )
+        key = (profile.protocol, dev["host"], port)
+        client = clients.get(key)
+        if client is None:
+            if profile.protocol == "modbus_tcp":
+                client = md.ModbusTcpClient(dev["host"], port=port)
+            elif profile.protocol == "modbus_rtu":
+                client = md.ModbusSerialClient(port=dev["host"])
+            else:
+                raise ValueError(f"Unknown protocol: {profile.protocol}")
+            clients[key] = client
+        drivers.append(
+            md.ModbusDeviceDriver(
+                profile,
+                client=client,
+                slave_id=dev["slave_id"],
+                prefix=dev.get("id"),
+            )
+        )
+    return drivers
+
+
 def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     logger.info("Building EMS from %s", site_path)
     site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8"))
 
     ctrl_cfg = site["control"]
 
-    # Field devices from site config — one ModbusDeviceDriver per entry.
-    # dev["id"] namespaces the device's tags (pv.W → pv1.W) so identical
-    # devices don't collide in the merged tag pool.
-    device_drivers = [
-        ModbusDeviceDriver.from_profile(
-            PROFILES / dev["profile"],
-            host=dev["host"],
-            slave_id=dev["slave_id"],
-            prefix=dev.get("id"),
-        )
-        for dev in site["devices"]
-    ]
+    # Field devices from site config. Logical devices that share a TCP endpoint
+    # also share one client; each driver keeps its own slave ID and tag prefix.
+    device_drivers = build_device_drivers(site["devices"])
 
     # One resource, multiple field devices (IEC §2.4.1.1): merged tag pool.
     devices = CompositeDriver(device_drivers)

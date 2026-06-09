@@ -133,15 +133,21 @@ class ModbusDeviceDriver(Driver):
         port: int | None = None,
         slave_id: int = 1,
         prefix: str | None = None,
+        client=None,
     ) -> "ModbusDeviceDriver":
         profile = DeviceProfile.load(profile_path)
-        if profile.protocol == "modbus_tcp":
-            client = ModbusTcpClient(host, port=port or profile.default_port)
-        elif profile.protocol == "modbus_rtu":
-            client = ModbusSerialClient(port=host)  # host = serial port path
-        else:
-            raise ValueError(f"Unknown protocol: {profile.protocol}")
+        if client is None:
+            if profile.protocol == "modbus_tcp":
+                client = ModbusTcpClient(host, port=port or profile.default_port)
+            elif profile.protocol == "modbus_rtu":
+                client = ModbusSerialClient(port=host)  # host = serial port path
+            else:
+                raise ValueError(f"Unknown protocol: {profile.protocol}")
         return cls(profile, client, slave_id, prefix)
+
+    def connection_identity(self) -> object:
+        """Identity used by CompositeDriver to connect a shared client once."""
+        return self._client
 
     def connect(self) -> None:
         ok = self._client.connect()

@@ -25,11 +25,23 @@ class CompositeDriver(Driver):
         logger.debug("CompositeDriver wrapping %d device drivers", len(drivers))
 
     def connect(self) -> None:
+        seen: set[int] = set()
         for d in self._drivers:
+            ident = getattr(d, "connection_identity", lambda: d)()
+            ident_id = id(ident)
+            if ident_id in seen:
+                continue
+            seen.add(ident_id)
             d.connect()
 
     def disconnect(self) -> None:
+        seen: set[int] = set()
         for d in self._drivers:
+            ident = getattr(d, "connection_identity", lambda: d)()
+            ident_id = id(ident)
+            if ident_id in seen:
+                continue
+            seen.add(ident_id)
             d.disconnect()
 
     def channels(self) -> list[Channel]:

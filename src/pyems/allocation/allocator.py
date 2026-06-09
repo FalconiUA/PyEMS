@@ -48,7 +48,27 @@ class SetpointChannelConfig:
     p_max_w: float
     default_w: float
     ramp_rate_w_per_s: float = 5000.0
+    ramp_up_w_per_s: float | None = None
+    ramp_down_w_per_s: float | None = None
     deadband_w: float = 200.0
+
+    def __post_init__(self) -> None:
+        if self.ramp_rate_w_per_s < 0:
+            raise ValueError("ramp_rate_w_per_s must be >= 0")
+        ramp_up_w_per_s = (
+            self.ramp_rate_w_per_s
+            if self.ramp_up_w_per_s is None
+            else self.ramp_up_w_per_s
+        )
+        ramp_down_w_per_s = (
+            self.ramp_rate_w_per_s
+            if self.ramp_down_w_per_s is None
+            else self.ramp_down_w_per_s
+        )
+        if ramp_up_w_per_s < 0 or ramp_down_w_per_s < 0:
+            raise ValueError("ramp_up_w_per_s and ramp_down_w_per_s must be >= 0")
+        object.__setattr__(self, "ramp_up_w_per_s", float(ramp_up_w_per_s))
+        object.__setattr__(self, "ramp_down_w_per_s", float(ramp_down_w_per_s))
 
 
 class ChannelArbiter:
@@ -127,9 +147,13 @@ class ChannelArbiter:
         if forced_by_safety or self._last_setpoint is None:
             value = target
         else:
-            max_step = cfg.ramp_rate_w_per_s * self._cycle_s
+            delta = target - self._last_setpoint
+            ramp_rate_w_per_s = (
+                cfg.ramp_up_w_per_s if delta >= 0 else cfg.ramp_down_w_per_s
+            )
+            max_step = ramp_rate_w_per_s * self._cycle_s
             value = self._last_setpoint + _clamp(
-                target - self._last_setpoint, -max_step, max_step
+                delta, -max_step, max_step
             )
 
         self._note_target_owner(ch, owner, value)

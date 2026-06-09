@@ -117,6 +117,13 @@ def test_ramp_limits_the_step():
     assert a.resolve([req("x", target_w=0.0)], now=1.0) == 99000.0
 
 
+def test_asymmetric_ramp_limits_up_and_down_independently():
+    a = arbiter(ramp_up_w_per_s=1000.0, ramp_down_w_per_s=5000.0)
+    a.resolve([req("x", target_w=50000.0)], now=0.0)
+    assert a.resolve([req("x", target_w=100000.0)], now=1.0) == 51000.0
+    assert a.resolve([req("x", target_w=0.0)], now=2.0) == 46000.0
+
+
 def test_priority_zero_bypasses_ramp():
     a = arbiter(ramp_rate_w_per_s=1000.0)
     a.resolve([req("x", target_w=100000.0)], now=0.0)

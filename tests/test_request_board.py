@@ -89,6 +89,12 @@ def test_tick_drives_post_time():
     assert b.valid_requests(CH, now=56.0) == []
 
 
+def test_now_exposes_last_tick_read_only():
+    b = board()
+    b.tick(12.5)
+    assert b.now == pytest.approx(12.5)
+
+
 # -- validation ----------------------------------------------------------------
 
 def test_min_greater_than_max_rejected():

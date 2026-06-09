@@ -1,17 +1,22 @@
 """Wiring test for build_ems() (src/ems.py) — no real network."""
 import pyems.drivers.modbus_device as md
-from pyems.ems import build_ems
+from pyems.ems import build_device_drivers, build_ems
 from pyems.scheduler import Scheduler
 
 
 class FakeTcpClient:
     """Stand-in for ModbusTcpClient: never touches the network."""
 
+    instances = []
+
     def __init__(self, host, port=502):
         self.host = host
         self.port = port
+        self.connect_calls = 0
+        FakeTcpClient.instances.append(self)
 
     def connect(self):
+        self.connect_calls += 1
         return True
 
     def close(self):
@@ -29,6 +34,7 @@ class FakeTcpClient:
 
 
 def test_build_ems_wires_scheduler(monkeypatch):
+    FakeTcpClient.instances = []
     monkeypatch.setattr(md, "ModbusTcpClient", FakeTcpClient)
     sched = build_ems()
     try:
@@ -47,3 +53,28 @@ def test_build_ems_wires_scheduler(monkeypatch):
         assert sched._allocator.channels == ["pv.WSet"]
     finally:
         sched._driver.disconnect()
+
+
+def test_build_device_drivers_shares_tcp_client_by_endpoint(monkeypatch):
+    FakeTcpClient.instances = []
+    monkeypatch.setattr(md, "ModbusTcpClient", FakeTcpClient)
+    drivers = build_device_drivers(
+        [
+            {
+                "id": "plant",
+                "profile": "inverters/huawei_sun2000_100ktl_m1.yaml",
+                "host": "192.168.1.10",
+                "slave_id": 0,
+            },
+            {
+                "id": "grid",
+                "profile": "meters/example_grid_meter.yaml",
+                "host": "192.168.1.10",
+                "slave_id": 11,
+            },
+        ]
+    )
+
+    assert len(drivers) == 2
+    assert len(FakeTcpClient.instances) == 1
+    assert drivers[0].connection_identity() is drivers[1].connection_identity()
