@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import inspect
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -110,6 +110,11 @@ class RegisterDef:
     access: str  # "read" | "read_write"
     min_val: float = float("-inf")
     max_val: float = float("inf")
+    # Derived from `type`/`access` once at load; plain attributes (not
+    # properties) because they sit on the per-register poll/flush hot path.
+    count: int = field(init=False, repr=False, compare=False)
+    signed: bool = field(init=False, repr=False, compare=False)
+    writable: bool = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # Fail at profile load, not mid-poll: an unknown type would KeyError on
@@ -134,18 +139,9 @@ class RegisterDef:
                 f"register '{self.channel}': min_val ({self.min_val}) > "
                 f"max_val ({self.max_val})"
             )
-
-    @property
-    def count(self) -> int:
-        return _REG_COUNT[self.type]
-
-    @property
-    def signed(self) -> bool:
-        return self.type.startswith("int")
-
-    @property
-    def writable(self) -> bool:
-        return self.access == "read_write"
+        self.count = _REG_COUNT[self.type]
+        self.signed = self.type.startswith("int")
+        self.writable = self.access == "read_write"
 
 
 @dataclass
@@ -199,16 +195,28 @@ def _encode(value: int, reg: RegisterDef) -> list[int]:
     return [value & 0xFFFF]
 
 
+# Signature inspection is expensive and its result is fixed per pymodbus
+# version, so cache it per underlying function (bound methods of the same
+# class share one entry). Keyed on __func__, not the bound method, to avoid
+# pinning client instances in memory.
+_UNIT_KW_CACHE: dict[object, str | None] = {}
+
+
 def _modbus_unit_kw(method) -> str | None:
     """Return the unit/slave keyword accepted by this pymodbus client version."""
+    key = getattr(method, "__func__", method)
+    try:
+        return _UNIT_KW_CACHE[key]
+    except KeyError:
+        pass
     try:
         params = inspect.signature(method).parameters
     except (TypeError, ValueError):
-        return "device_id"
-    for name in ("device_id", "slave", "unit"):
-        if name in params:
-            return name
-    return None
+        kw = "device_id"
+    else:
+        kw = next((n for n in ("device_id", "slave", "unit") if n in params), None)
+    _UNIT_KW_CACHE[key] = kw
+    return kw
 
 
 def _read_holding_registers(client, address: int, count: int, slave_id: int):
@@ -237,6 +245,10 @@ class ModbusDeviceDriver(Driver):
         self._prefix = prefix
         # profile-local channel name → namespaced state tag (see namespaced()).
         self._tag = {r.channel: namespaced(r.channel, prefix) for r in profile.registers}
+        # (register, tag) pairs resolved once: read_state/write_setpoints run
+        # every poll cycle and must not redo tag lookups per register.
+        self._read_plan = [(r, self._tag[r.channel]) for r in profile.registers]
+        self._write_plan = [(r, t) for r, t in self._read_plan if r.writable]
 
     @classmethod
     def from_profile(
@@ -302,11 +314,13 @@ class ModbusDeviceDriver(Driver):
         we have not written yet) must not fail the poll.
         """
         failed: list[str] = []
-        for reg in self._profile.registers:
-            result = _read_holding_registers(self._client, reg.address, reg.count, self._slave)
+        client, slave = self._client, self._slave
+        state_channels = state._channels
+        for reg, tag in self._read_plan:
+            result = _read_holding_registers(client, reg.address, reg.count, slave)
             if result.isError():
                 logger.debug("Read error %s @%d (%s)", reg.channel, reg.address, result)
-                failed.append(self._tag[reg.channel])
+                failed.append(tag)
                 continue
             value = _decode(result.registers, reg) * reg.scale
             if not reg.writable and not (reg.min_val <= value <= reg.max_val):
@@ -314,9 +328,9 @@ class ModbusDeviceDriver(Driver):
                     "Implausible %s @%d: %s outside [%s, %s]",
                     reg.channel, reg.address, value, reg.min_val, reg.max_val,
                 )
-                failed.append(self._tag[reg.channel])
+                failed.append(tag)
                 continue
-            state._channels[self._tag[reg.channel]].value = value
+            state_channels[tag].value = value
         if failed:
             raise ModbusReadError(
                 f"{self._profile.model} (slave {self._slave}): "
@@ -334,16 +348,15 @@ class ModbusDeviceDriver(Driver):
         setpoint does not block the others.
         """
         failed: list[str] = []
-        for reg in self._profile.registers:
-            if not reg.writable:
+        client, slave = self._client, self._slave
+        for reg, tag in self._write_plan:
+            if channels is not None and tag not in channels:
                 continue
-            if channels is not None and self._tag[reg.channel] not in channels:
-                continue
-            raw = int(state.get(self._tag[reg.channel]) / reg.scale)
-            result = _write_registers(self._client, reg.address, _encode(raw, reg), self._slave)
+            raw = int(state.get(tag) / reg.scale)
+            result = _write_registers(client, reg.address, _encode(raw, reg), slave)
             if result is not None and result.isError():
                 logger.debug("Write error %s @%d (%s)", reg.channel, reg.address, result)
-                failed.append(self._tag[reg.channel])
+                failed.append(tag)
         if failed:
             raise ModbusWriteError(
                 f"{self._profile.model} (slave {self._slave}): "
