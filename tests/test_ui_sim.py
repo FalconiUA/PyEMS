@@ -56,6 +56,33 @@ def test_sim_manager_start_status_stop(sim_site):
         manager.stop_managed()
 
 
+def test_site_file_switching(tmp_path):
+    app = ui.UIApp(tmp_path / "site.yaml",
+                   sim=ui.SimManager(SIM_SITE, panel_port=free_port()))
+    try:
+        # both the hardware site and the simulation site are offered
+        assert [str(p) for p in app.site_choices] == [
+            str(tmp_path / "site.yaml"), str(SIM_SITE),
+        ]
+        result = app.set_site_file(str(SIM_SITE))
+        assert result["site_path"] == str(SIM_SITE)
+        assert app.site_path == SIM_SITE
+
+        payload = ui.app_config_payload(app)
+        assert payload["site_path"] == str(SIM_SITE)
+        assert payload["sim_site_path"] == str(SIM_SITE)
+        assert str(tmp_path / "site.yaml") in payload["site_choices"]
+        # the sim site loads and validates through the same UI pipeline
+        assert payload["validation"]["ok"], payload["validation"]["error"]
+
+        # arbitrary paths are rejected — only the known choices are editable
+        with pytest.raises(ValueError, match="unknown site file"):
+            app.set_site_file(str(tmp_path / "evil.yaml"))
+    finally:
+        app.close()
+        app.sim.stop_managed()
+
+
 def test_sim_manager_missing_site_fails_clearly(tmp_path):
     manager = ui.SimManager(tmp_path / "nope.yaml", panel_port=free_port())
     with pytest.raises(ValueError, match="not found"):

@@ -411,6 +411,15 @@ def config_payload(site_path: str | Path = DEFAULT_SITE) -> dict[str, Any]:
     }
 
 
+def app_config_payload(app: "UIApp") -> dict[str, Any]:
+    """config_payload plus which site file is being edited (and the choices)."""
+    payload = config_payload(app.site_path)
+    payload["site_path"] = str(app.site_path)
+    payload["site_choices"] = [str(path) for path in app.site_choices]
+    payload["sim_site_path"] = str(app.sim.sim_site_path)
+    return payload
+
+
 def save_site(site: dict[str, Any], site_path: str | Path = DEFAULT_SITE) -> dict[str, Any]:
     site = normalize_site(site)
     validate_site_for_ui(site)
@@ -581,10 +590,30 @@ class UIApp:
     def __init__(self, site_path: str | Path, sim: SimManager | None = None) -> None:
         self.site_path = Path(site_path)
         self.sim = sim or SimManager()
+        # The UI can edit either the hardware site or the simulation site.
+        # They are SEPARATE configs on purpose (real device addresses vs
+        # localhost simulators) — but editing one while testing against the
+        # other is a silent trap, so the choice must be explicit and visible.
+        self.site_choices: list[Path] = [self.site_path]
+        sim_site = self.sim.sim_site_path
+        if sim_site.exists() and sim_site.resolve() != self.site_path.resolve():
+            self.site_choices.append(sim_site)
         self._lock = threading.Lock()
         self._session: ReadOnlyDeviceSession | None = None
         self._error_log: list[dict[str, Any]] = []
         self._next_error_id = 1
+
+    def set_site_file(self, path_str: str) -> dict[str, Any]:
+        """Switch which site file the whole UI edits (must be a known choice)."""
+        target = next((p for p in self.site_choices if str(p) == str(path_str)), None)
+        if target is None:
+            raise ValueError(
+                f"unknown site file {path_str!r}; "
+                f"choices: {[str(p) for p in self.site_choices]}"
+            )
+        self.close()  # the live session is bound to the previous file's devices
+        self.site_path = target
+        return {"ok": True, "site_path": str(target)}
 
     def close(self) -> None:
         with self._lock:
@@ -714,7 +743,7 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                 if path == "/" or path.startswith("/static/"):
                     self._send_static(path)
                 elif path == "/api/config":
-                    self._send_json(config_payload(app.site_path))
+                    self._send_json(app_config_payload(app))
                 elif path == "/api/profile":
                     device_id = query.get("device_id", [""])[0]
                     self._send_json(profile_payload(load_site(app.site_path), device_id))
@@ -737,7 +766,9 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                 payload = _read_json(self)
                 if path == "/api/config":
                     app.save(payload.get("site", payload))
-                    self._send_json(config_payload(app.site_path))
+                    self._send_json(app_config_payload(app))
+                elif path == "/api/site-file":
+                    self._send_json(app.set_site_file(payload.get("path", "")))
                 elif path == "/api/profile":
                     save_profile_yaml(payload["profile_path"], payload["profile"])
                     self._send_json(profile_payload(load_site(app.site_path), payload["device_id"]))

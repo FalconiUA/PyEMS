@@ -143,3 +143,9 @@ td input, td select { min-height: 32px; }
   border-radius: 10px;
   background: #10151c;
 }
+
+.sitefile { color: #c9d6e6; font-size: 13px; display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+.sitefile select {
+  background: #1d2a38; color: #eef6ff; border: 1px solid #425067;
+  border-radius: 6px; padding: 6px 8px; font-weight: 600;
+}

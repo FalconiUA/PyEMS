@@ -1,4 +1,7 @@
 let site = null;
+let sitePath = "";
+let siteChoices = [];
+let simSitePath = "";
 let profiles = [];
 let profileRequirements = [];
 let liveRows = [];
@@ -88,6 +91,32 @@ async function loadPages() {
     if (!response.ok) throw new Error(`Cannot load ${view.dataset.page}`);
     view.innerHTML = await response.text();
   }));
+}
+
+function siteFileName(path) {
+  const parts = String(path || "").split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+function editingSimSite() {
+  return sitePath && simSitePath && sitePath === simSitePath;
+}
+function renderSiteFile() {
+  const sel = $("siteFileSelect");
+  if (!sel) return;
+  sel.innerHTML = siteChoices.map((path) => {
+    const label = siteFileName(path) + (path === simSitePath ? " (simulation)" : " (hardware)");
+    return `<option value="${esc(path)}"${path === sitePath ? " selected" : ""}>${esc(label)}</option>`;
+  }).join("");
+}
+function applyConfigPayload(data) {
+  site = data.site;
+  sitePath = data.site_path || sitePath;
+  siteChoices = data.site_choices || siteChoices;
+  simSitePath = data.sim_site_path || simSitePath;
+  profiles = data.profiles;
+  profileRequirements = data.profile_requirements;
+  liveRows = data.live_rows;
+  renderSiteFile();
 }
 
 function renderAll() {
@@ -336,26 +365,28 @@ async function loadErrorLog() {
 async function loadConfig() {
   setStatus("Loading configuration...");
   const data = await api("/api/config");
-  site = data.site;
-  profiles = data.profiles;
-  profileRequirements = data.profile_requirements;
-  liveRows = data.live_rows;
+  applyConfigPayload(data);
   renderAll();
   await loadSelectedProfile();
   await loadErrorLog();
-  setStatus(data.validation.ok ? "Configuration loaded." : data.validation.error, data.validation.ok ? "ok" : "warn");
+  const name = siteFileName(sitePath);
+  setStatus(data.validation.ok ? `Editing ${name}.` : data.validation.error, data.validation.ok ? "ok" : "warn");
 }
 async function saveConfig() {
-  setStatus("Saving site.yaml...");
+  const name = siteFileName(sitePath) || "site.yaml";
+  setStatus(`Saving ${name}...`);
   const data = await api("/api/config", { method: "POST", body: JSON.stringify({ site: gatherSite() }) });
-  site = data.site;
-  profiles = data.profiles;
-  profileRequirements = data.profile_requirements;
-  liveRows = data.live_rows;
+  applyConfigPayload(data);
   renderAll();
   await loadSelectedProfile();
-  setStatus("site.yaml saved.", "ok");
+  setStatus(editingSimSite()
+    ? `${name} saved. Configs are read at startup: restart the simulator AND the EMS (pyems --site ${sitePath}) to apply.`
+    : `${name} saved.`, "ok");
   return data;
+}
+async function switchSiteFile(path) {
+  await api("/api/site-file", { method: "POST", body: JSON.stringify({ path }) });
+  await loadConfig();
 }
 async function loadSelectedProfile() {
   if (!site || !site.devices.length) return;
@@ -469,6 +500,7 @@ document.addEventListener("change", async (event) => {
   }
   if (id === "scenario.pid_tuning") renderSiteYaml();
   if (event.target.id === "profileDeviceSelect") loadSelectedProfile().catch(handleError);
+  if (event.target.id === "siteFileSelect") switchSiteFile(event.target.value).catch(handleError);
 });
 document.addEventListener("click", async (event) => {
   const target = event.target;
