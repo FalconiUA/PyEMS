@@ -156,7 +156,7 @@ class DeviceProfile:
     registers: list[RegisterDef]
 
     @classmethod
-    def load(cls, path: str | Path) -> "DeviceProfile":
+    def load(cls, path: str | Path) -> DeviceProfile:
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
         regs = [RegisterDef(**r) for r in data["registers"]]
         return cls(
@@ -199,16 +199,33 @@ def _encode(value: int, reg: RegisterDef) -> list[int]:
     return [value & 0xFFFF]
 
 
-def _modbus_unit_kw(method) -> str | None:
-    """Return the unit/slave keyword accepted by this pymodbus client version."""
+def _resolve_unit_kw(func) -> str | None:
     try:
-        params = inspect.signature(method).parameters
+        params = inspect.signature(func).parameters
     except (TypeError, ValueError):
         return "device_id"
     for name in ("device_id", "slave", "unit"):
         if name in params:
             return name
     return None
+
+
+# Signature introspection is far too slow to repeat per register per poll
+# cycle; the answer is a constant per client method, so cache it keyed by the
+# underlying function (shared across bound methods of all client instances).
+_unit_kw_cache: dict[object, str | None] = {}
+
+
+def _modbus_unit_kw(method) -> str | None:
+    """Return the unit/slave keyword accepted by this pymodbus client version."""
+    func = getattr(method, "__func__", method)
+    try:
+        return _unit_kw_cache[func]
+    except KeyError:
+        kw = _unit_kw_cache[func] = _resolve_unit_kw(func)
+        return kw
+    except TypeError:  # unhashable callable; compute without caching
+        return _resolve_unit_kw(func)
 
 
 def _read_holding_registers(client, address: int, count: int, slave_id: int):
@@ -237,6 +254,7 @@ class ModbusDeviceDriver(Driver):
         self._prefix = prefix
         # profile-local channel name → namespaced state tag (see namespaced()).
         self._tag = {r.channel: namespaced(r.channel, prefix) for r in profile.registers}
+        self._writable_regs = [r for r in profile.registers if r.writable]
 
     @classmethod
     def from_profile(
@@ -250,7 +268,7 @@ class ModbusDeviceDriver(Driver):
         serial: dict | None = None,
         timeout_s: float | None = None,
         retries: int | None = None,
-    ) -> "ModbusDeviceDriver":
+    ) -> ModbusDeviceDriver:
         profile = DeviceProfile.load(profile_path)
         if client is None:
             client = make_client(
@@ -303,10 +321,11 @@ class ModbusDeviceDriver(Driver):
         """
         failed: list[str] = []
         for reg in self._profile.registers:
+            tag = self._tag[reg.channel]
             result = _read_holding_registers(self._client, reg.address, reg.count, self._slave)
             if result.isError():
                 logger.debug("Read error %s @%d (%s)", reg.channel, reg.address, result)
-                failed.append(self._tag[reg.channel])
+                failed.append(tag)
                 continue
             value = _decode(result.registers, reg) * reg.scale
             if not reg.writable and not (reg.min_val <= value <= reg.max_val):
@@ -314,9 +333,9 @@ class ModbusDeviceDriver(Driver):
                     "Implausible %s @%d: %s outside [%s, %s]",
                     reg.channel, reg.address, value, reg.min_val, reg.max_val,
                 )
-                failed.append(self._tag[reg.channel])
+                failed.append(tag)
                 continue
-            state._channels[self._tag[reg.channel]].value = value
+            state._channels[tag].value = value
         if failed:
             raise ModbusReadError(
                 f"{self._profile.model} (slave {self._slave}): "
@@ -334,16 +353,15 @@ class ModbusDeviceDriver(Driver):
         setpoint does not block the others.
         """
         failed: list[str] = []
-        for reg in self._profile.registers:
-            if not reg.writable:
+        for reg in self._writable_regs:
+            tag = self._tag[reg.channel]
+            if channels is not None and tag not in channels:
                 continue
-            if channels is not None and self._tag[reg.channel] not in channels:
-                continue
-            raw = int(state.get(self._tag[reg.channel]) / reg.scale)
+            raw = int(state.get(tag) / reg.scale)
             result = _write_registers(self._client, reg.address, _encode(raw, reg), self._slave)
             if result is not None and result.isError():
                 logger.debug("Write error %s @%d (%s)", reg.channel, reg.address, result)
-                failed.append(self._tag[reg.channel])
+                failed.append(tag)
         if failed:
             raise ModbusWriteError(
                 f"{self._profile.model} (slave {self._slave}): "
