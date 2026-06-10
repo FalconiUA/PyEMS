@@ -324,6 +324,15 @@ def build_allocation(site: dict) -> tuple[PowerAllocator, RequestBoard]:
     configs = [
         SetpointChannelConfig(**ch) for ch in site["allocation"]["channels"]
     ]
+    # Echo the numbers actually loaded: "which config is this EMS running"
+    # must be answerable from the log alone (site.yaml vs site.sim.yaml vs a
+    # stale edit is a recurring failure mode during commissioning/simulation).
+    for c in configs:
+        logger.info(
+            "Allocation %s: envelope [%g, %g] W, default %g W, ramp %g W/s, deadband %g W",
+            c.setpoint_channel, c.p_min_w, c.p_max_w, c.default_w,
+            c.ramp_rate_w_per_s, c.deadband_w,
+        )
     board = RequestBoard([c.setpoint_channel for c in configs])
     allocator = PowerAllocator(configs, board, cycle_s=fast_cycle_s)
     return allocator, board
@@ -386,8 +395,15 @@ def build_device_drivers(devices_cfg: list[dict]) -> list[md.ModbusDeviceDriver]
 
 
 def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
-    logger.info("Building EMS from %s", site_path)
+    logger.info("Building EMS from %s", Path(site_path).resolve())
     site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8"))
+    mode = control_mode(site)
+    limit_w = (
+        site["export_limit"]["limit_w"]
+        if mode == EXPORT_LIMIT_MODE
+        else site["connection_point_active_power"]["import_limit_w"]
+    )
+    logger.info("Scenario: %s, %g W at the connection point", mode, limit_w)
 
     # Config-only consistency checks first — cheaper than touching the bus,
     # and a config that would neutralize the safety layer must never start.
