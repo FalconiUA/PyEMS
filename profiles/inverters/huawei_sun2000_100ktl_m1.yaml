@@ -17,12 +17,16 @@ default_port: 502
 
 registers:
   # ── Active power, total (Read Only) — Elum pv.W ───────────────────────────
+  # min/max = plausibility bounds: a decoded value outside them fails the poll
+  # (comms age grows) instead of entering the control loop as a measurement.
   - channel: pv.W
     address: 32080
     type: int32
     scale: 1.0              # Huawei gain 1, W
     unit: W
     access: read
+    min_val: -10000         # standby self-consumption at most
+    max_val: 110000         # 110% of rated 100 kW
 
   # ── Reactive power, total (Read Only) — Elum pv.VAR ───────────────────────
   - channel: pv.VAR

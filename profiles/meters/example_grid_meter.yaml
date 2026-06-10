@@ -2,12 +2,16 @@ model: Example Grid Meter
 protocol: modbus_tcp
 default_port: 502
 registers:
+# min/max = plausibility bounds: a decoded value outside them fails the poll
+# (comms age grows) instead of entering the control loop as a measurement.
 - channel: grid.W
   address: 40001
   type: int32
   scale: 1
   unit: W
   access: read
+  min_val: -10000000
+  max_val: 10000000
 - channel: grid.WphA
   address: 40003
   type: int32

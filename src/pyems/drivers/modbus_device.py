@@ -32,7 +32,8 @@ _SERIAL_KEYS = frozenset(DEFAULT_SERIAL)
 
 
 class ModbusReadError(IOError):
-    """One or more register reads returned a Modbus error response.
+    """One or more register reads returned a Modbus error response, or a
+    decoded value outside the register's plausibility bounds.
 
     Raised AFTER all registers were attempted (good registers still update),
     so CachedDriver treats the poll as failed and the comms age keeps growing —
@@ -266,6 +267,12 @@ class ModbusDeviceDriver(Driver):
         the error is raised at the end. The caller (CachedDriver) must treat
         the poll as failed so the comms age grows — error *responses* are as
         much a dead bus as a socket error.
+
+        A decoded value outside the register's [min_val, max_val] bounds is
+        treated the same as an error response: the tag keeps its last value and
+        the poll fails. A wrong profile (scale/address/type) or a gateway
+        serving garbage must raise the comms age, not feed implausible numbers
+        into the control loop as if they were measurements.
         """
         failed: list[str] = []
         for reg in self._profile.registers:
@@ -274,14 +281,20 @@ class ModbusDeviceDriver(Driver):
                 logger.debug("Read error %s @%d (%s)", reg.channel, reg.address, result)
                 failed.append(self._tag[reg.channel])
                 continue
-            state._channels[self._tag[reg.channel]].value = (
-                _decode(result.registers, reg) * reg.scale
-            )
+            value = _decode(result.registers, reg) * reg.scale
+            if not (reg.min_val <= value <= reg.max_val):
+                logger.debug(
+                    "Implausible %s @%d: %s outside [%s, %s]",
+                    reg.channel, reg.address, value, reg.min_val, reg.max_val,
+                )
+                failed.append(self._tag[reg.channel])
+                continue
+            state._channels[self._tag[reg.channel]].value = value
         if failed:
             raise ModbusReadError(
                 f"{self._profile.model} (slave {self._slave}): "
                 f"{len(failed)}/{len(self._profile.registers)} register reads "
-                f"returned errors: {failed}"
+                f"returned errors or implausible values: {failed}"
             )
 
     def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:

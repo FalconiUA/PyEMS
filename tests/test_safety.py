@@ -78,6 +78,78 @@ def test_caps_multiple_units():
     assert only_claim(b, "pv2.WSet").target_w == 40000.0
 
 
+# ── frozen-measurement guard ─────────────────────────────────────────────────
+def make_frozen_safety():
+    return SafetyController(
+        max_comms_age_s=2.0,
+        safe_active_power_w=50000.0,
+        unit_active_power_setpoint_channels=["pv.WSet"],
+        frozen_measurement_channels=["grid.W"],
+        max_frozen_s=10.0,
+    )
+
+
+def test_frozen_measurement_trips(state):
+    """A bus that answers but serves a bit-identical measurement for too long
+    (hung meter/gateway) must trip exactly like a dead bus."""
+    safety = make_frozen_safety()
+    b = board()
+    state._channels[COMMS_AGE_CHANNEL].value = 0.1  # comms healthy
+    state._channels["grid.W"].value = -5000.0
+
+    b.tick(0.0)
+    safety.execute(state, b)  # first sight — starts the freeze clock
+    assert state.get(SAFE_MODE_CHANNEL) == 0.0
+
+    b.tick(11.0)  # unchanged for 11 s > 10 s limit
+    safety.execute(state, b)
+    assert state.get(SAFE_MODE_CHANNEL) == 1.0
+    assert only_claim(b).target_w == 50000.0
+
+
+def test_changing_measurement_never_trips(state):
+    safety = make_frozen_safety()
+    b = board()
+    state._channels[COMMS_AGE_CHANNEL].value = 0.1
+    for now, value in [(0.0, -5000.0), (11.0, -5001.0), (22.0, -5000.0)]:
+        state._channels["grid.W"].value = value
+        b.tick(now)
+        safety.execute(state, b)
+        assert state.get(SAFE_MODE_CHANNEL) == 0.0
+    assert b.valid_requests("pv.WSet", now=22.0) == []
+
+
+def test_frozen_trip_releases_when_value_moves_again(state):
+    safety = make_frozen_safety()
+    b = board()
+    state._channels[COMMS_AGE_CHANNEL].value = 0.1
+    state._channels["grid.W"].value = -5000.0
+    b.tick(0.0)
+    safety.execute(state, b)
+    b.tick(11.0)
+    safety.execute(state, b)
+    assert state.get(SAFE_MODE_CHANNEL) == 1.0
+
+    state._channels["grid.W"].value = -4000.0  # meter alive again
+    b.tick(12.0)
+    safety.execute(state, b)
+    assert state.get(SAFE_MODE_CHANNEL) == 0.0
+    assert b.valid_requests("pv.WSet", now=12.0) == []
+
+
+def test_frozen_guard_disabled_without_config(state):
+    """Default-constructed safety (no frozen params) must ignore frozen tags —
+    backward compatible with sites that have not opted in."""
+    b = board()
+    state._channels[COMMS_AGE_CHANNEL].value = 0.1
+    state._channels["grid.W"].value = -5000.0
+    safety = make_safety()
+    for now in (0.0, 100.0, 1000.0):
+        b.tick(now)
+        safety.execute(state, b)
+    assert state.get(SAFE_MODE_CHANNEL) == 0.0
+
+
 def test_trip_logs_once(state, caplog):
     import logging
 

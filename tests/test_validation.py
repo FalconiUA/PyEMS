@@ -2,7 +2,13 @@
 import pytest
 
 from pyems.channels import Channel
-from pyems.ems import required_channels, validate_binding_directions, validate_bindings
+from pyems.ems import (
+    required_channels,
+    validate_binding_directions,
+    validate_bindings,
+    validate_safety_allocation,
+    validate_setpoint_keepalive,
+)
 
 
 def make_site():
@@ -93,3 +99,56 @@ def test_measurement_bound_to_writable_channel_raises():
 def test_setpoint_bound_to_read_only_channel_raises():
     with pytest.raises(ValueError, match="pv.WSet"):
         validate_binding_directions(make_site(), make_channels(pv_wset_writable=False))
+
+
+# ── safety vs allocation consistency (a trip must be able to land) ───────────
+def test_safety_allocation_consistent_site_passes():
+    validate_safety_allocation(make_site())  # must not raise
+
+
+def test_safe_value_outside_device_envelope_raises():
+    # Safe value = export limit 200 kW, but the unit envelope tops at 100 kW:
+    # the priority-0 claim would intersect to empty and be rejected at trip time.
+    site = make_site()
+    site["export_limit"]["limit_w"] = 200000.0
+    with pytest.raises(ValueError, match="envelope"):
+        validate_safety_allocation(site)
+
+
+def test_guarded_channel_missing_from_allocation_raises():
+    # Safety guards a channel the board does not know: the FIRST trip would
+    # raise mid-control instead of curtailing. Must fail at startup.
+    site = make_site()
+    site["safety"]["unit_active_power_setpoint_channels"] = ["bat.WSet"]
+    with pytest.raises(ValueError, match="bat.WSet"):
+        validate_safety_allocation(site)
+
+
+# ── keep-alive vs device comms watchdog ──────────────────────────────────────
+def test_keepalive_validation_skipped_without_watchdog_key():
+    validate_setpoint_keepalive(make_site())  # must not raise
+
+
+def test_keepalive_too_slow_for_device_watchdog_raises():
+    site = make_site()
+    site["safety"]["device_comms_watchdog_s"] = 15.0  # default rewrite 10 s
+    with pytest.raises(ValueError, match="setpoint_rewrite_s"):
+        validate_setpoint_keepalive(site)
+
+
+def test_keepalive_fast_enough_passes():
+    site = make_site()
+    site["safety"]["device_comms_watchdog_s"] = 60.0
+    site["control"]["setpoint_rewrite_s"] = 10.0
+    validate_setpoint_keepalive(site)  # must not raise
+
+
+def test_required_channels_include_optional_guards():
+    site = make_site()
+    site["safety"]["frozen_measurement_channels"] = ["grid.W"]
+    site["setpoint_compliance"] = {
+        "unit_active_power_channel": "pv.W",
+        "unit_active_power_setpoint_channel": "pv.WSet",
+    }
+    req = set(required_channels(site))
+    assert {"grid.W", "pv.W", "pv.WSet", "sys.setpoint_violation"} <= req

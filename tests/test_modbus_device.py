@@ -168,6 +168,20 @@ def test_read_error_keeps_value_unchanged_and_raises():
     assert st.get("pv1.W") == 42.0  # untouched on error
 
 
+def test_implausible_value_fails_poll_and_keeps_last_value():
+    prof = DeviceProfile.load(HUAWEI)
+    # pv.W @32080 bounded [-10000, 110000] in the profile; feed 500000 W —
+    # decodable, but implausible for a 100 kW unit (wrong scale/profile/gateway
+    # garbage). It must fail the poll, not enter the loop as a measurement.
+    client = FakeModbusClient({32080: [0x0007, 0xA120]})  # 500000
+    drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
+    st = SystemState(drv.channels())
+    st._channels["pv1.W"].value = 42.0
+    with pytest.raises(ModbusReadError, match="pv1.W"):
+        drv.read_state(st)
+    assert st.get("pv1.W") == 42.0  # untouched on implausible read
+
+
 def test_partial_read_error_updates_good_registers_then_raises():
     prof = DeviceProfile.load(HUAWEI)
     # only pv.W @32080 answers; every other register returns an error response

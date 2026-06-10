@@ -19,6 +19,7 @@ import yaml
 
 from pyems.channels import Channel, SystemState
 from pyems.controllers.safety import SAFE_MODE_CHANNEL
+from pyems.controllers.setpoint_compliance import SETPOINT_VIOLATION_CHANNEL
 from pyems.drivers.cached import COMMS_AGE_CHANNEL
 from pyems.drivers.composite import CompositeDriver
 from pyems.ems import (
@@ -152,6 +153,7 @@ def _system_channels() -> list[Channel]:
     return [
         Channel(COMMS_AGE_CHANNEL, unit="s", value=0.0),
         Channel(SAFE_MODE_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
+        Channel(SETPOINT_VIOLATION_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
     ]
 
 
