@@ -408,9 +408,56 @@ async function clearErrorLog() {
   renderLogs();
   setStatus("Error log cleared.", "ok");
 }
+let simStatus = null;
+let simTimer = null;
+function simPanelUrl() {
+  return simStatus ? `http://${location.hostname}:${simStatus.panel_port}/` : "";
+}
+function renderSim() {
+  const text = $("simStateText");
+  if (!text || !simStatus) return;
+  const running = simStatus.reachable;
+  text.textContent = running
+    ? (simStatus.managed ? "Simulator running (started from this UI)." : "Simulator running (started externally).")
+    : "Simulator is not running.";
+  text.className = "hint " + (running ? "ok" : "");
+  $("simStartBtn").disabled = running;
+  $("simStopBtn").disabled = !running;
+  $("simOpenBtn").disabled = !running;
+  $("simSitePath").textContent = simStatus.sim_site;
+  $("simEmsCmd").textContent = simStatus.ems_command;
+  const frame = $("simFrame");
+  frame.hidden = !running;
+  if (running && !frame.src) frame.src = simPanelUrl();
+  if (!running) frame.removeAttribute("src");
+}
+async function refreshSim() {
+  simStatus = await api("/api/sim/status");
+  renderSim();
+}
+async function startSim() {
+  setStatus("Starting device simulator...");
+  $("simStartBtn").disabled = true;
+  await api("/api/sim/start", { method: "POST", body: "{}" });
+  await refreshSim();
+  setStatus(`Simulator running. Start the EMS with: ${simStatus.ems_command}`, "ok");
+}
+async function stopSim() {
+  await api("/api/sim/stop", { method: "POST", body: "{}" });
+  await refreshSim();
+  setStatus("Simulator stopped.", "ok");
+}
+
 function showView(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === name));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === name));
+  if (name === "simulation") {
+    refreshSim().catch(handleError);
+    if (!simTimer) simTimer = setInterval(() => refreshSim().catch(() => {}), 3000);
+  } else if (simTimer) {
+    clearInterval(simTimer);
+    simTimer = null;
+  }
 }
 
 document.addEventListener("change", async (event) => {
@@ -435,6 +482,9 @@ document.addEventListener("click", async (event) => {
   if (target.id === "saveProfileBtn") saveProfile().catch(handleError);
   if (target.id === "refreshErrorLogBtn") loadErrorLog().catch(handleError);
   if (target.id === "clearErrorLogBtn") clearErrorLog().catch(handleError);
+  if (target.id === "simStartBtn") startSim().catch((error) => { handleError(error); refreshSim().catch(() => {}); });
+  if (target.id === "simStopBtn") stopSim().catch(handleError);
+  if (target.id === "simOpenBtn" && simStatus) window.open(simPanelUrl(), "_blank");
   if (target.id === "addDeviceBtn") {
     site.devices.push({ id: "unit" + (site.devices.length + 1), profile: profiles[0] || "", host: "", slave_id: 1 });
     renderAll();

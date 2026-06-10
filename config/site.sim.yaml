@@ -1,0 +1,85 @@
+# Simulation site: the SAME schema as site.yaml, but every device points at
+# the local simulator (pyems-sim) instead of real hardware.
+#
+#   terminal 1:  pyems-sim                      # simulated devices + web panel
+#   terminal 2:  pyems --site config/site.sim.yaml
+#   browser:     http://127.0.0.1:8766
+#
+# The EMS process is completely unmodified — same controllers, same allocator,
+# same CachedDriver and real Modbus TCP on the wire.
+scenario:
+  control_mode: export_limit
+  active_power_limit_w: 30000
+  connection_point_device_id: grid
+  unit_device_id: pv
+  pid_tuning: auto
+  export_priority: 5
+  regulation_priority: 10
+control:
+  fast_cycle_s: 1
+  poll_interval_s: 0.5
+  setpoint_rewrite_s: 10
+export_limit:
+  limit_w: 30000
+  priority: 5
+  connection_point_active_power_channel: grid.W
+  unit_active_power_channel: pv.W
+  unit_active_power_setpoint_channel: pv.WSet
+connection_point_active_power:
+  export_limit_w: 30000
+  import_limit_w: 1000000000.0
+  priority: 10
+  gains:
+    kp: 0.4
+    ki: 0.08
+    kd: 0.0
+    tt: 5.0
+  connection_point_active_power_channel: grid.W
+  unit_active_power_channel: pv.W
+  unit_active_power_setpoint_channel: pv.WSet
+safety:
+  max_comms_age_s: 2
+  max_measurement_frozen_s: 30
+  frozen_measurement_channels:
+  - grid.W
+  device_comms_watchdog_s: 60
+  unit_active_power_setpoint_channels:
+  - pv.WSet
+setpoint_compliance:
+  unit_active_power_channel: pv.W
+  unit_active_power_setpoint_channel: pv.WSet
+  tolerance_w: 2000
+  max_violation_s: 30
+allocation:
+  channels:
+  - setpoint_channel: pv.WSet
+    p_min_w: 0
+    p_max_w: 100000
+    default_w: 100000
+    ramp_rate_w_per_s: 5000
+    deadband_w: 200
+devices:
+- id: grid
+  profile: meters/example_grid_meter.yaml
+  host: 127.0.0.1
+  port: 15021
+  slave_id: 1
+- id: pv
+  profile: inverters/huawei_sun2000_100ktl_m1.yaml
+  host: 127.0.0.1
+  port: 15022
+  slave_id: 1
+# Sim-only knobs (the EMS ignores this section).
+simulation:
+  tick_s: 0.2
+  meter_noise_w: 25      # keeps grid.W jittering like a live meter
+  unit:
+    tau_s: 2.0           # inverter response lag to an active power setpoint
+    peak_w: 100000       # synthetic "clear day" peak
+    period_s: 600        # one synthetic day-night cycle, seconds
+    noise_w: 500
+  load:
+    base_w: 30000
+    amplitude_w: 10000
+    period_s: 900
+    noise_w: 100

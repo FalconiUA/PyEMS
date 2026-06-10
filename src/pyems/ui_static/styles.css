@@ -133,3 +133,13 @@ td input, td select { min-height: 32px; }
   table { display: block; overflow-x: auto; }
 }
 @media (max-width: 560px) { .summary { grid-template-columns: 1fr; } }
+
+.hint.ok { color: var(--ok); }
+.sim-frame {
+  width: 100%;
+  height: 78vh;
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #10151c;
+}
