@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyEMS simulator</title>
+<style>
+  :root {
+    --bg: #10151c; --panel: #1a212b; --line: #2b3542; --text: #dde5ee;
+    --muted: #8b98a8; --accent: #57b2ff; --ok: #4cd97b; --warn: #ffb454; --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: baseline; gap: 16px; padding: 12px 20px;
+           border-bottom: 1px solid var(--line); }
+  h1 { font-size: 18px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { padding: 16px 20px 40px; display: grid; gap: 16px;
+         grid-template-columns: 2.2fr 1fr; align-items: start; }
+  .col { display: grid; gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 10px; padding: 14px 16px; }
+  .panel h2 { font-size: 14px; margin: 0 0 10px; color: var(--accent);
+              text-transform: uppercase; letter-spacing: .06em; }
+  canvas { width: 100%; height: 220px; display: block; }
+  .kpis { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 8px; }
+  .kpi .v { font-size: 20px; font-weight: 600; }
+  .kpi .l { color: var(--muted); font-size: 12px; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; }
+  legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
+  label { display: block; margin: 6px 0; color: var(--muted); font-size: 13px; }
+  input[type=number], select, textarea {
+    width: 100%; background: #0d1117; color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; font: inherit; }
+  input[type=range] { width: 100%; }
+  textarea { height: 70px; font-family: ui-monospace, monospace; font-size: 12px; }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  button { background: #233041; color: var(--text); border: 1px solid var(--line);
+           border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #06121f; font-weight: 600; }
+  button.fault { width: 100%; text-align: left; margin: 4px 0; }
+  button.fault.active { background: #4a1f24; border-color: var(--bad); color: #ffc9c9; }
+  .dev { margin-bottom: 12px; }
+  .dev .name { font-weight: 600; }
+  .dev .meta { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+         margin-right: 6px; background: var(--ok); }
+  .dot.off { background: var(--bad); }
+  #events { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto;
+            font-size: 12.5px; }
+  #events li { padding: 3px 0; border-bottom: 1px solid var(--line); }
+  #events .t { color: var(--muted); margin-right: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px;
+            color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 14px; height: 3px; margin-right: 5px;
+              vertical-align: middle; }
+  .hint { font-size: 12px; color: var(--muted); }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>PyEMS simulator</h1>
+  <span class="sub">simulated devices control panel — the EMS runs separately against <code>site.sim.yaml</code></span>
+</header>
+<main>
+  <div class="col">
+    <div class="panel">
+      <div class="kpis" id="kpis"></div>
+      <h2>Unit (PV)</h2>
+      <canvas id="chartUnit" height="220"></canvas>
+      <div class="legend">
+        <span><i style="background:#8b98a8"></i>available</span>
+        <span><i style="background:#4cd97b"></i>actual P</span>
+        <span><i style="background:#57b2ff"></i>setpoint from EMS</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Connection point</h2>
+      <canvas id="chartCp" height="220"></canvas>
+      <div class="legend">
+        <span><i style="background:#ffb454"></i>load</span>
+        <span><i style="background:#ff6b6b"></i>P at connection point (import +)</span>
+        <span><i style="background:#ff6b6b; height:1px; border-top:1px dashed #ff6b6b; background:none"></i>export limit</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Events</h2>
+      <ul id="events"></ul>
+    </div>
+  </div>
+  <div class="col">
+    <div class="panel">
+      <h2>PV generation source</h2>
+      <div id="src-pv"></div>
+    </div>
+    <div class="panel">
+      <h2>Site load source</h2>
+      <div id="src-load"></div>
+    </div>
+    <div class="panel">
+      <h2>Fault injection</h2>
+      <div id="faults"></div>
+      <p class="hint">offline = TCP server down · freeze = stale registers ·
+      exception = Modbus error responses · reject writes = setpoint writes refused ·
+      ignore setpoint = unit does not follow WSet</p>
+    </div>
+  </div>
+</main>
+<script>
+"use strict";
+const FAULT_LABELS = {
+  offline: "Offline (kill TCP server)",
+  freeze: "Freeze registers",
+  modbus_exception: "Modbus exception responses",
+  reject_writes: "Reject setpoint writes",
+  ignore_setpoint: "Ignore setpoint (no remote ctrl)",
+};
+let state = null;
+let history = [];   // rows of [t, available, unitW, wset, load, cp]
+let lastT = -Infinity;
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (body !== undefined && data && data.ok === false) alert(data.error || "request failed");
+  return data;
+}
+
+function fmtW(v) {
+  if (v === null || v === undefined) return "—";
+  return Math.abs(v) >= 10000 ? (v / 1000).toFixed(1) + " kW" : Math.round(v) + " W";
+}
+
+function drawChart(canvas, series, opts) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width = canvas.clientWidth * devicePixelRatio;
+  const H = canvas.height = canvas.clientHeight * devicePixelRatio;
+  ctx.clearRect(0, 0, W, H);
+  if (!history.length) return;
+  const tMax = history[history.length - 1][0];
+  const tMin = Math.max(history[0][0], tMax - 180);
+  const rows = history.filter(r => r[0] >= tMin);
+  let vMin = 0, vMax = 1;
+  for (const s of series) for (const r of rows) {
+    vMin = Math.min(vMin, r[s.idx]); vMax = Math.max(vMax, r[s.idx]);
+  }
+  for (const h of (opts.hlines || [])) { vMin = Math.min(vMin, h.v); vMax = Math.max(vMax, h.v); }
+  const pad = (vMax - vMin) * 0.1 + 1;
+  vMin -= pad; vMax += pad;
+  const x = t => (t - tMin) / Math.max(1e-9, tMax - tMin) * (W - 70) + 60;
+  const y = v => H - 22 - (v - vMin) / (vMax - vMin) * (H - 40);
+  ctx.font = `${11 * devicePixelRatio}px system-ui`;
+  ctx.strokeStyle = "#2b3542"; ctx.fillStyle = "#8b98a8"; ctx.lineWidth = 1;
+  const steps = 4;
+  for (let i = 0; i <= steps; i++) {
+    const v = vMin + (vMax - vMin) * i / steps;
+    ctx.beginPath(); ctx.moveTo(60, y(v)); ctx.lineTo(W - 8, y(v)); ctx.stroke();
+    ctx.fillText((v / 1000).toFixed(0) + "k", 8, y(v) + 4);
+  }
+  for (const h of (opts.hlines || [])) {
+    ctx.save(); ctx.strokeStyle = h.color; ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.moveTo(60, y(h.v)); ctx.lineTo(W - 8, y(h.v)); ctx.stroke(); ctx.restore();
+  }
+  for (const s of series) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 1.7 * devicePixelRatio; ctx.beginPath();
+    rows.forEach((r, i) => i ? ctx.lineTo(x(r[0]), y(r[s.idx])) : ctx.moveTo(x(r[0]), y(r[s.idx])));
+    ctx.stroke();
+  }
+}
+
+function render() {
+  if (!state) return;
+  const snap = state.snapshot || {};
+  const kpis = [
+    ["PV available", fmtW(snap.unit_available_w)],
+    ["PV actual", fmtW(snap.unit_active_power_w)],
+    ["EMS setpoint", fmtW(snap.unit_active_power_setpoint_w)],
+    ["Load", fmtW(snap.load_w)],
+    ["Connection point", fmtW(snap.connection_point_w)],
+  ];
+  document.getElementById("kpis").innerHTML = kpis.map(
+    ([l, v]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`
+  ).join("");
+
+  drawChart(document.getElementById("chartUnit"), [
+    {idx: 1, color: "#8b98a8"}, {idx: 2, color: "#4cd97b"}, {idx: 3, color: "#57b2ff"},
+  ], {});
+  const limit = state.scenario && state.scenario.active_power_limit_w;
+  drawChart(document.getElementById("chartCp"), [
+    {idx: 4, color: "#ffb454"}, {idx: 5, color: "#ff6b6b"},
+  ], {hlines: limit == null ? [] : [{v: -limit, color: "#ff6b6b"}]});
+
+  document.getElementById("events").innerHTML = (state.events || []).map(
+    e => `<li><span class="t">${e.at}</span>${e.message}</li>`
+  ).join("");
+  renderFaults();
+  renderSourceStatus("pv"); renderSourceStatus("load");
+}
+
+function renderFaults() {
+  const host = document.getElementById("faults");
+  host.innerHTML = "";
+  for (const dev of state.devices || []) {
+    const div = document.createElement("div");
+    div.className = "dev";
+    div.innerHTML = `<div class="name"><span class="dot ${dev.online ? "" : "off"}"></span>` +
+      `${dev.id} <span class="meta">(${dev.role})</span></div>` +
+      `<div class="meta">${dev.model} — ${dev.endpoint}</div>`;
+    for (const [fault, active] of Object.entries(dev.faults)) {
+      const btn = document.createElement("button");
+      btn.className = "fault" + (active ? " active" : "");
+      btn.textContent = (active ? "✓ " : "") + (FAULT_LABELS[fault] || fault);
+      btn.onclick = () => api("/api/fault", {device: dev.id, fault, active: !active}).then(poll);
+      div.appendChild(btn);
+    }
+    host.appendChild(div);
+  }
+}
+
+function sourcePanel(target, defaults) {
+  const host = document.getElementById("src-" + target);
+  host.innerHTML = `
+    <label>Mode
+      <select id="${target}-mode">
+        <option value="synthetic">Synthetic curve</option>
+        <option value="manual">Manual value</option>
+        <option value="replay">Replay CSV (1 s samples)</option>
+      </select>
+    </label>
+    <fieldset id="${target}-manual" hidden><legend>manual</legend>
+      <label>Value, W <input id="${target}-value" type="number" step="100" value="${defaults.value}"></label>
+      <input id="${target}-slider" type="range" min="0" max="${defaults.max}" step="100" value="${defaults.value}">
+    </fieldset>
+    <fieldset id="${target}-synthetic"><legend>synthetic</legend>
+      <div class="row">
+        <label>Base, W <input id="${target}-base" type="number" value="${defaults.base}"></label>
+        <label>Amplitude, W <input id="${target}-amp" type="number" value="${defaults.amp}"></label>
+      </div>
+      <div class="row">
+        <label>Period, s <input id="${target}-period" type="number" value="${defaults.period}"></label>
+        <label>Noise, W <input id="${target}-noise" type="number" value="${defaults.noise}"></label>
+      </div>
+    </fieldset>
+    <fieldset id="${target}-replay" hidden><legend>replay</legend>
+      <label>CSV file <input id="${target}-file" type="file" accept=".csv,.txt"></label>
+      <label>…or paste samples <textarea id="${target}-csv" placeholder="one value per line, or time,value"></textarea></label>
+      <div class="row">
+        <label>Speed × <input id="${target}-speed" type="number" step="0.1" value="1"></label>
+        <label><input id="${target}-loop" type="checkbox" checked> loop</label>
+      </div>
+    </fieldset>
+    <button class="primary" id="${target}-apply">Apply</button>
+    <div class="hint" id="${target}-status"></div>`;
+  const modeSel = document.getElementById(`${target}-mode`);
+  modeSel.onchange = () => {
+    for (const m of ["manual", "synthetic", "replay"])
+      document.getElementById(`${target}-${m}`).hidden = m !== modeSel.value;
+  };
+  const value = document.getElementById(`${target}-value`);
+  const slider = document.getElementById(`${target}-slider`);
+  slider.oninput = () => { value.value = slider.value; };
+  value.oninput = () => { slider.value = value.value; };
+  document.getElementById(`${target}-file`).onchange = ev => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    file.text().then(text => { document.getElementById(`${target}-csv`).value = text; });
+  };
+  document.getElementById(`${target}-apply`).onclick = () => {
+    const mode = modeSel.value;
+    const body = {target, mode};
+    if (mode === "manual") body.value_w = parseFloat(value.value || "0");
+    if (mode === "synthetic") {
+      body.base_w = parseFloat(document.getElementById(`${target}-base`).value || "0");
+      body.amplitude_w = parseFloat(document.getElementById(`${target}-amp`).value || "0");
+      body.period_s = parseFloat(document.getElementById(`${target}-period`).value || "600");
+      body.noise_w = parseFloat(document.getElementById(`${target}-noise`).value || "0");
+    }
+    if (mode === "replay") {
+      body.csv = document.getElementById(`${target}-csv`).value;
+      body.speed = parseFloat(document.getElementById(`${target}-speed`).value || "1");
+      body.loop = document.getElementById(`${target}-loop`).checked;
+    }
+    api("/api/source", body).then(poll);
+  };
+}
+
+function renderSourceStatus(target) {
+  const info = state.sources && state.sources[target];
+  if (!info) return;
+  let text = `active: ${info.mode}, last ${fmtW(info.last_w)}`;
+  if (info.mode === "replay") text += ` — sample ${info.index + 1}/${info.total}`;
+  document.getElementById(`${target}-status`).textContent = text;
+}
+
+async function poll() {
+  try {
+    const data = await api(`/api/state?since=${encodeURIComponent(lastT)}`);
+    state = data;
+    for (const row of data.history || []) {
+      history.push(row);
+      lastT = row[0];
+    }
+    if (history.length > 2400) history = history.slice(-2400);
+    render();
+  } catch (e) { /* sim restarting; keep polling */ }
+}
+
+async function init() {
+  const data = await api("/api/state");
+  state = data;
+  history = data.history || [];
+  if (history.length) lastT = history[history.length - 1][0];
+  const pMax = (data.scenario && data.scenario.unit_p_max_w) || 100000;
+  sourcePanel("pv", {value: Math.round(pMax / 2), max: pMax, base: 0,
+                     amp: pMax, period: 600, noise: Math.round(pMax * 0.005)});
+  sourcePanel("load", {value: Math.round(pMax * 0.3), max: pMax, base: Math.round(pMax * 0.3),
+                       amp: Math.round(pMax * 0.1), period: 900, noise: 100});
+  render();
+  setInterval(poll, 500);
+}
+init();
+</script>
+</body>
+</html>
