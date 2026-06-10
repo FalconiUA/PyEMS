@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
 
 
 @dataclass
@@ -14,13 +14,17 @@ class RampLimits:
     rate_up: float = math.inf
     rate_down: float = math.inf
 
+    def __post_init__(self) -> None:
+        if self.rate_up < 0 or self.rate_down < 0:
+            raise ValueError("ramp rates must be non-negative")
+
     @classmethod
     def from_percent_per_minute(
         cls,
         p_rated: float,
         up_pct_per_min: float,
-        down_pct_per_min: Optional[float] = None,
-    ) -> "RampLimits":
+        down_pct_per_min: float | None = None,
+    ) -> RampLimits:
         down = up_pct_per_min if down_pct_per_min is None else down_pct_per_min
         return cls(
             rate_up=p_rated * (up_pct_per_min / 100.0) / 60.0,
@@ -32,8 +36,6 @@ class RampRateLimiter:
     """Stateful slew-rate limiter."""
 
     def __init__(self, limits: RampLimits, initial: float = 0.0) -> None:
-        if limits.rate_up < 0 or limits.rate_down < 0:
-            raise ValueError("ramp rates must be non-negative")
         self.limits = limits
         self._value = float(initial)
 
@@ -48,16 +50,9 @@ class RampRateLimiter:
         if dt <= 0:
             raise ValueError(f"dt must be > 0, got {dt}")
 
-        delta = target - self._value
-        max_up = self.limits.rate_up * dt
-        max_down = self.limits.rate_down * dt
-
-        if delta > max_up:
-            delta = max_up
-        elif delta < -max_down:
-            delta = -max_down
-
-        self._value += delta
+        lo = self._value - self.limits.rate_down * dt
+        hi = self._value + self.limits.rate_up * dt
+        self._value = min(max(target, lo), hi)
         return self._value
 
 
@@ -66,7 +61,8 @@ def apply_ramp_limit(
     limits: RampLimits,
     dt: float,
     initial: float = 0.0,
-) -> List[float]:
+) -> list[float]:
+    """Apply the limiter over a whole target sequence at a fixed sample time."""
     limiter = RampRateLimiter(limits, initial=initial)
     return [limiter.step(float(t), dt) for t in targets]
 
