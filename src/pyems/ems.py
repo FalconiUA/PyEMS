@@ -9,6 +9,7 @@ IEC 61131-3 analogy: build_ems() assembles the RESOURCE (Scheduler) with its
 TASKs and FUNCTION_BLOCKs, binding I/O per the CONFIGURATION in site.yaml.
 """
 import logging
+import signal
 from pathlib import Path
 
 import yaml
@@ -337,7 +338,17 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
 def main() -> None:
     """Console entry point (see [project.scripts] in pyproject.toml)."""
     setup_logging()
-    build_ems().run()
+    scheduler = build_ems()
+
+    # systemd stops services with SIGTERM: request a clean shutdown (finish the
+    # cycle, disconnect the bus) instead of dying mid-Modbus-transaction.
+    # Ctrl-C (SIGINT/KeyboardInterrupt) is already handled inside run().
+    def _on_sigterm(signum, frame) -> None:
+        logger.info("Received SIGTERM; requesting scheduler stop")
+        scheduler.stop()
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    scheduler.run()
 
 
 if __name__ == "__main__":

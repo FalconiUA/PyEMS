@@ -14,6 +14,7 @@ Rules from §2.7.2:
   - Higher-priority tasks preempt lower-priority ones
 """
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -61,6 +62,7 @@ class Scheduler:
         self._allocator = allocator
         self._board = board
         self._overrunning = False  # last cycle-overrun state — log on transition
+        self._stop = threading.Event()
 
     def step(self, now: float) -> None:
         """One IEC scan cycle: read inputs → run due tasks (priority order) →
@@ -89,6 +91,14 @@ class Scheduler:
         # write all outputs last
         self._driver.write_setpoints(self._state)
 
+    def stop(self) -> None:
+        """Request a clean shutdown (thread- and signal-handler-safe).
+
+        Wakes the inter-cycle sleep immediately; run() finishes the current
+        cycle, disconnects the driver and returns.
+        """
+        self._stop.set()
+
     def run(self) -> None:
         tick = min(t.interval_s for t in self._tasks)
         logger.info(
@@ -96,7 +106,7 @@ class Scheduler:
             len(self._tasks), tick, [t.priority for t in self._tasks],
         )
         try:
-            while True:
+            while not self._stop.is_set():
                 now = time.monotonic()
                 self.step(now)
 
@@ -107,7 +117,19 @@ class Scheduler:
                         self._overrunning = True
                 elif self._overrunning:
                     self._overrunning = False
-                time.sleep(max(0.0, tick - elapsed))
+                self._stop.wait(max(0.0, tick - elapsed))
+            logger.info("Scheduler stopping (stop requested)")
         except KeyboardInterrupt:
             logger.info("Scheduler stopping (interrupt)")
+        except Exception:
+            # A controller/allocator bug must not kill the process silently:
+            # log it, then re-raise so the exit code is non-zero and a
+            # supervisor (systemd Restart=on-failure) can restart us.
+            logger.exception("Scheduler stopping: unhandled error in control cycle")
+            raise
+        finally:
+            # Always release the bus, whatever ended the loop. The field
+            # devices' own comms watchdogs are the layer that fail-safes the
+            # power output once we stop writing setpoints.
             self._driver.disconnect()
+            logger.info("Scheduler stopped")
