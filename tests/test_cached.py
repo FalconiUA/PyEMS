@@ -1,16 +1,20 @@
 """Tests for the non-blocking cache layer (src/drivers/cached.py)."""
+import logging
 import threading
 import time
+from pathlib import Path
 
 from pyems.channels import Channel, SystemState
 from pyems.drivers.base import Driver
 from pyems.drivers.cached import COMMS_AGE_CHANNEL, CachedDriver
+from pyems.drivers.modbus_device import DeviceProfile, ModbusDeviceDriver
 
 
 class FakeInner(Driver):
     """Inner driver whose 'bus' returns fixed values and signals each read.
 
-    `fail` makes read_state raise, to exercise the stale-cache / age path.
+    `fail` makes read_state raise, to exercise the stale-cache / age path;
+    `fail_writes` makes write_setpoints raise, to exercise flush logging.
     """
 
     def __init__(self, measurements: dict[str, float]) -> None:
@@ -19,8 +23,10 @@ class FakeInner(Driver):
             Channel("pv.WSet", writable=True, min_val=0, max_val=1e5)
         ]
         self.fail = False
+        self.fail_writes = False
         self.connect_calls = 0
         self.read_event = threading.Event()
+        self.write_event = threading.Event()
         self.written: dict[str, float] = {}
 
     def connect(self) -> None:
@@ -40,7 +46,11 @@ class FakeInner(Driver):
         self.read_event.set()
 
     def write_setpoints(self, state: SystemState) -> None:
+        if self.fail_writes:
+            self.write_event.set()
+            raise OSError("write rejected")
         self.written["pv.WSet"] = state.get("pv.WSet")
+        self.write_event.set()
 
 
 def test_channels_include_comms_age_tag():
@@ -112,6 +122,62 @@ def test_stale_bus_grows_age_and_keeps_last_value():
         read = SystemState(drv.channels())
         drv.read_state(read)
         assert read.get("grid.W") == 50.0
+    finally:
+        drv.disconnect()
+
+
+def test_error_responses_do_not_refresh_comms_age():
+    """Regression: a device answering every read with a Modbus error response
+    (e.g. SmartLogger 0x0B for an offline inverter) must NOT count as a
+    successful poll — otherwise comms age stays fresh and safety never trips."""
+
+    class ErrorResult:
+        registers: list[int] = []
+        def isError(self):  # noqa: N802 (pymodbus API name)
+            return True
+
+    class ExceptionRespondingClient:
+        def connect(self):
+            return True
+        def close(self):
+            pass
+        def read_holding_registers(self, address, count, slave):
+            return ErrorResult()
+        def write_registers(self, address, values, slave):
+            return ErrorResult()
+
+    huawei = Path(__file__).resolve().parents[1] / "profiles" / "inverters" / "huawei_sun2000_100ktl_m1.yaml"
+    inner = ModbusDeviceDriver(
+        DeviceProfile.load(huawei), client=ExceptionRespondingClient(), prefix="pv"
+    )
+    drv = CachedDriver(inner, poll_interval_s=0.01)
+    drv.connect()
+    try:
+        time.sleep(0.1)  # several polls, all answered with error responses
+        assert drv.age_s() == float("inf")  # never a successful read
+    finally:
+        drv.disconnect()
+
+
+def test_write_failure_logged_once_until_recovery(caplog):
+    inner = FakeInner({"grid.W": 1.0})
+    drv = CachedDriver(inner, poll_interval_s=0.01)
+    inner.fail_writes = True
+    drv.connect()
+    try:
+        st = SystemState(drv.channels())
+        st.set("pv.WSet", 1000.0)
+        with caplog.at_level(logging.WARNING, logger="pyems.drivers.cached"):
+            drv.write_setpoints(st)
+            assert inner.write_event.wait(timeout=2.0)
+            time.sleep(0.1)  # many more failing flushes
+            failures = [r for r in caplog.records if "WRITE failed" in r.message]
+            assert len(failures) == 1  # transition-gated, no per-cycle spam
+            inner.fail_writes = False  # bus accepts writes again
+            deadline = time.monotonic() + 2.0
+            while inner.written.get("pv.WSet") != 1000.0 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert any("WRITE recovered" in r.message for r in caplog.records)
     finally:
         drv.disconnect()
 

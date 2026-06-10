@@ -5,9 +5,9 @@ registers:
 - channel: grid.W
   address: 40001
   type: int32
-  scale: 10
-  unit: kW
-  access: read_write
+  scale: 1
+  unit: W
+  access: read
 - channel: grid.WphA
   address: 40003
   type: int32

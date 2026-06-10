@@ -91,3 +91,20 @@ def test_read_fans_out_to_all_devices():
     comp.read_state(st)
     assert st.get("grid.W") == 111.0
     assert st.get("pv.W") == 222.0
+
+
+class FailingDevice(StubDevice):
+    def read_state(self, state: SystemState) -> None:
+        raise OSError("device offline")
+
+
+def test_one_failing_device_does_not_block_others_and_read_raises():
+    """Healthy devices keep their values fresh; the aggregate error still marks
+    the poll failed (conservative — the comms age grows, safety may trip)."""
+    dead = FailingDevice([Channel("grid.W")])
+    alive = StubDevice([Channel("pv.W", value=333.0)])
+    comp = CompositeDriver([dead, alive])
+    st = SystemState([Channel("grid.W"), Channel("pv.W")])
+    with pytest.raises(IOError, match="1/2 device reads failed"):
+        comp.read_state(st)
+    assert st.get("pv.W") == 333.0  # the healthy device was still polled

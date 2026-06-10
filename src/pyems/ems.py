@@ -91,6 +91,53 @@ def validate_bindings(site: dict, available: list[str]) -> None:
         )
 
 
+def _measurement_binding_channels(site: dict) -> list[str]:
+    return [
+        cfg[key]
+        for cfg in (site["export_limit"], site["connection_point_active_power"])
+        for key in (
+            "connection_point_active_power_channel",
+            "unit_active_power_channel",
+        )
+    ]
+
+
+def _setpoint_binding_channels(site: dict) -> list[str]:
+    return [
+        site["export_limit"]["unit_active_power_setpoint_channel"],
+        site["connection_point_active_power"]["unit_active_power_setpoint_channel"],
+        *site["safety"]["unit_active_power_setpoint_channels"],
+        *(ch["setpoint_channel"] for ch in site["allocation"]["channels"]),
+    ]
+
+
+def validate_binding_directions(site: dict, channels: list[Channel]) -> None:
+    """Raise if a measurement binding hits a writable channel or vice versa.
+
+    A measurement tag on a writable channel is silently fatal at runtime: the
+    CachedDriver classifies channels by `writable`, so the polled value would
+    never reach the controllers AND the stale state value would be flushed to
+    the device as a setpoint (e.g. a meter profile mistakenly marking grid.W
+    as read_write). Fail at startup instead.
+    """
+    writable = {c.name for c in channels if c.writable}
+    bad_measurements = [t for t in _measurement_binding_channels(site) if t in writable]
+    bad_setpoints = [t for t in _setpoint_binding_channels(site) if t not in writable]
+    problems = []
+    if bad_measurements:
+        problems.append(
+            f"measurement bindings point at writable channels {bad_measurements} "
+            f"(check `access:` in the device profile — measurements must be 'read')"
+        )
+    if bad_setpoints:
+        problems.append(
+            f"setpoint bindings point at read-only channels {bad_setpoints} "
+            f"(setpoints must be 'read_write' in the device profile)"
+        )
+    if problems:
+        raise ValueError("site.yaml binding direction error: " + "; ".join(problems))
+
+
 def build_tasks(site: dict) -> list[Task]:
     """Build the control tasks from a site config dict.
 
@@ -191,8 +238,18 @@ def build_allocation(site: dict) -> tuple[PowerAllocator, RequestBoard]:
 
 
 def build_device_drivers(devices_cfg: list[dict]) -> list[md.ModbusDeviceDriver]:
-    """Build field-device drivers, sharing one TCP client per endpoint."""
-    clients: dict[tuple[str, str, int | None], object] = {}
+    """Build field-device drivers, sharing one client per bus endpoint.
+
+    Per-device optional keys in site.yaml:
+      port       TCP port (default: profile default_port)
+      serial     RTU bus settings {baudrate, bytesize, parity, stopbits}
+                 (default: 9600 8N1 — see DEFAULT_SERIAL in modbus_device)
+      timeout_s  transaction timeout for either protocol
+
+    Devices on the same endpoint share one client, so their serial/timeout
+    settings must agree — a conflict is a config error, not a second client.
+    """
+    clients: dict[tuple[str, str, int | None], tuple[object, tuple]] = {}
     drivers: list[md.ModbusDeviceDriver] = []
     for dev in devices_cfg:
         profile = md.DeviceProfile.load(PROFILES / dev["profile"])
@@ -200,16 +257,28 @@ def build_device_drivers(devices_cfg: list[dict]) -> list[md.ModbusDeviceDriver]
             "port",
             profile.default_port if profile.protocol == "modbus_tcp" else None,
         )
+        serial = dev.get("serial")
+        timeout_s = dev.get("timeout_s")
+        settings = (tuple(sorted((serial or {}).items())), timeout_s)
         key = (profile.protocol, dev["host"], port)
-        client = clients.get(key)
-        if client is None:
-            if profile.protocol == "modbus_tcp":
-                client = md.ModbusTcpClient(dev["host"], port=port)
-            elif profile.protocol == "modbus_rtu":
-                client = md.ModbusSerialClient(port=dev["host"])
-            else:
-                raise ValueError(f"Unknown protocol: {profile.protocol}")
-            clients[key] = client
+        if key in clients:
+            client, first_settings = clients[key]
+            if settings != first_settings:
+                raise ValueError(
+                    f"device '{dev.get('id', dev['host'])}' shares endpoint {key} "
+                    f"but has conflicting serial/timeout settings "
+                    f"({settings} vs {first_settings})"
+                )
+        else:
+            client = md.make_client(
+                profile.protocol,
+                dev["host"],
+                port=port,
+                default_port=profile.default_port,
+                serial=serial,
+                timeout_s=timeout_s,
+            )
+            clients[key] = (client, settings)
         drivers.append(
             md.ModbusDeviceDriver(
                 profile,
@@ -247,8 +316,10 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     state = SystemState(channels)
 
     # Fail fast: every controller-bound tag must exist before we start driving
-    # hardware (a typo must fail here, not as a mid-cycle KeyError on the bus).
+    # hardware (a typo must fail here, not as a mid-cycle KeyError on the bus),
+    # and measurements/setpoints must land on channels of the right direction.
     validate_bindings(site, [c.name for c in channels])
+    validate_binding_directions(site, channels)
 
     tasks = build_tasks(site)
     allocator, board = build_allocation(site)

@@ -25,6 +25,61 @@ logger = logging.getLogger(__name__)
 # registers per Modbus data type
 _REG_COUNT = {"int16": 1, "uint16": 1, "int32": 2, "uint32": 2}
 
+# RTU defaults applied when site.yaml gives no `serial:` mapping. 9600 8N1 is
+# the most common Modbus RTU factory setting; override per device in site.yaml.
+DEFAULT_SERIAL = {"baudrate": 9600, "bytesize": 8, "parity": "N", "stopbits": 1}
+_SERIAL_KEYS = frozenset(DEFAULT_SERIAL)
+
+
+class ModbusReadError(IOError):
+    """One or more register reads returned a Modbus error response.
+
+    Raised AFTER all registers were attempted (good registers still update),
+    so CachedDriver treats the poll as failed and the comms age keeps growing —
+    a gateway answering every request with an exception code (e.g. SmartLogger
+    0x0B for an offline inverter) must not count as fresh data.
+    """
+
+
+class ModbusWriteError(IOError):
+    """One or more setpoint writes returned a Modbus error response.
+
+    A rejected write (illegal value, remote control not enabled on the device)
+    must surface — silently assuming the command landed is unacceptable when
+    driving real units.
+    """
+
+
+def make_client(
+    protocol: str,
+    host: str,
+    port: int | None = None,
+    default_port: int = 502,
+    serial: dict | None = None,
+    timeout_s: float | None = None,
+):
+    """Build a pymodbus client for one bus endpoint.
+
+    For `modbus_tcp`, `host`/`port` are the TCP endpoint. For `modbus_rtu`,
+    `host` is the serial port path and `serial` overrides DEFAULT_SERIAL
+    (keys: baudrate, bytesize, parity, stopbits). `timeout_s` applies to both.
+    """
+    if protocol == "modbus_tcp":
+        kwargs = {} if timeout_s is None else {"timeout": timeout_s}
+        return ModbusTcpClient(host, port=port or default_port, **kwargs)
+    if protocol == "modbus_rtu":
+        unknown = set(serial or {}) - _SERIAL_KEYS
+        if unknown:
+            raise ValueError(
+                f"unknown serial option(s) {sorted(unknown)} for {host}; "
+                f"allowed: {sorted(_SERIAL_KEYS)}"
+            )
+        kwargs = {**DEFAULT_SERIAL, **(serial or {})}
+        if timeout_s is not None:
+            kwargs["timeout"] = timeout_s
+        return ModbusSerialClient(port=host, **kwargs)
+    raise ValueError(f"Unknown protocol: {protocol}")
+
 
 def namespaced(local: str, prefix: str | None) -> str:
     """Apply a device instance prefix to a profile-local channel name.
@@ -163,15 +218,19 @@ class ModbusDeviceDriver(Driver):
         slave_id: int = 1,
         prefix: str | None = None,
         client=None,
+        serial: dict | None = None,
+        timeout_s: float | None = None,
     ) -> "ModbusDeviceDriver":
         profile = DeviceProfile.load(profile_path)
         if client is None:
-            if profile.protocol == "modbus_tcp":
-                client = ModbusTcpClient(host, port=port or profile.default_port)
-            elif profile.protocol == "modbus_rtu":
-                client = ModbusSerialClient(port=host)  # host = serial port path
-            else:
-                raise ValueError(f"Unknown protocol: {profile.protocol}")
+            client = make_client(
+                profile.protocol,
+                host,
+                port=port,
+                default_port=profile.default_port,
+                serial=serial,
+                timeout_s=timeout_s,
+            )
         return cls(profile, client, slave_id, prefix)
 
     def connection_identity(self) -> object:
@@ -195,18 +254,47 @@ class ModbusDeviceDriver(Driver):
         ]
 
     def read_state(self, state: SystemState) -> None:
+        """Read every register; raise ModbusReadError if any read failed.
+
+        All registers are attempted first (good values still land in `state`),
+        the error is raised at the end. The caller (CachedDriver) must treat
+        the poll as failed so the comms age grows — error *responses* are as
+        much a dead bus as a socket error.
+        """
+        failed: list[str] = []
         for reg in self._profile.registers:
             result = _read_holding_registers(self._client, reg.address, reg.count, self._slave)
             if result.isError():
                 logger.debug("Read error %s @%d (%s)", reg.channel, reg.address, result)
+                failed.append(self._tag[reg.channel])
                 continue
             state._channels[self._tag[reg.channel]].value = (
                 _decode(result.registers, reg) * reg.scale
             )
+        if failed:
+            raise ModbusReadError(
+                f"{self._profile.model} (slave {self._slave}): "
+                f"{len(failed)}/{len(self._profile.registers)} register reads "
+                f"returned errors: {failed}"
+            )
 
     def write_setpoints(self, state: SystemState) -> None:
+        """Write every writable register; raise ModbusWriteError on rejection.
+
+        All writable registers are attempted before raising, so one rejected
+        setpoint does not block the others.
+        """
+        failed: list[str] = []
         for reg in self._profile.registers:
             if not reg.writable:
                 continue
             raw = int(state.get(self._tag[reg.channel]) / reg.scale)
-            _write_registers(self._client, reg.address, _encode(raw, reg), self._slave)
+            result = _write_registers(self._client, reg.address, _encode(raw, reg), self._slave)
+            if result is not None and result.isError():
+                logger.debug("Write error %s @%d (%s)", reg.channel, reg.address, result)
+                failed.append(self._tag[reg.channel])
+        if failed:
+            raise ModbusWriteError(
+                f"{self._profile.model} (slave {self._slave}): "
+                f"setpoint writes rejected: {failed}"
+            )
