@@ -1,4 +1,8 @@
 """Tests for Task scheduling and the scan cycle (src/scheduler.py)."""
+import threading
+
+import pytest
+
 from pyems.channels import Channel, SystemState
 from pyems.controllers.base import Controller
 from pyems.scheduler import Scheduler, Task
@@ -86,3 +90,45 @@ def test_step_runs_allocator_after_tasks_before_write(state, fake_driver):
     sched.step(now=0.0)
     assert events == ["tick", "task", "resolve"]
     assert fake_driver.written["pv.WSet"] == 42000.0  # allocator's value, flushed last
+
+
+# ── shutdown paths: stop(), crash, Ctrl-C — driver must always disconnect ────
+class RaisingController(Controller):
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def execute(self, state: SystemState, board=None) -> None:
+        raise self._exc
+
+
+def test_stop_request_ends_run_and_disconnects(state, fake_driver):
+    """stop() (e.g. from a SIGTERM handler) ends run() cleanly."""
+    task = Task("t", 0.01, priority=1, controllers=[])
+    sched = Scheduler([task], state, fake_driver)
+    fake_driver.connect()
+    runner = threading.Thread(target=sched.run)
+    runner.start()
+    sched.stop()
+    runner.join(timeout=2.0)
+    assert not runner.is_alive()
+    assert not fake_driver.connected  # bus released on the way out
+
+
+def test_unhandled_controller_error_reraises_and_disconnects(state, fake_driver, caplog):
+    """A controller bug must be logged, re-raised (non-zero exit for systemd)
+    and must still release the bus."""
+    task = Task("t", 0.01, priority=1, controllers=[RaisingController(RuntimeError("bug"))])
+    sched = Scheduler([task], state, fake_driver)
+    fake_driver.connect()
+    with pytest.raises(RuntimeError, match="bug"):
+        sched.run()
+    assert not fake_driver.connected
+    assert any("unhandled error" in r.message for r in caplog.records)
+
+
+def test_keyboard_interrupt_exits_cleanly_and_disconnects(state, fake_driver):
+    task = Task("t", 0.01, priority=1, controllers=[RaisingController(KeyboardInterrupt())])
+    sched = Scheduler([task], state, fake_driver)
+    fake_driver.connect()
+    sched.run()  # must not raise
+    assert not fake_driver.connected

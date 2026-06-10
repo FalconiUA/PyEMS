@@ -12,10 +12,32 @@ Control-system logging policy:
   - The monotonic clock drives control; log timestamps are wall-clock for humans.
 """
 import logging
+import os
 
 
-def setup_logging(level: int = logging.INFO) -> None:
-    """Install a single stderr handler on the root logger. Idempotent."""
+def resolve_level(spec: int | str) -> int:
+    """Turn a level spec ('DEBUG', 'info', 20) into a logging level int."""
+    if isinstance(spec, int):
+        return spec
+    level = logging.getLevelName(str(spec).strip().upper())
+    if not isinstance(level, int):  # getLevelName returns 'Level X' for unknown
+        raise ValueError(
+            f"unknown log level {spec!r}; use DEBUG, INFO, WARNING, ERROR or CRITICAL"
+        )
+    return level
+
+
+def setup_logging(level: int | str | None = None) -> None:
+    """Install a single stderr handler on the root logger. Idempotent.
+
+    Level precedence: explicit `level` argument (e.g. from --log-level), else
+    the PYEMS_LOG_LEVEL environment variable, else INFO. In the field, DEBUG
+    per-cycle detail is enabled with `PYEMS_LOG_LEVEL=DEBUG pyems` — no code
+    change.
+    """
+    resolved = resolve_level(
+        level if level is not None else os.environ.get("PYEMS_LOG_LEVEL", "INFO")
+    )
     root = logging.getLogger()
     if root.handlers:  # already configured (e.g. tests / re-entry) — leave it
         return
@@ -27,4 +49,4 @@ def setup_logging(level: int = logging.INFO) -> None:
         )
     )
     root.addHandler(handler)
-    root.setLevel(level)
+    root.setLevel(resolved)

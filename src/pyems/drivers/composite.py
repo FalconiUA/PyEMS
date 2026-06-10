@@ -64,8 +64,8 @@ class CompositeDriver(Driver):
         """
         self._fan_out("read", lambda d: d.read_state(state))
 
-    def write_setpoints(self, state: SystemState) -> None:
-        self._fan_out("write", lambda d: d.write_setpoints(state))
+    def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
+        self._fan_out("write", lambda d: d.write_setpoints(state, channels))
 
     def _fan_out(self, op: str, call) -> None:
         errors: list[Exception] = []

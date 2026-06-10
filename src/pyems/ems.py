@@ -8,7 +8,9 @@ from profiles/ (data). This module only wires objects together.
 IEC 61131-3 analogy: build_ems() assembles the RESOURCE (Scheduler) with its
 TASKs and FUNCTION_BLOCKs, binding I/O per the CONFIGURATION in site.yaml.
 """
+import argparse
 import logging
+import signal
 from pathlib import Path
 
 import yaml
@@ -245,6 +247,7 @@ def build_device_drivers(devices_cfg: list[dict]) -> list[md.ModbusDeviceDriver]
       serial     RTU bus settings {baudrate, bytesize, parity, stopbits}
                  (default: 9600 8N1 — see DEFAULT_SERIAL in modbus_device)
       timeout_s  transaction timeout for either protocol
+      retries    per-transaction retries for either protocol
 
     Devices on the same endpoint share one client, so their serial/timeout
     settings must agree — a conflict is a config error, not a second client.
@@ -259,7 +262,8 @@ def build_device_drivers(devices_cfg: list[dict]) -> list[md.ModbusDeviceDriver]
         )
         serial = dev.get("serial")
         timeout_s = dev.get("timeout_s")
-        settings = (tuple(sorted((serial or {}).items())), timeout_s)
+        retries = dev.get("retries")
+        settings = (tuple(sorted((serial or {}).items())), timeout_s, retries)
         key = (profile.protocol, dev["host"], port)
         if key in clients:
             client, first_settings = clients[key]
@@ -277,6 +281,7 @@ def build_device_drivers(devices_cfg: list[dict]) -> list[md.ModbusDeviceDriver]
                 default_port=profile.default_port,
                 serial=serial,
                 timeout_s=timeout_s,
+                retries=retries,
             )
             clients[key] = (client, settings)
         drivers.append(
@@ -305,7 +310,11 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
 
     # Non-blocking I/O: real Modbus runs in a background thread against a tag
     # cache, so a slow/hung bus transaction never stalls the control cycle.
-    driver = CachedDriver(devices, poll_interval_s=ctrl_cfg["poll_interval_s"])
+    driver = CachedDriver(
+        devices,
+        poll_interval_s=ctrl_cfg["poll_interval_s"],
+        setpoint_rewrite_s=ctrl_cfg.get("setpoint_rewrite_s", 10.0),
+    )
     driver.connect()
 
     # Channels: device profiles (incl. sys.comms_age_s from CachedDriver) plus
@@ -336,8 +345,31 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
 
 def main() -> None:
     """Console entry point (see [project.scripts] in pyproject.toml)."""
-    setup_logging()
-    build_ems().run()
+    parser = argparse.ArgumentParser(
+        prog="pyems", description="Local energy management system (Modbus TCP/RTU)."
+    )
+    parser.add_argument(
+        "--site", type=Path, default=DEFAULT_SITE,
+        help=f"path to site.yaml (default: {DEFAULT_SITE})",
+    )
+    parser.add_argument(
+        "--log-level", default=None, metavar="LEVEL",
+        help="DEBUG, INFO, WARNING, ... (default: $PYEMS_LOG_LEVEL or INFO)",
+    )
+    args = parser.parse_args()
+
+    setup_logging(args.log_level)
+    scheduler = build_ems(args.site)
+
+    # systemd stops services with SIGTERM: request a clean shutdown (finish the
+    # cycle, disconnect the bus) instead of dying mid-Modbus-transaction.
+    # Ctrl-C (SIGINT/KeyboardInterrupt) is already handled inside run().
+    def _on_sigterm(signum, frame) -> None:
+        logger.info("Received SIGTERM; requesting scheduler stop")
+        scheduler.stop()
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    scheduler.run()
 
 
 if __name__ == "__main__":
