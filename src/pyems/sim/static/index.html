@@ -80,7 +80,7 @@
       <div class="legend">
         <span><i style="background:#8b98a8"></i>available</span>
         <span><i style="background:#4cd97b"></i>actual P</span>
-        <span><i style="background:#57b2ff"></i>setpoint from EMS</span>
+        <span><i style="background:#57b2ff"></i>setpoint from EMS (P cap — the unit produces min(available, cap))</span>
       </div>
     </div>
     <div class="panel">
@@ -211,7 +211,7 @@ function render() {
   const kpis = [
     ["PV available", fmtW(snap.unit_available_w)],
     ["PV actual", fmtW(snap.unit_active_power_w)],
-    ["EMS setpoint", fmtW(snap.unit_active_power_setpoint_w)],
+    ["EMS setpoint (P cap)", fmtW(snap.unit_active_power_setpoint_w)],
     ["Load", fmtW(snap.load_w)],
     ["Connection point", fmtW(snap.connection_point_w)],
   ];
