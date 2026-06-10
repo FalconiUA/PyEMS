@@ -57,16 +57,23 @@ def make_client(
     default_port: int = 502,
     serial: dict | None = None,
     timeout_s: float | None = None,
+    retries: int | None = None,
 ):
     """Build a pymodbus client for one bus endpoint.
 
     For `modbus_tcp`, `host`/`port` are the TCP endpoint. For `modbus_rtu`,
     `host` is the serial port path and `serial` overrides DEFAULT_SERIAL
-    (keys: baudrate, bytesize, parity, stopbits). `timeout_s` applies to both.
+    (keys: baudrate, bytesize, parity, stopbits). `timeout_s` and `retries`
+    (per-transaction) apply to both protocols; left to pymodbus defaults
+    when None.
     """
+    common: dict = {}
+    if timeout_s is not None:
+        common["timeout"] = timeout_s
+    if retries is not None:
+        common["retries"] = retries
     if protocol == "modbus_tcp":
-        kwargs = {} if timeout_s is None else {"timeout": timeout_s}
-        return ModbusTcpClient(host, port=port or default_port, **kwargs)
+        return ModbusTcpClient(host, port=port or default_port, **common)
     if protocol == "modbus_rtu":
         unknown = set(serial or {}) - _SERIAL_KEYS
         if unknown:
@@ -74,10 +81,7 @@ def make_client(
                 f"unknown serial option(s) {sorted(unknown)} for {host}; "
                 f"allowed: {sorted(_SERIAL_KEYS)}"
             )
-        kwargs = {**DEFAULT_SERIAL, **(serial or {})}
-        if timeout_s is not None:
-            kwargs["timeout"] = timeout_s
-        return ModbusSerialClient(port=host, **kwargs)
+        return ModbusSerialClient(port=host, **{**DEFAULT_SERIAL, **(serial or {}), **common})
     raise ValueError(f"Unknown protocol: {protocol}")
 
 
@@ -220,6 +224,7 @@ class ModbusDeviceDriver(Driver):
         client=None,
         serial: dict | None = None,
         timeout_s: float | None = None,
+        retries: int | None = None,
     ) -> "ModbusDeviceDriver":
         profile = DeviceProfile.load(profile_path)
         if client is None:
@@ -230,6 +235,7 @@ class ModbusDeviceDriver(Driver):
                 default_port=profile.default_port,
                 serial=serial,
                 timeout_s=timeout_s,
+                retries=retries,
             )
         return cls(profile, client, slave_id, prefix)
 
@@ -278,15 +284,20 @@ class ModbusDeviceDriver(Driver):
                 f"returned errors: {failed}"
             )
 
-    def write_setpoints(self, state: SystemState) -> None:
-        """Write every writable register; raise ModbusWriteError on rejection.
+    def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
+        """Write writable registers; raise ModbusWriteError on rejection.
 
-        All writable registers are attempted before raising, so one rejected
+        `channels` restricts the write to that subset of tags (None = all
+        writable registers) — CachedDriver uses it to flush only changed or
+        keep-alive-due setpoints instead of rewriting everything each poll.
+        All due registers are attempted before raising, so one rejected
         setpoint does not block the others.
         """
         failed: list[str] = []
         for reg in self._profile.registers:
             if not reg.writable:
+                continue
+            if channels is not None and self._tag[reg.channel] not in channels:
                 continue
             raw = int(state.get(self._tag[reg.channel]) / reg.scale)
             result = _write_registers(self._client, reg.address, _encode(raw, reg), self._slave)

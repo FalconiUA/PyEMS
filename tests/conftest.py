@@ -39,9 +39,9 @@ class FakeDriver(Driver):
         for name, value in self.measurements.items():
             state._channels[name].value = value
 
-    def write_setpoints(self, state: SystemState) -> None:
+    def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
         for ch in self._channels:
-            if ch.writable:
+            if ch.writable and (channels is None or ch.name in channels):
                 self.written[ch.name] = state.get(ch.name)
 
 

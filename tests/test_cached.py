@@ -28,6 +28,7 @@ class FakeInner(Driver):
         self.read_event = threading.Event()
         self.write_event = threading.Event()
         self.written: dict[str, float] = {}
+        self.write_calls = 0
 
     def connect(self) -> None:
         self.connect_calls += 1
@@ -45,11 +46,13 @@ class FakeInner(Driver):
             state._channels[name].value = value
         self.read_event.set()
 
-    def write_setpoints(self, state: SystemState) -> None:
+    def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
+        self.write_calls += 1
         if self.fail_writes:
             self.write_event.set()
             raise OSError("write rejected")
-        self.written["pv.WSet"] = state.get("pv.WSet")
+        if channels is None or "pv.WSet" in channels:
+            self.written["pv.WSet"] = state.get("pv.WSet")
         self.write_event.set()
 
 
@@ -178,6 +181,69 @@ def test_write_failure_logged_once_until_recovery(caplog):
             while inner.written.get("pv.WSet") != 1000.0 and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert any("WRITE recovered" in r.message for r in caplog.records)
+    finally:
+        drv.disconnect()
+
+
+def test_unchanged_setpoint_not_rewritten_every_poll():
+    """After a successful flush, an unchanged setpoint is not re-written until
+    the keep-alive period elapses — no hammering every writable register."""
+    inner = FakeInner({"grid.W": 1.0})
+    drv = CachedDriver(inner, poll_interval_s=0.01, setpoint_rewrite_s=60.0)
+    drv.connect()
+    try:
+        st = SystemState(drv.channels())
+        st.set("pv.WSet", 3000.0)
+        drv.write_setpoints(st)
+        deadline = time.monotonic() + 2.0
+        while inner.written.get("pv.WSet") != 3000.0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        calls_after_flush = inner.write_calls
+        drv.write_setpoints(st)  # same value republished by the control cycle
+        time.sleep(0.1)          # many polls — none should write
+        assert inner.write_calls == calls_after_flush
+        st.set("pv.WSet", 4000.0)  # a real change flushes promptly again
+        drv.write_setpoints(st)
+        deadline = time.monotonic() + 2.0
+        while inner.written.get("pv.WSet") != 4000.0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert inner.written["pv.WSet"] == 4000.0
+    finally:
+        drv.disconnect()
+
+
+def test_unchanged_setpoint_rewritten_as_keepalive():
+    """Unchanged setpoints ARE periodically re-written (device watchdog food)."""
+    inner = FakeInner({"grid.W": 1.0})
+    drv = CachedDriver(inner, poll_interval_s=0.01, setpoint_rewrite_s=0.03)
+    drv.connect()
+    try:
+        st = SystemState(drv.channels())
+        st.set("pv.WSet", 3000.0)
+        drv.write_setpoints(st)
+        deadline = time.monotonic() + 2.0
+        while inner.write_calls < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert inner.write_calls >= 3  # initial flush + keep-alive rewrites
+    finally:
+        drv.disconnect()
+
+
+def test_failed_flush_keeps_setpoint_dirty_and_retries():
+    inner = FakeInner({"grid.W": 1.0})
+    inner.fail_writes = True
+    drv = CachedDriver(inner, poll_interval_s=0.01, setpoint_rewrite_s=60.0)
+    drv.connect()
+    try:
+        st = SystemState(drv.channels())
+        st.set("pv.WSet", 7000.0)
+        drv.write_setpoints(st)
+        assert inner.write_event.wait(timeout=2.0)  # at least one failed attempt
+        inner.fail_writes = False                   # bus accepts writes again
+        deadline = time.monotonic() + 2.0
+        while inner.written.get("pv.WSet") != 7000.0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert inner.written["pv.WSet"] == 7000.0   # retried until it landed
     finally:
         drv.disconnect()
 

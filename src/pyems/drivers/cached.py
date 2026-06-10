@@ -38,7 +38,18 @@ COMMS_AGE_CHANNEL = "sys.comms_age_s"
 
 
 class CachedDriver(Driver):
-    def __init__(self, inner: Driver, poll_interval_s: float = 0.5) -> None:
+    def __init__(
+        self,
+        inner: Driver,
+        poll_interval_s: float = 0.5,
+        setpoint_rewrite_s: float = 10.0,
+    ) -> None:
+        """`setpoint_rewrite_s`: keep-alive period for UNCHANGED setpoints.
+
+        Changed setpoints flush on the next poll; unchanged ones are re-written
+        only every `setpoint_rewrite_s` — often enough to feed a device-side
+        comms watchdog, without hammering every writable register each poll.
+        """
         self._inner = inner
         self._device_channels: list[Channel] = inner.channels()
         self._age_channel = Channel(
@@ -56,6 +67,9 @@ class CachedDriver(Driver):
         self._lock = threading.Lock()
         self._meas_cache: dict[str, float] = {n: 0.0 for n in self._measured}
         self._sp_cache: dict[str, float] = {}          # setpoints published by controllers
+        self._sp_dirty: set[str] = set()                # changed since last good flush
+        self._sp_flushed_at: dict[str, float] = {}      # monotonic ts of last good flush
+        self._rewrite_s = setpoint_rewrite_s
         self._sp_ready = False                          # gate: don't write before first setpoint
         self._last_ok = 0.0                             # monotonic ts of last good read
         self._bus_down = False                          # last bus health — log on transition
@@ -87,11 +101,23 @@ class CachedDriver(Driver):
         if COMMS_AGE_CHANNEL in state._channels:
             state._channels[COMMS_AGE_CHANNEL].value = self.age_s()
 
-    def write_setpoints(self, state: SystemState) -> None:
-        """Publish live setpoints → cache for the worker to flush. No Modbus here."""
-        sp = {name: state._channels[name].value for name in self._writable}
+    def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
+        """Publish live setpoints → cache for the worker to flush. No Modbus here.
+
+        Only values that actually changed are marked dirty; unchanged ones are
+        re-flushed by the worker on the keep-alive period (`setpoint_rewrite_s`).
+        """
+        names = (
+            self._writable
+            if channels is None
+            else [n for n in self._writable if n in channels]
+        )
+        sp = {name: state._channels[name].value for name in names}
         with self._lock:
-            self._sp_cache.update(sp)
+            for name, value in sp.items():
+                if self._sp_cache.get(name) != value:
+                    self._sp_cache[name] = value
+                    self._sp_dirty.add(name)
             self._sp_ready = True
 
     # ── freshness signal for safety logic ────────────────────────────────────
@@ -127,21 +153,36 @@ class CachedDriver(Driver):
                     logger.exception("Modbus READ failed; serving stale cache, comms age growing")
                     self._bus_down = True
 
-            # WRITE: flush pending setpoints (only after a controller produced one)
+            # WRITE: flush setpoints that changed (dirty) or are due a keep-alive
+            # rewrite. A failed flush keeps channels dirty/due, so it retries.
             if self._sp_ready:
+                now = time.monotonic()
                 with self._lock:
-                    pending = dict(self._sp_cache)
-                for name, value in pending.items():
-                    self._io_state._channels[name].value = value
-                try:
-                    self._inner.write_setpoints(self._io_state)
-                    if self._write_failed:  # recovered — log the up transition once
-                        logger.warning("Modbus WRITE recovered; setpoints flushing again")
-                        self._write_failed = False
-                except Exception:
-                    # Log only the down transition — never every failed flush (spam).
-                    if not self._write_failed:
-                        logger.exception("Modbus WRITE failed; setpoints not flushed")
-                        self._write_failed = True
+                    due = {
+                        n
+                        for n in self._sp_cache
+                        if n in self._sp_dirty
+                        or now - self._sp_flushed_at.get(n, float("-inf")) >= self._rewrite_s
+                    }
+                    pending = {n: self._sp_cache[n] for n in due}
+                if pending:
+                    for name, value in pending.items():
+                        self._io_state._channels[name].value = value
+                    try:
+                        self._inner.write_setpoints(self._io_state, channels=due)
+                        flushed = time.monotonic()
+                        with self._lock:
+                            for name, value in pending.items():
+                                self._sp_flushed_at[name] = flushed
+                                if self._sp_cache.get(name) == value:  # not updated mid-flush
+                                    self._sp_dirty.discard(name)
+                        if self._write_failed:  # recovered — log the up transition once
+                            logger.warning("Modbus WRITE recovered; setpoints flushing again")
+                            self._write_failed = False
+                    except Exception:
+                        # Log only the down transition — never every failed flush (spam).
+                        if not self._write_failed:
+                            logger.exception("Modbus WRITE failed; setpoints not flushed")
+                            self._write_failed = True
 
             self._stop.wait(max(0.0, self._poll - (time.monotonic() - t0)))

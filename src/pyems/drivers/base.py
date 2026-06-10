@@ -14,5 +14,10 @@ class Driver(ABC):
         """Read hardware → fill measurement channels in state."""
 
     @abstractmethod
-    def write_setpoints(self, state: SystemState) -> None:
-        """Read writable channels from state → write to hardware."""
+    def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
+        """Read writable channels from state → write to hardware.
+
+        `channels` restricts the write to that subset of channel tags
+        (None = all writable channels). Drivers skip tags they don't own,
+        so a composite can pass one subset to every device.
+        """

@@ -24,7 +24,7 @@ class StubDevice(Driver):
         for ch in self._channels:
             state._channels[ch.name].value = ch.value
 
-    def write_setpoints(self, state: SystemState) -> None:
+    def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
         pass
 
 

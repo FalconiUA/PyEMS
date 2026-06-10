@@ -179,6 +179,20 @@ def test_partial_read_error_updates_good_registers_then_raises():
     assert st.get("pv1.W") == pytest.approx(65000.0)  # good register still landed
 
 
+def test_write_setpoints_channel_subset_skips_other_registers():
+    prof = DeviceProfile.load(HUAWEI)
+    client = FakeModbusClient({})
+    drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
+    st = SystemState(drv.channels())
+    st.set("pv1.WSet", 50000.0)
+    drv.write_setpoints(st, channels=set())            # nothing due
+    assert client.writes == {}
+    drv.write_setpoints(st, channels={"other.WSet"})   # not this device's tag
+    assert client.writes == {}
+    drv.write_setpoints(st, channels={"pv1.WSet"})     # due → written
+    assert client.writes[40126] == [0x0000, 0xC350]
+
+
 def test_write_error_response_raises():
     prof = DeviceProfile.load(HUAWEI)
     client = FakeModbusClient({}, fail_writes=True)
@@ -241,11 +255,14 @@ def test_make_client_rtu_rejects_unknown_serial_key(monkeypatch):
         make_client("modbus_rtu", "/dev/ttyUSB0", serial={"baud_rate": 9600})
 
 
-def test_make_client_tcp_port_and_timeout(monkeypatch):
+def test_make_client_tcp_port_timeout_and_retries(monkeypatch):
     monkeypatch.setattr(md, "ModbusTcpClient", FakeTcpClientKw)
-    client = make_client("modbus_tcp", "10.0.0.5", default_port=1502, timeout_s=2.0)
+    client = make_client(
+        "modbus_tcp", "10.0.0.5", default_port=1502, timeout_s=2.0, retries=1
+    )
     assert (client.host, client.port) == ("10.0.0.5", 1502)
     assert client.kwargs["timeout"] == 2.0
+    assert client.kwargs["retries"] == 1
 
 
 def test_make_client_unknown_protocol_raises():
