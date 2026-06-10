@@ -2,8 +2,15 @@
 SafetyController = IEC 61131-3 PRIORITY 0 interlock layer.
 
 Runs first every cycle (highest priority TASK). It does not optimize — it only
-asserts a safe state when preconditions fail. Right now it guards one fault:
-stale measurements (the field bus went down) — see CachedDriver.age_s().
+asserts a safe state when preconditions fail. It guards two faults:
+  - stale measurements: the field bus went down — see CachedDriver.age_s();
+  - frozen measurements: the bus answers but a watched tag has not changed for
+    too long. A gateway serving cached register data (or a meter whose CPU
+    hung) passes every Modbus read, so the comms age never grows — yet acting
+    on a frozen connection-point measurement can silently violate the export
+    limit. Bit-identical repeats are the freeze signature: a live power
+    measurement always jitters at least one LSB. Watch jittery tags only
+    (the connection-point meter, not pv.W, which sits at exactly 0 all night).
 
 Interlock pattern (how safety wins despite running before normal control):
   - On trip, safety posts a PRIORITY 0 claim (min=max=target=safe value) on each
@@ -47,20 +54,52 @@ class SafetyController(Controller):
         max_comms_age_s: float,
         safe_active_power_w: float,
         unit_active_power_setpoint_channels: list[str],
+        frozen_measurement_channels: list[str] | None = None,
+        max_frozen_s: float | None = None,
     ) -> None:
         self._max_age = max_comms_age_s
         self._safe_active_power_w = safe_active_power_w
         # Generating-unit active-power setpoint tags to cap on trip — one per unit.
         self._setpoint_channels = unit_active_power_setpoint_channels
+        # Frozen-measurement guard (disabled unless both are configured):
+        # measurement tags that must keep changing, and for how long a
+        # bit-identical value is still plausible.
+        self._frozen_channels = frozen_measurement_channels or []
+        self._max_frozen_s = max_frozen_s
+        # per-channel (last value, monotonic time it last changed)
+        self._last_change: dict[str, tuple[float, float]] = {}
         self._tripped = False  # last state — log only on transition, not per cycle
+
+    def _frozen_measurements(self, state: SystemState, now: float) -> list[str]:
+        """Watched tags whose value has not changed for longer than allowed."""
+        if self._max_frozen_s is None:
+            return []
+        frozen: list[str] = []
+        for ch in self._frozen_channels:
+            value = state.get(ch)
+            last = self._last_change.get(ch)
+            if last is None or value != last[0]:
+                self._last_change[ch] = (value, now)
+            elif now - last[1] > self._max_frozen_s:
+                frozen.append(ch)
+        return frozen
 
     def execute(self, state: SystemState, board: RequestBoard) -> None:
         # VAR_INPUT
         comms_age = state.get(COMMS_AGE_CHANNEL)
+        frozen = self._frozen_measurements(state, board.now)
 
+        faults: list[str] = []
         if comms_age > self._max_age:
-            # bus is stale → trip: pin each guarded setpoint to the safe value via
-            # a priority-0 claim (min=max=target), and raise the status word.
+            faults.append(f"comms age {comms_age:.1f}s > {self._max_age:.1f}s limit")
+        if frozen:
+            faults.append(
+                f"measurements {frozen} frozen > {self._max_frozen_s:.1f}s"
+            )
+
+        if faults:
+            # preconditions failed → trip: pin each guarded setpoint to the safe
+            # value via a priority-0 claim (min=max=target), raise the status word.
             for ch in self._setpoint_channels:
                 board.post(
                     ch,
@@ -76,8 +115,8 @@ class SafetyController(Controller):
             state.set(SAFE_MODE_CHANNEL, 1.0)
             if not self._tripped:
                 logger.warning(
-                    "SAFETY TRIP: comms age %.1fs > %.1fs limit; pinning %s to %.0f W",
-                    comms_age, self._max_age, self._setpoint_channels,
+                    "SAFETY TRIP: %s; pinning %s to %.0f W",
+                    "; ".join(faults), self._setpoint_channels,
                     self._safe_active_power_w,
                 )
                 self._tripped = True
@@ -87,5 +126,5 @@ class SafetyController(Controller):
                 board.withdraw(ch, SAFETY_REQUESTER)
             state.set(SAFE_MODE_CHANNEL, 0.0)
             if self._tripped:
-                logger.info("SAFETY RELEASE: comms age %.1fs back within limit", comms_age)
+                logger.info("SAFETY RELEASE: all preconditions healthy again")
                 self._tripped = False

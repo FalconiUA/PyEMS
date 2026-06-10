@@ -23,6 +23,10 @@ from pyems.controllers.connection_point_import_limit import ConnectionPointImpor
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.grid_export_limit import GridExportLimitController
 from pyems.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
+from pyems.controllers.setpoint_compliance import (
+    SETPOINT_VIOLATION_CHANNEL,
+    SetpointComplianceMonitor,
+)
 from pyems.drivers.cached import COMMS_AGE_CHANNEL, CachedDriver
 from pyems.drivers.composite import CompositeDriver
 import pyems.drivers.modbus_device as md
@@ -77,8 +81,16 @@ def required_channels(site: dict) -> list[str]:
         COMMS_AGE_CHANNEL,
         SAFE_MODE_CHANNEL,
         *safe_cfg["unit_active_power_setpoint_channels"],
+        *safe_cfg.get("frozen_measurement_channels", []),
         *(ch["setpoint_channel"] for ch in alloc_cfg["channels"]),
     ]
+    comp_cfg = site.get("setpoint_compliance")
+    if comp_cfg:
+        tags += [
+            comp_cfg["unit_active_power_channel"],
+            comp_cfg["unit_active_power_setpoint_channel"],
+            SETPOINT_VIOLATION_CHANNEL,
+        ]
     return tags
 
 
@@ -94,7 +106,7 @@ def validate_bindings(site: dict, available: list[str]) -> None:
 
 
 def _measurement_binding_channels(site: dict) -> list[str]:
-    return [
+    tags = [
         cfg[key]
         for cfg in (site["export_limit"], site["connection_point_active_power"])
         for key in (
@@ -102,6 +114,11 @@ def _measurement_binding_channels(site: dict) -> list[str]:
             "unit_active_power_channel",
         )
     ]
+    tags += site["safety"].get("frozen_measurement_channels", [])
+    comp_cfg = site.get("setpoint_compliance")
+    if comp_cfg:
+        tags.append(comp_cfg["unit_active_power_channel"])
+    return tags
 
 
 def _setpoint_binding_channels(site: dict) -> list[str]:
@@ -140,6 +157,75 @@ def validate_binding_directions(site: dict, channels: list[Channel]) -> None:
         raise ValueError("site.yaml binding direction error: " + "; ".join(problems))
 
 
+def _safe_active_power_w(site: dict, mode: str) -> float:
+    """Fail-safe unit active power asserted on a safety trip (see safety.py)."""
+    if mode == IMPORT_LIMIT_MODE:
+        guarded_channel = site["safety"]["unit_active_power_setpoint_channels"][0]
+        return next(
+            (
+                ch["p_min_w"]
+                for ch in site["allocation"]["channels"]
+                if ch["setpoint_channel"] == guarded_channel
+            ),
+            0.0,
+        )
+    return site["export_limit"]["limit_w"]
+
+
+def validate_safety_allocation(site: dict) -> None:
+    """Raise if a safety trip could not actually land on the unit.
+
+    Two silent failure modes guarded here:
+      - a guarded setpoint channel that is not an allocation channel: the
+        RequestBoard only accepts posts for configured channels, so the FIRST
+        trip would raise mid-control instead of curtailing;
+      - a safe value outside the channel's device envelope: the priority-0
+        claim would intersect to an empty range and be REJECTED by the
+        arbiter — safety neutralized by a config error, with only a log line.
+    """
+    mode = control_mode(site)
+    safe_w = _safe_active_power_w(site, mode)
+    alloc = {ch["setpoint_channel"]: ch for ch in site["allocation"]["channels"]}
+    problems = []
+    for ch in site["safety"]["unit_active_power_setpoint_channels"]:
+        cfg = alloc.get(ch)
+        if cfg is None:
+            problems.append(
+                f"guarded setpoint channel '{ch}' is not an allocation channel "
+                f"{sorted(alloc)} — a trip would post to an unknown channel"
+            )
+        elif not (cfg["p_min_w"] <= safe_w <= cfg["p_max_w"]):
+            problems.append(
+                f"safe active power {safe_w} W is outside the device envelope "
+                f"[{cfg['p_min_w']}, {cfg['p_max_w']}] of '{ch}' — the "
+                f"priority-0 claim would be rejected"
+            )
+    if problems:
+        raise ValueError("safety/allocation mismatch: " + "; ".join(problems))
+
+
+def validate_setpoint_keepalive(site: dict) -> None:
+    """Raise if the keep-alive rewrite cannot feed the device comms watchdog.
+
+    The device's own comms watchdog is the LAST line of defence (it fail-safes
+    the unit when the EMS stops writing). `safety.device_comms_watchdog_s`
+    declares the watchdog period the unit was commissioned with; the unchanged-
+    setpoint rewrite must run at least twice per period or normal operation
+    would starve the watchdog. Optional: omit the key if the device has no
+    comms watchdog (and accept that an EMS outage leaves the last setpoint).
+    """
+    watchdog_s = site["safety"].get("device_comms_watchdog_s")
+    if watchdog_s is None:
+        return
+    rewrite_s = site["control"].get("setpoint_rewrite_s", 10.0)
+    if 2 * rewrite_s > watchdog_s:
+        raise ValueError(
+            f"control.setpoint_rewrite_s ({rewrite_s}s) must be at most half of "
+            f"safety.device_comms_watchdog_s ({watchdog_s}s), or the device "
+            f"watchdog trips during normal operation"
+        )
+
+
 def build_tasks(site: dict) -> list[Task]:
     """Build the control tasks from a site config dict.
 
@@ -152,19 +238,7 @@ def build_tasks(site: dict) -> list[Task]:
     fast_cycle_s = site["control"]["fast_cycle_s"]
     mode = control_mode(site)
 
-    safe_active_power_w = exp_cfg["limit_w"]
-    if mode == IMPORT_LIMIT_MODE:
-        guarded_channel = safe_cfg["unit_active_power_setpoint_channels"][0]
-        safe_active_power_w = next(
-            (
-                ch["p_min_w"]
-                for ch in site["allocation"]["channels"]
-                if ch["setpoint_channel"] == guarded_channel
-            ),
-            0.0,
-        )
-
-    # PRIORITY 0 interlock — runs first, asserts safe state on a dead bus.
+    # PRIORITY 0 interlock — runs first, asserts safe state on a dead/frozen bus.
     safety_task = Task(
         name="safety",
         interval_s=fast_cycle_s,
@@ -172,8 +246,10 @@ def build_tasks(site: dict) -> list[Task]:
         controllers=[
             SafetyController(
                 max_comms_age_s=safe_cfg["max_comms_age_s"],
-                safe_active_power_w=safe_active_power_w,
+                safe_active_power_w=_safe_active_power_w(site, mode),
                 unit_active_power_setpoint_channels=safe_cfg["unit_active_power_setpoint_channels"],
+                frozen_measurement_channels=safe_cfg.get("frozen_measurement_channels"),
+                max_frozen_s=safe_cfg.get("max_measurement_frozen_s"),
             ),
         ],
     )
@@ -212,6 +288,20 @@ def build_tasks(site: dict) -> list[Task]:
                 unit_active_power_channel=cp_cfg["unit_active_power_channel"],
                 unit_active_power_setpoint_channel=cp_cfg["unit_active_power_setpoint_channel"],
                 deadband_w=site["allocation"]["channels"][0].get("deadband_w", 200.0),
+            )
+        )
+
+    # Actuator monitoring: sustained overshoot of the applied setpoint means
+    # the unit ignores commands (e.g. remote control not enabled) — a fault no
+    # write can fix, surfaced via sys.setpoint_violation + ERROR log.
+    comp_cfg = site.get("setpoint_compliance")
+    if comp_cfg:
+        fast_controllers.append(
+            SetpointComplianceMonitor(
+                unit_active_power_channel=comp_cfg["unit_active_power_channel"],
+                unit_active_power_setpoint_channel=comp_cfg["unit_active_power_setpoint_channel"],
+                tolerance_w=comp_cfg.get("tolerance_w", 2000.0),
+                max_violation_s=comp_cfg.get("max_violation_s", 30.0),
             )
         )
 
@@ -299,6 +389,11 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     logger.info("Building EMS from %s", site_path)
     site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8"))
 
+    # Config-only consistency checks first — cheaper than touching the bus,
+    # and a config that would neutralize the safety layer must never start.
+    validate_safety_allocation(site)
+    validate_setpoint_keepalive(site)
+
     ctrl_cfg = site["control"]
 
     # Field devices from site config. Logical devices that share a TCP endpoint
@@ -318,9 +413,10 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     driver.connect()
 
     # Channels: device profiles (incl. sys.comms_age_s from CachedDriver) plus
-    # the inter-controller interlock tag (system status word, not a register).
+    # the system status words (not device registers).
     channels = driver.channels() + [
         Channel(SAFE_MODE_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
+        Channel(SETPOINT_VIOLATION_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
     ]
     state = SystemState(channels)
 

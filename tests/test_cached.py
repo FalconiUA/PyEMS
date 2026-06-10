@@ -110,6 +110,32 @@ def test_worker_populates_cache_and_flushes_setpoint():
         drv.disconnect()
 
 
+def test_dead_worker_thread_aborts_the_control_loop(monkeypatch):
+    """If the modbus-io worker dies, measurements freeze AND a safety trip
+    could never be flushed — read_state must raise so the process restarts
+    (supervised) instead of silently controlling on a corpse."""
+    import pytest
+
+    monkeypatch.setattr(CachedDriver, "_loop", lambda self: None)  # dies at once
+    drv = CachedDriver(FakeInner({"grid.W": 0.0}), poll_interval_s=0.01)
+    drv.connect()
+    try:
+        drv._thread.join(timeout=2.0)
+        assert not drv._thread.is_alive()
+        with pytest.raises(RuntimeError, match="worker thread died"):
+            drv.read_state(SystemState(drv.channels()))
+    finally:
+        drv.disconnect()
+
+
+def test_clean_shutdown_does_not_flag_dead_worker():
+    """After disconnect() the worker exits by request — not a crash."""
+    drv = CachedDriver(FakeInner({"grid.W": 0.0}), poll_interval_s=0.01)
+    drv.connect()
+    drv.disconnect()
+    drv.read_state(SystemState(drv.channels()))  # must not raise
+
+
 def test_stale_bus_grows_age_and_keeps_last_value():
     inner = FakeInner({"grid.W": 50.0})
     drv = CachedDriver(inner, poll_interval_s=0.01)

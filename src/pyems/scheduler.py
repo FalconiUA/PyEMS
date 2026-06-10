@@ -62,6 +62,7 @@ class Scheduler:
         self._allocator = allocator
         self._board = board
         self._overrunning = False  # last cycle-overrun state — log on transition
+        self._ctrl_failed: dict[int, bool] = {}  # id(ctrl) → failing? (log on transition)
         self._stop = threading.Event()
 
     def step(self, now: float) -> None:
@@ -75,11 +76,20 @@ class Scheduler:
         if self._board is not None:
             self._board.tick(now)
 
-        # execute due tasks in priority order
+        # execute due tasks in priority order.
+        # Fault containment: a bug in a normal controller is logged and the
+        # cycle continues — the safety task and the allocator keep running, so
+        # one broken optimizer cannot take the interlock layer down with it.
+        # (Its standing claims persist on the board, which is conservative.)
+        # PRIORITY 0 (safety) is exempt: a crashing interlock must abort the
+        # process loudly — running without protection is worse than restarting.
         for task in self._tasks:
             if task.is_due(now):
                 for ctrl in task.controllers:
-                    ctrl.execute(self._state, self._board)
+                    if task.priority == 0:
+                        ctrl.execute(self._state, self._board)
+                    else:
+                        self._execute_contained(ctrl, task)
                 task.mark_ran(now)
 
         # arbitrate contending requests into one setpoint per channel. Runs every
@@ -90,6 +100,29 @@ class Scheduler:
 
         # write all outputs last
         self._driver.write_setpoints(self._state)
+
+    def _execute_contained(self, ctrl, task: Task) -> None:
+        """Run one non-safety controller; log its failure/recovery on transition
+        only (a controller failing every cycle must not flood the log)."""
+        key = id(ctrl)
+        try:
+            ctrl.execute(self._state, self._board)
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            if not self._ctrl_failed.get(key):
+                logger.exception(
+                    "Controller %s in task '%s' failed; cycle continues without it",
+                    type(ctrl).__name__, task.name,
+                )
+                self._ctrl_failed[key] = True
+        else:
+            if self._ctrl_failed.get(key):
+                logger.warning(
+                    "Controller %s in task '%s' recovered",
+                    type(ctrl).__name__, task.name,
+                )
+                self._ctrl_failed[key] = False
 
     def stop(self) -> None:
         """Request a clean shutdown (thread- and signal-handler-safe).
@@ -122,9 +155,10 @@ class Scheduler:
         except KeyboardInterrupt:
             logger.info("Scheduler stopping (interrupt)")
         except Exception:
-            # A controller/allocator bug must not kill the process silently:
+            # A safety/allocator/driver bug must not kill the process silently:
             # log it, then re-raise so the exit code is non-zero and a
             # supervisor (systemd Restart=on-failure) can restart us.
+            # (Non-safety controller bugs are contained per-controller above.)
             logger.exception("Scheduler stopping: unhandled error in control cycle")
             raise
         finally:

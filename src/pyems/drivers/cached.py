@@ -93,7 +93,23 @@ class CachedDriver(Driver):
         return self._channels
 
     def read_state(self, state: SystemState) -> None:
-        """Copy cached measurements + comms-age tag → live state. No Modbus here."""
+        """Copy cached measurements + comms-age tag → live state. No Modbus here.
+
+        Raises RuntimeError if the background I/O worker died: a dead worker
+        means measurements freeze AND a safety trip could never be flushed to
+        the device, so the only safe recovery is to crash the process and let
+        the supervisor (systemd Restart=on-failure) start a fresh one — the
+        device's own comms watchdog covers the gap.
+        """
+        if (
+            self._thread.ident is not None  # was started
+            and not self._stop.is_set()     # not a clean shutdown
+            and not self._thread.is_alive()
+        ):
+            raise RuntimeError(
+                "modbus-io worker thread died; restarting the process is the "
+                "only safe recovery (setpoints can no longer reach the bus)"
+            )
         with self._lock:
             cache = dict(self._meas_cache)
         for name, value in cache.items():
@@ -129,6 +145,19 @@ class CachedDriver(Driver):
 
     # ── background worker (slow: owns the bus) ───────────────────────────────
     def _loop(self) -> None:
+        # Per-poll bus errors are handled inside _poll_once; anything escaping
+        # to here is a worker bug. Log it CRITICAL — read_state() then raises in
+        # the foreground, crashing the process for a supervised restart.
+        try:
+            self._poll_loop()
+        except Exception:
+            logger.critical(
+                "modbus-io worker crashed; measurements frozen and setpoints "
+                "no longer flushed — control loop will abort", exc_info=True,
+            )
+            raise
+
+    def _poll_loop(self) -> None:
         while not self._stop.is_set():
             t0 = time.monotonic()
 

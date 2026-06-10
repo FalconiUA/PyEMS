@@ -114,16 +114,51 @@ def test_stop_request_ends_run_and_disconnects(state, fake_driver):
     assert not fake_driver.connected  # bus released on the way out
 
 
-def test_unhandled_controller_error_reraises_and_disconnects(state, fake_driver, caplog):
-    """A controller bug must be logged, re-raised (non-zero exit for systemd)
-    and must still release the bus."""
-    task = Task("t", 0.01, priority=1, controllers=[RaisingController(RuntimeError("bug"))])
+def test_safety_task_error_reraises_and_disconnects(state, fake_driver, caplog):
+    """A PRIORITY 0 (safety) bug must be logged, re-raised (non-zero exit for
+    systemd) and must still release the bus — never run without protection."""
+    task = Task("t", 0.01, priority=0, controllers=[RaisingController(RuntimeError("bug"))])
     sched = Scheduler([task], state, fake_driver)
     fake_driver.connect()
     with pytest.raises(RuntimeError, match="bug"):
         sched.run()
     assert not fake_driver.connected
     assert any("unhandled error" in r.message for r in caplog.records)
+
+
+# ── fault containment: a normal controller bug must not take safety down ─────
+def test_normal_controller_error_is_contained(state, fake_driver, caplog):
+    """A bug in a priority>0 controller is logged; the cycle (and any later
+    controller) keeps running — one broken optimizer must not kill the loop."""
+    order: list[str] = []
+    bad = RaisingController(RuntimeError("bug"))
+    good = RecordingController("good", order)
+    task = Task("t", 1.0, priority=1, controllers=[bad, good])
+    sched = Scheduler([task], state, fake_driver)
+    sched.step(now=0.0)  # must not raise
+    assert order == ["good"]
+    assert any("cycle continues" in r.message for r in caplog.records)
+
+
+def test_contained_error_logs_once_and_recovery_logs(state, fake_driver, caplog):
+    class FlakyController(Controller):
+        def __init__(self) -> None:
+            self.fail = True
+
+        def execute(self, s: SystemState, board=None) -> None:
+            if self.fail:
+                raise RuntimeError("bug")
+
+    flaky = FlakyController()
+    task = Task("t", 1.0, priority=1, controllers=[flaky])
+    sched = Scheduler([task], state, fake_driver)
+    sched.step(now=0.0)
+    sched.step(now=1.0)  # second failing cycle must not re-log
+    failures = [r for r in caplog.records if "cycle continues" in r.message]
+    assert len(failures) == 1
+    flaky.fail = False
+    sched.step(now=2.0)
+    assert any("recovered" in r.message for r in caplog.records)
 
 
 def test_keyboard_interrupt_exits_cleanly_and_disconnects(state, fake_driver):

@@ -29,8 +29,26 @@ connection_point_active_power:
   unit_active_power_setpoint_channel: pv.WSet
 safety:
   max_comms_age_s: 2
+  # Frozen-measurement guard: a live connection-point measurement always
+  # jitters; bit-identical values for this long mean a hung meter/gateway.
+  # Watch jittery tags only (not pv.W — it sits at exactly 0 all night).
+  max_measurement_frozen_s: 30
+  frozen_measurement_channels:
+  - grid.W
+  # Comms watchdog period the unit was commissioned with (its own fail-safe
+  # when the EMS stops writing). Keep-alive rewrites must run at least twice
+  # per period — validated at startup against control.setpoint_rewrite_s.
+  device_comms_watchdog_s: 60
   unit_active_power_setpoint_channels:
   - pv.WSet
+# Actuator monitoring: the unit must actually follow the applied setpoint.
+# Sustained overshoot raises sys.setpoint_violation (the device likely has
+# remote power control disabled) — alarm only, no actuation path exists.
+setpoint_compliance:
+  unit_active_power_channel: pv.W
+  unit_active_power_setpoint_channel: pv.WSet
+  tolerance_w: 2000
+  max_violation_s: 30
 allocation:
   channels:
   - setpoint_channel: pv.WSet
