@@ -1,0 +1,22 @@
+<div class="toolbar">
+  <button class="primary" id="simStartBtn">Start simulator</button>
+  <button class="danger" id="simStopBtn">Stop simulator</button>
+  <button id="simOpenBtn">Open panel in new tab</button>
+  <span id="simStateText" class="hint">Checking simulator...</span>
+</div>
+<div class="panel" id="simHelp">
+  <h2>Device simulation</h2>
+  <p class="lead">
+    The simulator runs the site's device profiles as real Modbus TCP servers
+    (per <code id="simSitePath">config/site.sim.yaml</code>) so the EMS can be
+    tested — and broken — without hardware. Drive PV generation and load by
+    hand, with a synthetic curve, or by replaying recorded 1-second CSV data,
+    and inject faults: device offline, frozen registers, Modbus exceptions,
+    rejected writes, ignored setpoints.
+  </p>
+  <p class="lead">
+    The EMS itself is started separately, exactly like in production:
+    <code id="simEmsCmd">pyems --site config/site.sim.yaml</code>
+  </p>
+</div>
+<iframe id="simFrame" class="sim-frame" title="Simulator control panel" hidden></iframe>

@@ -6,8 +6,11 @@ import argparse
 import json
 import math
 import mimetypes
+import subprocess
+import sys
 import threading
 import time
+import urllib.request
 from copy import deepcopy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,6 +36,7 @@ from pyems.ems import (
 
 
 DEFAULT_SITE_TEMPLATE = DEFAULT_SITE.parent / "default_site.yaml"
+DEFAULT_SIM_SITE = DEFAULT_SITE.parent / "site.sim.yaml"
 STATIC_ROOT = Path(__file__).with_name("ui_static")
 AUTO_PID_GAINS = {"kp": 0.4, "ki": 0.08, "kd": 0.0, "tt": 5.0}
 VERY_HIGH_IMPORT_LIMIT_W = 1_000_000_000.0
@@ -472,9 +476,111 @@ def test_read_once(site: dict[str, Any]) -> dict[str, Any]:
         session.close()
 
 
+class SimManager:
+    """Start/stop the device simulator (`pyems-sim`) from the configuration UI.
+
+    The simulator stays a separate PROCESS — the EMS under test must connect
+    to it over real Modbus TCP exactly as it would to field hardware. This
+    class only manages that process and reports whether its control panel is
+    reachable (it also detects a simulator started by hand outside the UI).
+    """
+
+    def __init__(
+        self,
+        sim_site_path: str | Path = DEFAULT_SIM_SITE,
+        panel_host: str = "127.0.0.1",
+        panel_port: int = 8766,
+    ) -> None:
+        self.sim_site_path = Path(sim_site_path)
+        self.panel_host = panel_host
+        self.panel_port = panel_port
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+
+    def _probe_host(self) -> str:
+        # the panel may be bound to a wildcard address; probe via loopback then
+        return "127.0.0.1" if self.panel_host in ("0.0.0.0", "::") else self.panel_host
+
+    def reachable(self, timeout_s: float = 1.0) -> bool:
+        url = f"http://{self._probe_host()}:{self.panel_port}/api/state"
+        try:
+            with urllib.request.urlopen(url, timeout=timeout_s):
+                return True
+        except Exception:
+            return False
+
+    def _managed_alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            managed = self._managed_alive()
+        return {
+            "ok": True,
+            "managed": managed,
+            "reachable": self.reachable(),
+            "panel_port": self.panel_port,
+            "sim_site": str(self.sim_site_path),
+            "ems_command": f"pyems --site {self.sim_site_path}",
+        }
+
+    def start(self, wait_s: float = 10.0) -> dict[str, Any]:
+        if not self.sim_site_path.exists():
+            raise ValueError(f"simulator site file not found: {self.sim_site_path}")
+        with self._lock:
+            if not self._managed_alive() and not self.reachable():
+                self._proc = subprocess.Popen(
+                    [
+                        sys.executable, "-m", "pyems.sim.harness",
+                        "--site", str(self.sim_site_path),
+                        "--ui-host", self.panel_host,
+                        "--ui-port", str(self.panel_port),
+                    ],
+                )
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            if self.reachable(timeout_s=0.5):
+                return self.status()
+            with self._lock:
+                if self._proc is not None and self._proc.poll() is not None:
+                    code = self._proc.returncode
+                    self._proc = None
+                    raise ValueError(
+                        f"simulator exited immediately (code {code}) — likely a "
+                        f"port conflict or a bad {self.sim_site_path}; see the "
+                        f"pyems-ui console for its log"
+                    )
+            time.sleep(0.2)
+        raise ValueError("simulator did not come up in time")
+
+    def stop_managed(self) -> None:
+        """Terminate the child process if we own one; never raises (shutdown path)."""
+        with self._lock:
+            proc, self._proc = self._proc, None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5.0)
+
+    def stop(self) -> dict[str, Any]:
+        with self._lock:
+            external = self._proc is None
+        if external and self.reachable():
+            raise ValueError(
+                "the simulator was started outside pyems-ui; stop it where it "
+                "was started (Ctrl-C in its terminal)"
+            )
+        self.stop_managed()
+        return self.status()
+
+
 class UIApp:
-    def __init__(self, site_path: str | Path) -> None:
+    def __init__(self, site_path: str | Path, sim: SimManager | None = None) -> None:
         self.site_path = Path(site_path)
+        self.sim = sim or SimManager()
         self._lock = threading.Lock()
         self._session: ReadOnlyDeviceSession | None = None
         self._error_log: list[dict[str, Any]] = []
@@ -616,6 +722,8 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json({"ok": True, "entries": app.error_log()})
                 elif path == "/api/live":
                     self._send_json(app.read_live())
+                elif path == "/api/sim/status":
+                    self._send_json(app.sim.status())
                 else:
                     self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
             except FileNotFoundError:
@@ -641,6 +749,10 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(app.stop_live())
                 elif path == "/api/error-log/clear":
                     self._send_json(app.clear_error_log())
+                elif path == "/api/sim/start":
+                    self._send_json(app.sim.start())
+                elif path == "/api/sim/stop":
+                    self._send_json(app.sim.stop())
                 else:
                     self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
             except Exception as exc:
@@ -654,9 +766,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--site", default=str(DEFAULT_SITE), help="Path to site.yaml")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     parser.add_argument("--port", default=8765, type=int, help="Bind port")
+    parser.add_argument(
+        "--sim-site", default=str(DEFAULT_SIM_SITE),
+        help=f"site yaml for the device simulator (default: {DEFAULT_SIM_SITE})",
+    )
+    parser.add_argument(
+        "--sim-port", default=8766, type=int,
+        help="port for the simulator control panel (default: 8766)",
+    )
     args = parser.parse_args(argv)
 
-    app = UIApp(args.site)
+    app = UIApp(
+        args.site,
+        sim=SimManager(args.sim_site, panel_host=args.host, panel_port=args.sim_port),
+    )
     server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
     host, port = server.server_address[:2]
     print(f"PyEMS UI running at http://{host}:{port}")
@@ -666,6 +789,7 @@ def main(argv: list[str] | None = None) -> None:
         pass
     finally:
         app.close()
+        app.sim.stop_managed()  # a simulator we spawned dies with the UI
         server.server_close()
 
 

@@ -8,6 +8,14 @@ polling, controllers, `PowerAllocator`, setpoint writes on the wire.
 
 ## Quick start
 
+From the configuration UI: run `pyems-ui`, open the **Simulation** tab and
+press **Start simulator** — the control panel appears right in the tab (and a
+simulator started by hand is detected too). Then start the EMS in a terminal:
+
+    pyems --site config/site.sim.yaml
+
+Or fully by hand, without the configuration UI:
+
     terminal 1:  pyems-sim                          # simulated devices + panel
     terminal 2:  pyems --site config/site.sim.yaml  # the real EMS
     browser:     http://127.0.0.1:8766
