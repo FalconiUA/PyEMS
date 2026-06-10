@@ -27,6 +27,10 @@
   .kpis { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 8px; }
   .kpi .v { font-size: 20px; font-weight: 600; }
   .kpi .l { color: var(--muted); font-size: 12px; }
+  .emslink { margin-bottom: 10px; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+  .emslink.ok { background: #11301d; border: 1px solid #2f6b44; color: #a9e8bf; }
+  .emslink.bad { background: #3a181c; border: 1px solid #7c3038; color: #ffc9c9; }
+  .emslink code { background: rgba(0,0,0,.35); padding: 1px 6px; border-radius: 4px; }
   fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; }
   legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
   label { display: block; margin: 6px 0; color: var(--muted); font-size: 13px; }
@@ -69,6 +73,7 @@
 <main>
   <div class="col">
     <div class="panel">
+      <div id="emslink" class="emslink bad">Checking EMS link...</div>
       <div class="kpis" id="kpis"></div>
       <h2>Unit (PV)</h2>
       <canvas id="chartUnit" height="220"></canvas>
@@ -138,6 +143,31 @@ function fmtW(v) {
   return Math.abs(v) >= 10000 ? (v / 1000).toFixed(1) + " kW" : Math.round(v) + " W";
 }
 
+function fmtAge(v) {
+  if (v === null || v === undefined) return "never";
+  return v < 10 ? v.toFixed(1) + " s ago" : Math.round(v) + " s ago";
+}
+
+function renderEmsLink() {
+  const el = document.getElementById("emslink");
+  const devices = state.devices || [];
+  // the EMS polls every device; "connected" = a recent read on any of them
+  const readAges = devices.map(d => d.read_age_s).filter(v => v !== null && v !== undefined);
+  const polling = readAges.length && Math.min(...readAges) < 5;
+  const unit = devices.find(d => d.role === "unit") || {};
+  if (!polling) {
+    el.className = "emslink bad";
+    el.innerHTML = "EMS is NOT connected — no Modbus polling. The setpoint will not move. " +
+      `Start it with: <code>${state.ems_command || "pyems --site config/site.sim.yaml"}</code>`;
+  } else {
+    el.className = "emslink ok";
+    el.textContent = `EMS connected: polling ${fmtAge(Math.min(...readAges))}` +
+      ` · last setpoint write ${fmtAge(unit.write_age_s)}` +
+      (unit.write_age_s === null || unit.write_age_s === undefined
+        ? " (none yet — unchanged setpoints are rewritten only every ~10 s)" : "");
+  }
+}
+
 function drawChart(canvas, series, opts) {
   const ctx = canvas.getContext("2d");
   const W = canvas.width = canvas.clientWidth * devicePixelRatio;
@@ -200,6 +230,7 @@ function render() {
   document.getElementById("events").innerHTML = (state.events || []).map(
     e => `<li><span class="t">${e.at}</span>${e.message}</li>`
   ).join("");
+  renderEmsLink();
   renderFaults();
   renderSourceStatus("pv"); renderSourceStatus("load");
 }
@@ -212,7 +243,9 @@ function renderFaults() {
     div.className = "dev";
     div.innerHTML = `<div class="name"><span class="dot ${dev.online ? "" : "off"}"></span>` +
       `${dev.id} <span class="meta">(${dev.role})</span></div>` +
-      `<div class="meta">${dev.model} — ${dev.endpoint}</div>`;
+      `<div class="meta">${dev.model} — ${dev.endpoint}</div>` +
+      `<div class="meta">EMS poll: ${fmtAge(dev.read_age_s)}` +
+      (dev.role === "unit" ? ` · setpoint write: ${fmtAge(dev.write_age_s)}` : "") + `</div>`;
     for (const [fault, active] of Object.entries(dev.faults)) {
       const btn = document.createElement("button");
       btn.className = "fault" + (active ? " active" : "");

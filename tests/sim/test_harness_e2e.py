@@ -114,6 +114,9 @@ def test_control_panel_http_api(tmp_path):
         assert state["scenario"]["active_power_limit_w"] == 30000
         assert {d["id"] for d in state["devices"]} == {"grid", "pv"}
         assert state["history_keys"][0] == "t_s"
+        # EMS link diagnostics: no EMS is running in this test
+        assert all(d["read_age_s"] is None for d in state["devices"])
+        assert "pyems --site" in state["ems_command"]
 
         body = json.dumps(
             {"target": "load", "mode": "replay", "csv": "1000\n2000\n3000", "speed": 5}

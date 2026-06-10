@@ -121,6 +121,24 @@ def test_reject_writes_fault(pv_device):
         client.close()
 
 
+def test_link_age_tracks_ems_reads_and_writes(pv_device):
+    ages = pv_device.link_age_s()
+    assert ages == {"read_age_s": None, "write_age_s": None}
+
+    client = connect(pv_device)
+    try:
+        assert not client.read_holding_registers(32080, count=2, device_id=1).isError()
+        ages = pv_device.link_age_s()
+        assert ages["read_age_s"] is not None and ages["read_age_s"] < 2.0
+        assert ages["write_age_s"] is None  # a read is not a write
+
+        assert not client.write_registers(40126, [0, 100], device_id=1).isError()
+        ages = pv_device.link_age_s()
+        assert ages["write_age_s"] is not None and ages["write_age_s"] < 2.0
+    finally:
+        client.close()
+
+
 def test_offline_fault_kills_and_restores_server(meter_device):
     meter_device.set_fields({"W": 777.0})
     client = connect(meter_device)

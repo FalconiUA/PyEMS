@@ -72,8 +72,9 @@ def _default_unit_envelope(site: dict) -> tuple[float, float]:
 class SimHarness:
     """Wires sources -> world -> simulated devices and ticks them."""
 
-    def __init__(self, site: dict) -> None:
+    def __init__(self, site: dict, site_path: str | Path | None = None) -> None:
         self.site = site
+        self.site_path = None if site_path is None else str(site_path)
         sim_cfg = site.get("simulation", {})
         scenario = site.get("scenario", {})
         self.unit_device_id = scenario.get("unit_device_id", "pv")
@@ -271,9 +272,13 @@ class SimHarness:
                     "model": dev.profile.model,
                     "online": dev.online(),
                     "faults": self._fault_state(dev_id),
+                    **dev.link_age_s(),
                 }
                 for dev_id, dev in self.devices.items()
             ],
+            "ems_command": (
+                f"pyems --site {self.site_path}" if self.site_path else "pyems --site <site.sim.yaml>"
+            ),
             "scenario": {
                 "control_mode": control_mode(self.site),
                 "active_power_limit_w": scenario.get("active_power_limit_w"),
@@ -374,7 +379,7 @@ def main(argv: list[str] | None = None) -> None:
 
     setup_logging(args.log_level)
     site = yaml.safe_load(Path(args.site).read_text(encoding="utf-8"))
-    harness = SimHarness(site)
+    harness = SimHarness(site, site_path=args.site)
     harness.start()
 
     server = ThreadingHTTPServer((args.ui_host, args.ui_port), make_handler(harness))

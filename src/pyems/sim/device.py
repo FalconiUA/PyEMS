@@ -20,6 +20,7 @@ import asyncio
 import logging
 import random
 import threading
+import time
 from typing import Callable
 
 from pymodbus.constants import ExcCodes
@@ -69,6 +70,11 @@ class SimulatedDevice:
         self._lock = threading.Lock()
         self._fields: dict[str, float] = {}
         self._faults: dict[str, bool] = {name: False for name in FAULTS}
+        # EMS link diagnostics: monotonic ts of the last read/write REQUEST that
+        # reached this device (faulted responses still count — the client is
+        # clearly talking to us). None until the first request.
+        self._last_read: float | None = None
+        self._last_write: float | None = None
         self._registers: list[int] | None = None  # live server block, captured in _action
         self._server: ModbusTcpServer | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -103,6 +109,19 @@ class SimulatedDevice:
     def online(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def link_age_s(self) -> dict[str, float | None]:
+        """Seconds since the EMS last read from / wrote to this device.
+
+        The sim panel surfaces this so 'setpoint never changes' is immediately
+        diagnosable: no reads = no EMS connected at all (not running, or it is
+        running against the hardware site.yaml instead of site.sim.yaml)."""
+        now = time.monotonic()
+        with self._lock:
+            return {
+                "read_age_s": None if self._last_read is None else now - self._last_read,
+                "write_age_s": None if self._last_write is None else now - self._last_write,
+            }
+
     # ── register codec ────────────────────────────────────────────────────────
     def _encode_into(self, registers: list[int], reg: RegisterDef, value: float) -> None:
         raw = int(round(value / reg.scale))
@@ -135,8 +154,13 @@ class SimulatedDevice:
     async def _action(self, _fc, start_address, address, _count, current_registers, set_values):
         self._registers = current_registers  # keep in sync if pymodbus rebuilds it
         assert start_address == self._block_start
+        now = time.monotonic()
         with self._lock:
             faults = dict(self._faults)
+            if set_values is None:
+                self._last_read = now
+            else:
+                self._last_write = now
         if faults["modbus_exception"]:
             return ExcCodes.DEVICE_FAILURE
         if set_values is not None:  # write request
