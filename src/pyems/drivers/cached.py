@@ -85,7 +85,10 @@ class CachedDriver(Driver):
 
     def disconnect(self) -> None:
         self._stop.set()
-        self._thread.join(timeout=2 * self._poll + 1.0)
+        if self._thread.ident is not None:  # join only a started thread —
+            # disconnect() must stay safe on a driver that never connected
+            # (e.g. teardown after a failed startup).
+            self._thread.join(timeout=2 * self._poll + 1.0)
         self._inner.disconnect()
         logger.info("CachedDriver stopped")
 

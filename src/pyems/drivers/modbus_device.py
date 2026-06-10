@@ -111,6 +111,30 @@ class RegisterDef:
     min_val: float = float("-inf")
     max_val: float = float("inf")
 
+    def __post_init__(self) -> None:
+        # Fail at profile load, not mid-poll: an unknown type would KeyError on
+        # the first bus read and masquerade as a comms failure (permanent
+        # safety trip); a zero scale would ZeroDivisionError on the first
+        # setpoint write; a misspelled access silently demotes a setpoint to
+        # read-only.
+        if self.type not in _REG_COUNT:
+            raise ValueError(
+                f"register '{self.channel}': unknown type {self.type!r}; "
+                f"supported: {sorted(_REG_COUNT)}"
+            )
+        if self.access not in ("read", "read_write"):
+            raise ValueError(
+                f"register '{self.channel}': access must be 'read' or "
+                f"'read_write', got {self.access!r}"
+            )
+        if self.scale == 0:
+            raise ValueError(f"register '{self.channel}': scale must be non-zero")
+        if self.min_val > self.max_val:
+            raise ValueError(
+                f"register '{self.channel}': min_val ({self.min_val}) > "
+                f"max_val ({self.max_val})"
+            )
+
     @property
     def count(self) -> int:
         return _REG_COUNT[self.type]
@@ -268,11 +292,14 @@ class ModbusDeviceDriver(Driver):
         the poll as failed so the comms age grows — error *responses* are as
         much a dead bus as a socket error.
 
-        A decoded value outside the register's [min_val, max_val] bounds is
-        treated the same as an error response: the tag keeps its last value and
-        the poll fails. A wrong profile (scale/address/type) or a gateway
+        A decoded MEASUREMENT outside the register's [min_val, max_val] bounds
+        is treated the same as an error response: the tag keeps its last value
+        and the poll fails. A wrong profile (scale/address/type) or a gateway
         serving garbage must raise the comms age, not feed implausible numbers
-        into the control loop as if they were measurements.
+        into the control loop as if they were measurements. Writable registers
+        are exempt: their bounds guard what WE write, while the device-side
+        content (e.g. an out-of-range factory default in a setpoint register
+        we have not written yet) must not fail the poll.
         """
         failed: list[str] = []
         for reg in self._profile.registers:
@@ -282,7 +309,7 @@ class ModbusDeviceDriver(Driver):
                 failed.append(self._tag[reg.channel])
                 continue
             value = _decode(result.registers, reg) * reg.scale
-            if not (reg.min_val <= value <= reg.max_val):
+            if not reg.writable and not (reg.min_val <= value <= reg.max_val):
                 logger.debug(
                     "Implausible %s @%d: %s outside [%s, %s]",
                     reg.channel, reg.address, value, reg.min_val, reg.max_val,

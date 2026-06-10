@@ -182,6 +182,41 @@ def test_implausible_value_fails_poll_and_keeps_last_value():
     assert st.get("pv1.W") == 42.0  # untouched on implausible read
 
 
+def test_out_of_range_writable_register_does_not_fail_poll():
+    """Bounds on a read_write register guard what WE write; device-side content
+    (e.g. an out-of-range factory default in WSet before our first write) must
+    not fail the poll — that would be a permanent spurious safety trip."""
+    prof = DeviceProfile.load(HUAWEI)
+    # pv.WSet @40126 bounded [0, 100000]; device holds 0xFFFFFFFF (4294967295).
+    client = FakeModbusClient({40126: [0xFFFF, 0xFFFF]})
+    drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
+    st = SystemState(drv.channels())
+    drv.read_state(st)  # must not raise
+
+
+# ── profile validation: a bad YAML must fail at load, not mid-poll ───────────
+def test_unknown_register_type_rejected_at_load():
+    with pytest.raises(ValueError, match="unknown type"):
+        RegisterDef("pv.W", 0, "int64", 1.0, "W", "read")
+
+
+def test_misspelled_access_rejected_at_load():
+    # 'read-write' would otherwise silently demote the setpoint to read-only.
+    with pytest.raises(ValueError, match="access"):
+        RegisterDef("pv.WSet", 0, "uint32", 1.0, "W", "read-write")
+
+
+def test_zero_scale_rejected_at_load():
+    # would otherwise ZeroDivisionError on the first setpoint write
+    with pytest.raises(ValueError, match="scale"):
+        RegisterDef("pv.WSet", 0, "uint32", 0.0, "W", "read_write")
+
+
+def test_inverted_bounds_rejected_at_load():
+    with pytest.raises(ValueError, match="min_val"):
+        RegisterDef("pv.W", 0, "int16", 1.0, "W", "read", min_val=10, max_val=-10)
+
+
 def test_partial_read_error_updates_good_registers_then_raises():
     prof = DeviceProfile.load(HUAWEI)
     # only pv.W @32080 answers; every other register returns an error response

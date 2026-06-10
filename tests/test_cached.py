@@ -136,6 +136,13 @@ def test_clean_shutdown_does_not_flag_dead_worker():
     drv.read_state(SystemState(drv.channels()))  # must not raise
 
 
+def test_disconnect_without_connect_is_safe():
+    """Teardown after a failed startup must not crash on the unstarted worker
+    (Thread.join before start raises RuntimeError)."""
+    drv = CachedDriver(FakeInner({"grid.W": 0.0}), poll_interval_s=0.01)
+    drv.disconnect()  # must not raise
+
+
 def test_stale_bus_grows_age_and_keeps_last_value():
     inner = FakeInner({"grid.W": 50.0})
     drv = CachedDriver(inner, poll_interval_s=0.01)
