@@ -1,13 +1,18 @@
 """Tests for the profile-driven Modbus driver (src/drivers/modbus_device.py)."""
 import pytest
 
+import pyems.drivers.modbus_device as md
 from pyems.channels import SystemState
 from pyems.drivers.modbus_device import (
+    DEFAULT_SERIAL,
     DeviceProfile,
     ModbusDeviceDriver,
+    ModbusReadError,
+    ModbusWriteError,
     RegisterDef,
     _decode,
     _encode,
+    make_client,
     namespaced,
 )
 
@@ -97,8 +102,11 @@ class FakeResult:
 
 
 class FakeModbusClient:
-    def __init__(self, reads: dict[int, list[int]]):
+    def __init__(self, reads: dict[int, list[int]], fail_unknown: bool = False,
+                 fail_writes: bool = False):
         self._reads = reads
+        self._fail_unknown = fail_unknown  # unknown address → Modbus error response
+        self._fail_writes = fail_writes    # every write → Modbus error response
         self.writes: dict[int, list[int]] = {}
         self.reads: list[tuple[int, int, int]] = []
         self.connect_calls = 0
@@ -114,11 +122,16 @@ class FakeModbusClient:
     def read_holding_registers(self, address, count, slave):
         self.reads.append((address, count, slave))
         if address not in self._reads:
-            return FakeResult([], error=True)
+            if self._fail_unknown:
+                return FakeResult([], error=True)
+            return FakeResult([0] * count)
         return FakeResult(self._reads[address])
 
     def write_registers(self, address, values, slave):
+        if self._fail_writes:
+            return FakeResult([], error=True)
         self.writes[address] = values
+        return FakeResult(values)
 
 
 def test_read_state_decodes_and_scales_into_namespaced_tag():
@@ -142,14 +155,38 @@ def test_write_setpoints_encodes_from_namespaced_tag():
     assert client.writes[40126] == [0x0000, 0xC350]
 
 
-def test_read_error_keeps_value_unchanged():
+def test_read_error_keeps_value_unchanged_and_raises():
     prof = DeviceProfile.load(HUAWEI)
-    client = FakeModbusClient({})  # every read returns error
+    client = FakeModbusClient({}, fail_unknown=True)  # every read returns error
     drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
     st = SystemState(drv.channels())
     st._channels["pv1.W"].value = 42.0
-    drv.read_state(st)
+    # Error responses must fail the poll loudly — a gateway answering every
+    # request with an exception code must not count as a successful read.
+    with pytest.raises(ModbusReadError):
+        drv.read_state(st)
     assert st.get("pv1.W") == 42.0  # untouched on error
+
+
+def test_partial_read_error_updates_good_registers_then_raises():
+    prof = DeviceProfile.load(HUAWEI)
+    # only pv.W @32080 answers; every other register returns an error response
+    client = FakeModbusClient({32080: [0x0000, 0xFDE8]}, fail_unknown=True)
+    drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
+    st = SystemState(drv.channels())
+    with pytest.raises(ModbusReadError, match="pv1"):
+        drv.read_state(st)
+    assert st.get("pv1.W") == pytest.approx(65000.0)  # good register still landed
+
+
+def test_write_error_response_raises():
+    prof = DeviceProfile.load(HUAWEI)
+    client = FakeModbusClient({}, fail_writes=True)
+    drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
+    st = SystemState(drv.channels())
+    st.set("pv1.WSet", 50000.0)
+    with pytest.raises(ModbusWriteError, match="pv1.WSet"):
+        drv.write_setpoints(st)
 
 
 def test_shared_client_keeps_per_driver_slave_id():
@@ -163,3 +200,54 @@ def test_shared_client_keeps_per_driver_slave_id():
 
     assert any(slave == 0 for _, _, slave in client.reads)
     assert any(slave == 11 for _, _, slave in client.reads)
+
+
+# ── make_client: per-protocol client construction (RTU serial params) ────────
+class FakeSerialClient:
+    def __init__(self, port, **kwargs):
+        self.port = port
+        self.kwargs = kwargs
+
+
+class FakeTcpClientKw:
+    def __init__(self, host, port=502, **kwargs):
+        self.host = host
+        self.port = port
+        self.kwargs = kwargs
+
+
+def test_make_client_rtu_applies_serial_defaults(monkeypatch):
+    monkeypatch.setattr(md, "ModbusSerialClient", FakeSerialClient)
+    client = make_client("modbus_rtu", "/dev/ttyUSB0")
+    assert client.port == "/dev/ttyUSB0"
+    assert client.kwargs == DEFAULT_SERIAL  # 9600 8N1
+
+
+def test_make_client_rtu_overrides_serial_and_timeout(monkeypatch):
+    monkeypatch.setattr(md, "ModbusSerialClient", FakeSerialClient)
+    client = make_client(
+        "modbus_rtu", "/dev/ttyUSB0",
+        serial={"baudrate": 19200, "parity": "E"}, timeout_s=0.4,
+    )
+    assert client.kwargs["baudrate"] == 19200
+    assert client.kwargs["parity"] == "E"
+    assert client.kwargs["stopbits"] == DEFAULT_SERIAL["stopbits"]
+    assert client.kwargs["timeout"] == 0.4
+
+
+def test_make_client_rtu_rejects_unknown_serial_key(monkeypatch):
+    monkeypatch.setattr(md, "ModbusSerialClient", FakeSerialClient)
+    with pytest.raises(ValueError, match="baud_rate"):
+        make_client("modbus_rtu", "/dev/ttyUSB0", serial={"baud_rate": 9600})
+
+
+def test_make_client_tcp_port_and_timeout(monkeypatch):
+    monkeypatch.setattr(md, "ModbusTcpClient", FakeTcpClientKw)
+    client = make_client("modbus_tcp", "10.0.0.5", default_port=1502, timeout_s=2.0)
+    assert (client.host, client.port) == ("10.0.0.5", 1502)
+    assert client.kwargs["timeout"] == 2.0
+
+
+def test_make_client_unknown_protocol_raises():
+    with pytest.raises(ValueError, match="Unknown protocol"):
+        make_client("modbus_ascii", "/dev/ttyUSB0")

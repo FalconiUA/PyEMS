@@ -1,7 +1,8 @@
 """Tests for fail-fast binding validation (src/pyems/ems.py)."""
 import pytest
 
-from pyems.ems import required_channels, validate_bindings
+from pyems.channels import Channel
+from pyems.ems import required_channels, validate_binding_directions, validate_bindings
 
 
 def make_site():
@@ -65,3 +66,30 @@ def test_validate_raises_on_missing_connection_point_active_power_tag():
     pool = ["grid.W", "pv.W", "pv.WSet", "sys.safe_mode"]
     with pytest.raises(ValueError, match="pv.WSetx"):
         validate_bindings(site, pool)
+
+
+# ── binding direction validation (measurement vs setpoint) ───────────────────
+def make_channels(grid_w_writable=False, pv_wset_writable=True):
+    return [
+        Channel("grid.W", writable=grid_w_writable),
+        Channel("pv.W"),
+        Channel("pv.WSet", writable=pv_wset_writable),
+        Channel("sys.safe_mode", writable=True),
+        Channel("sys.comms_age_s"),
+    ]
+
+
+def test_direction_validation_passes_for_correct_profile():
+    validate_binding_directions(make_site(), make_channels())  # must not raise
+
+
+def test_measurement_bound_to_writable_channel_raises():
+    # A meter profile mistakenly marking grid.W read_write: the cache would
+    # never publish the measurement AND would flush state values to the meter.
+    with pytest.raises(ValueError, match="grid.W"):
+        validate_binding_directions(make_site(), make_channels(grid_w_writable=True))
+
+
+def test_setpoint_bound_to_read_only_channel_raises():
+    with pytest.raises(ValueError, match="pv.WSet"):
+        validate_binding_directions(make_site(), make_channels(pv_wset_writable=False))

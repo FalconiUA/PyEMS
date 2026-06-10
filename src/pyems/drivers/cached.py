@@ -59,6 +59,7 @@ class CachedDriver(Driver):
         self._sp_ready = False                          # gate: don't write before first setpoint
         self._last_ok = 0.0                             # monotonic ts of last good read
         self._bus_down = False                          # last bus health — log on transition
+        self._write_failed = False                      # last flush health — log on transition
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="modbus-io", daemon=True)
 
@@ -134,7 +135,13 @@ class CachedDriver(Driver):
                     self._io_state._channels[name].value = value
                 try:
                     self._inner.write_setpoints(self._io_state)
+                    if self._write_failed:  # recovered — log the up transition once
+                        logger.warning("Modbus WRITE recovered; setpoints flushing again")
+                        self._write_failed = False
                 except Exception:
-                    logger.exception("Modbus WRITE failed; setpoints not flushed this cycle")
+                    # Log only the down transition — never every failed flush (spam).
+                    if not self._write_failed:
+                        logger.exception("Modbus WRITE failed; setpoints not flushed")
+                        self._write_failed = True
 
             self._stop.wait(max(0.0, self._poll - (time.monotonic() - t0)))

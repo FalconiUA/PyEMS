@@ -1,5 +1,8 @@
 """Wiring test for build_ems() (src/ems.py) — no real network."""
+import pytest
+
 import pyems.drivers.modbus_device as md
+from pyems.drivers.modbus_device import DEFAULT_SERIAL
 from pyems.controllers.connection_point_import_limit import ConnectionPointImportLimitController
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.grid_export_limit import GridExportLimitController
@@ -84,6 +87,67 @@ def test_build_device_drivers_shares_tcp_client_by_endpoint(monkeypatch):
     assert len(drivers) == 2
     assert len(FakeTcpClient.instances) == 1
     assert drivers[0].connection_identity() is drivers[1].connection_identity()
+
+
+class FakeSerialClient:
+    """Stand-in for ModbusSerialClient: captures serial parameters."""
+
+    instances = []
+
+    def __init__(self, port, **kwargs):
+        self.port = port
+        self.kwargs = kwargs
+        FakeSerialClient.instances.append(self)
+
+
+def test_build_device_drivers_rtu_passes_serial_params(monkeypatch):
+    FakeSerialClient.instances = []
+    monkeypatch.setattr(md, "ModbusSerialClient", FakeSerialClient)
+    build_device_drivers(
+        [
+            {
+                "id": "gen",
+                "profile": "gensets/example_genset.yaml",
+                "host": "/dev/ttyUSB0",
+                "slave_id": 3,
+                "serial": {"baudrate": 19200, "parity": "E"},
+                "timeout_s": 0.5,
+            },
+        ]
+    )
+    [client] = FakeSerialClient.instances
+    assert client.port == "/dev/ttyUSB0"
+    assert client.kwargs["baudrate"] == 19200
+    assert client.kwargs["parity"] == "E"
+    assert client.kwargs["stopbits"] == DEFAULT_SERIAL["stopbits"]  # default kept
+    assert client.kwargs["timeout"] == 0.5
+
+
+def test_build_device_drivers_rtu_shares_bus_client(monkeypatch):
+    FakeSerialClient.instances = []
+    monkeypatch.setattr(md, "ModbusSerialClient", FakeSerialClient)
+    devices = [
+        {"id": "gen1", "profile": "gensets/example_genset.yaml",
+         "host": "/dev/ttyUSB0", "slave_id": 1, "serial": {"baudrate": 9600}},
+        {"id": "gen2", "profile": "gensets/example_genset.yaml",
+         "host": "/dev/ttyUSB0", "slave_id": 2, "serial": {"baudrate": 9600}},
+    ]
+    drivers = build_device_drivers(devices)
+    assert len(drivers) == 2
+    assert len(FakeSerialClient.instances) == 1  # one client per serial bus
+
+
+def test_build_device_drivers_conflicting_serial_settings_raise(monkeypatch):
+    FakeSerialClient.instances = []
+    monkeypatch.setattr(md, "ModbusSerialClient", FakeSerialClient)
+    devices = [
+        {"id": "gen1", "profile": "gensets/example_genset.yaml",
+         "host": "/dev/ttyUSB0", "slave_id": 1, "serial": {"baudrate": 9600}},
+        {"id": "gen2", "profile": "gensets/example_genset.yaml",
+         "host": "/dev/ttyUSB0", "slave_id": 2, "serial": {"baudrate": 19200}},
+    ]
+    with pytest.raises(ValueError, match="conflicting serial"):
+        build_device_drivers(devices)
 
 
 def test_build_tasks_import_mode_uses_only_import_controller():

@@ -56,9 +56,26 @@ class CompositeDriver(Driver):
         return merged
 
     def read_state(self, state: SystemState) -> None:
-        for d in self._drivers:
-            d.read_state(state)
+        """Read every device even if some fail, then re-raise an aggregate.
+
+        Healthy devices keep their values fresh in `state`; the raised error
+        still marks the whole poll as failed (conservative: the comms age
+        grows and safety may trip), since there is no per-device age yet.
+        """
+        self._fan_out("read", lambda d: d.read_state(state))
 
     def write_setpoints(self, state: SystemState) -> None:
+        self._fan_out("write", lambda d: d.write_setpoints(state))
+
+    def _fan_out(self, op: str, call) -> None:
+        errors: list[Exception] = []
         for d in self._drivers:
-            d.write_setpoints(state)
+            try:
+                call(d)
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise IOError(
+                f"{len(errors)}/{len(self._drivers)} device {op}s failed: "
+                + "; ".join(str(e) for e in errors)
+            ) from errors[0]
