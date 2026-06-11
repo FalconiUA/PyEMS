@@ -118,7 +118,9 @@ registers:
     unit: A
     access: read
 
-  # ── Line voltages (Read Only) ─────────────────────────────────────────────
+  # ── Phase (phase-to-neutral) voltages (Read Only) ─────────────────────────
+  # NB: PhVph* = phase-to-neutral (~230 V). If your controller publishes LINE
+  # (phase-to-phase, ~400 V) voltages, map them to gen.PPVphAB/BC/CA instead.
   - channel: gen.PhVphA
     address: 1018
     type: uint16
