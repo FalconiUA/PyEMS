@@ -52,6 +52,22 @@ Controllers never hardcode tag strings; these config keys wire them:
 | `unit_active_power_setpoint_channels` | setpoint list (safety claims) | `safety` |
 | `frozen_measurement_channels` | measurement list (freeze guard) | `safety` |
 
+## Adding a new controller / system tag — checklist
+
+1. Define the name ONCE in `src/pyems/system_tags.py`:
+   `*_CHANNEL` constants must be `sys.*` tags, `*_REQUESTER` constants are
+   board claim keys. Naming convention and uniqueness are enforced
+   automatically by `tests/test_system_tags.py` (it introspects the module —
+   no test edits needed).
+2. In the new controller: `from pyems.system_tags import <NAME>` — one
+   import line; never write the string literal.
+3. Add a row to the tables in THIS file (writer/readers/meaning).
+4. Teach `src/pyems/tag_registry.py::collect()` the new config section, so
+   `pyems-tags` shows the tag's readers/writers on the live map.
+5. If the tag is a new status word the EMS exposes, add its `Channel` where
+   the others are created (`build_ems()` in ems.py and `_system_channels()`
+   in ui.py).
+
 ## Device tags (for completeness)
 
 `<device id>.<field>` — the `<field>` part comes from `profiles/*.yaml`, the
