@@ -56,8 +56,17 @@ allocation:
     p_min_w: 0
     p_max_w: 100000
     default_w: 100000
-    ramp_rate_w_per_s: 5000
+    # Asymmetric active power gradient: raising production follows the
+    # grid-code gradient, but CURTAILMENT must be fast — on a sharp load drop
+    # the export limit is violated until the setpoint comes down, and that
+    # excursion lasts (overshoot / ramp_down) seconds.
+    ramp_rate_w_per_s: 5000     # up (and the default for both directions)
+    ramp_down_w_per_s: 50000    # full envelope in 2 s
     deadband_w: 200
+# Per-cycle CSV flight recorder: timestamp + every bound tag each scan cycle.
+# Analyze transients (load steps, trips, ramps) offline with pandas/Excel.
+recording:
+  cycle_csv: logs/sim_cycles.csv
 devices:
 - id: grid
   profile: meters/example_grid_meter.yaml

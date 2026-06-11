@@ -31,6 +31,7 @@ from pyems.drivers.cached import COMMS_AGE_CHANNEL, CachedDriver
 from pyems.drivers.composite import CompositeDriver
 import pyems.drivers.modbus_device as md
 from pyems.logging_config import setup_logging
+from pyems.recording import CycleRecorder
 from pyems.scheduler import Scheduler, Task
 
 logger = logging.getLogger(__name__)
@@ -329,9 +330,10 @@ def build_allocation(site: dict) -> tuple[PowerAllocator, RequestBoard]:
     # stale edit is a recurring failure mode during commissioning/simulation).
     for c in configs:
         logger.info(
-            "Allocation %s: envelope [%g, %g] W, default %g W, ramp %g W/s, deadband %g W",
+            "Allocation %s: envelope [%g, %g] W, default %g W, "
+            "ramp up %g / down %g W/s, deadband %g W",
             c.setpoint_channel, c.p_min_w, c.p_max_w, c.default_w,
-            c.ramp_rate_w_per_s, c.deadband_w,
+            c.ramp_up_w_per_s, c.ramp_down_w_per_s, c.deadband_w,
         )
     board = RequestBoard([c.setpoint_channel for c in configs])
     allocator = PowerAllocator(configs, board, cycle_s=fast_cycle_s)
@@ -394,6 +396,34 @@ def build_device_drivers(devices_cfg: list[dict]) -> list[md.ModbusDeviceDriver]
     return drivers
 
 
+def build_recorder(site: dict, available: list[str]) -> CycleRecorder | None:
+    """Build the per-cycle CSV recorder from the optional `recording:` section.
+
+    Defaults to every controller-bound tag; an explicit channel list is
+    validated against the tag pool (a typo must fail at startup, not record
+    empty columns for a week).
+    """
+    rec_cfg = site.get("recording") or {}
+    csv_path = rec_cfg.get("cycle_csv")
+    if not csv_path:
+        return None
+    channels = rec_cfg.get("channels")
+    if channels is None:
+        channels = sorted(set(required_channels(site)))
+    pool = set(available)
+    missing = [t for t in channels if t not in pool]
+    if missing:
+        raise ValueError(
+            f"recording.channels lists tags not present in the tag pool: {missing}"
+        )
+    path = Path(csv_path)
+    if not path.is_absolute():
+        path = ROOT / path
+    recorder = CycleRecorder(path, channels)
+    logger.info("Cycle recording to %s (%d channels)", path, len(channels))
+    return recorder
+
+
 def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     logger.info("Building EMS from %s", Path(site_path).resolve())
     site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8"))
@@ -444,6 +474,7 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
 
     tasks = build_tasks(site)
     allocator, board = build_allocation(site)
+    recorder = build_recorder(site, [c.name for c in channels])
 
     logger.info(
         "EMS built: %d devices, %d channels, tasks=%s, allocator channels=%s",
@@ -451,7 +482,8 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
         allocator.channels,
     )
     return Scheduler(
-        tasks=tasks, state=state, driver=driver, allocator=allocator, board=board
+        tasks=tasks, state=state, driver=driver, allocator=allocator, board=board,
+        recorder=recorder,
     )
 
 

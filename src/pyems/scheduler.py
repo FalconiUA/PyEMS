@@ -52,6 +52,7 @@ class Scheduler:
         driver,
         allocator=None,
         board=None,
+        recorder=None,
     ) -> None:
         self._tasks = sorted(tasks, key=lambda t: t.priority)
         self._state = state
@@ -61,6 +62,9 @@ class Scheduler:
         # pre-allocator tests pass unchanged.
         self._allocator = allocator
         self._board = board
+        # Optional per-cycle CSV flight recorder (see pyems.recording).
+        self._recorder = recorder
+        self._recorder_failed = False  # log on transition, not per cycle
         self._overrunning = False  # last cycle-overrun state — log on transition
         self._ctrl_failed: dict[int, bool] = {}  # id(ctrl) → failing? (log on transition)
         self._stop = threading.Event()
@@ -100,6 +104,21 @@ class Scheduler:
 
         # write all outputs last
         self._driver.write_setpoints(self._state)
+
+        # record the cycle AFTER arbitration and output, so the row holds what
+        # was actually commanded. A recording failure (full disk, yanked USB
+        # stick) must never take the control loop down — contain and log once.
+        if self._recorder is not None:
+            try:
+                self._recorder.record(now, self._state)
+            except Exception:
+                if not self._recorder_failed:
+                    logger.exception("Cycle recording failed; control continues without it")
+                    self._recorder_failed = True
+            else:
+                if self._recorder_failed:
+                    logger.warning("Cycle recording recovered")
+                    self._recorder_failed = False
 
     def _execute_contained(self, ctrl, task: Task) -> None:
         """Run one non-safety controller; log its failure/recovery on transition
@@ -166,4 +185,9 @@ class Scheduler:
             # devices' own comms watchdogs are the layer that fail-safes the
             # power output once we stop writing setpoints.
             self._driver.disconnect()
+            if self._recorder is not None:
+                try:
+                    self._recorder.close()
+                except Exception:
+                    logger.exception("Closing the cycle recorder failed")
             logger.info("Scheduler stopped")
