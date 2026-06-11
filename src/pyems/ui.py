@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import yaml
 
 from pyems.channels import Channel, SystemState
+from pyems.device_fields import FIELD_LABELS, field_label
 from pyems.system_tags import (
     COMMS_AGE_CHANNEL,
     SAFE_MODE_CHANNEL,
@@ -279,6 +280,19 @@ def _device_name(channel_name: str) -> str:
     return channel_name.split(".", 1)[0] if "." in channel_name else "sys"
 
 
+# Human-readable meaning of the sys.* status words (device fields get theirs
+# from the canonical vocabulary, see field_label in pyems/device_fields.py).
+_SYS_LABELS = {
+    COMMS_AGE_CHANNEL: "Seconds since the last good bus read (inf = never)",
+    SAFE_MODE_CHANNEL: "Safety trip active (1) / healthy (0)",
+    SETPOINT_VIOLATION_CHANNEL: "Unit is not following its applied setpoint",
+}
+
+
+def channel_description(channel_name: str) -> str:
+    return _SYS_LABELS.get(channel_name) or field_label(channel_name)
+
+
 def channel_rows(site: dict[str, Any], channels: list[Channel], snapshot: dict[str, float]) -> list[dict[str, Any]]:
     scenario_channels = set(required_channels(site))
     setpoint_channels = {channel["setpoint_channel"] for channel in site["allocation"]["channels"]}
@@ -296,6 +310,7 @@ def channel_rows(site: dict[str, Any], channels: list[Channel], snapshot: dict[s
             {
                 "device": _device_name(channel.name),
                 "channel": channel.name,
+                "description": channel_description(channel.name),
                 "value": _json_number(snapshot.get(channel.name, channel.value)),
                 "unit": channel.unit,
                 "access": "write" if channel.writable else "read",
@@ -427,6 +442,9 @@ def config_payload(site_path: str | Path = DEFAULT_SITE) -> dict[str, Any]:
         "profile_requirements": device_profile_requirements(site),
         "live_rows": empty_live_rows(site, channels),
         "validation": validation,
+        # canonical vocabulary decode: field -> human label (profile editor
+        # shows it next to the raw channel name)
+        "field_labels": FIELD_LABELS,
     }
 
 

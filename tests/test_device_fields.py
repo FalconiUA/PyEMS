@@ -13,7 +13,9 @@ import yaml
 from pyems.device_fields import (
     DEVICE_FIELDS,
     EMS_FIELDS,
+    FIELD_LABELS,
     SUNSPEC_FIELDS,
+    field_label,
     validate_channel,
 )
 from pyems.drivers.modbus_device import DeviceProfile
@@ -53,6 +55,15 @@ def test_sunspec_fields_match_the_standard_models():
         assert points[name] == unit, (
             f"{name!r}: vocabulary unit {unit!r} != SunSpec {points[name]!r}"
         )
+
+
+def test_every_field_has_a_human_label():
+    """The UI decodes raw tags via FIELD_LABELS — a field without a label
+    would silently show an empty 'meaning' column."""
+    assert set(FIELD_LABELS) == set(DEVICE_FIELDS)
+    assert all(FIELD_LABELS.values()), "empty label"
+    assert field_label("pv1.W") == FIELD_LABELS["W"]  # device id is ignored
+    assert field_label("pv1.NotAField") == ""
 
 
 def test_ems_fields_never_shadow_a_sunspec_point():

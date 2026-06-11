@@ -87,6 +87,49 @@ EMS_FIELDS: dict[str, str] = {
 
 DEVICE_FIELDS: dict[str, str] = {**SUNSPEC_FIELDS, **EMS_FIELDS}
 
+# field -> human-readable meaning, shown next to raw tags in the UI and docs.
+# Wording follows the project's grid-code terminology (CLAUDE.md): the
+# electrical quantity is always explicit. Covers every DEVICE_FIELDS key —
+# enforced by tests/test_device_fields.py.
+FIELD_LABELS: dict[str, str] = {
+    "W": "Active power, total (P)",
+    "WphA": "Active power, phase A",
+    "WphB": "Active power, phase B",
+    "WphC": "Active power, phase C",
+    "WSet": "Active power setpoint (written by PowerAllocator)",
+    "VAR": "Reactive power, total (Q)",
+    "VARphA": "Reactive power, phase A",
+    "VARphB": "Reactive power, phase B",
+    "VARphC": "Reactive power, phase C",
+    "VA": "Apparent power, total (S)",
+    "VAphA": "Apparent power, phase A",
+    "VAphB": "Apparent power, phase B",
+    "VAphC": "Apparent power, phase C",
+    "Hz": "Frequency (f)",
+    "AphA": "Current, phase A",
+    "AphB": "Current, phase B",
+    "AphC": "Current, phase C",
+    "PhVphA": "Voltage, phase A to neutral",
+    "PhVphB": "Voltage, phase B to neutral",
+    "PhVphC": "Voltage, phase C to neutral",
+    "PPVphAB": "Voltage, line A-B",
+    "PPVphBC": "Voltage, line B-C",
+    "PPVphCA": "Voltage, line C-A",
+    "SoC": "State of charge (% of energy capacity)",
+    "SoH": "State of health",
+    "WChaRteMax": "Max charge rate, nameplate",
+    "WDisChaRteMax": "Max discharge rate, nameplate",
+    "Status": "Vendor status word",
+    "OperatingMode": "Vendor operating mode",
+    "Alarm": "Vendor alarm bitfield",
+}
+
+
+def field_label(channel: str) -> str:
+    """Human-readable meaning of a `<device>.<field>` tag ('' if unknown)."""
+    field = channel.split(".", 1)[1] if "." in channel else channel
+    return FIELD_LABELS.get(field, "")
+
 
 def validate_channel(channel: str, unit: str) -> None:
     """Raise ValueError unless `channel` is `<class>.<Field>` with a

@@ -1,5 +1,6 @@
 let site = null;
 let sitePath = "";
+let fieldLabels = {};
 let siteChoices = [];
 let simSitePath = "";
 let profiles = [];
@@ -128,6 +129,7 @@ function applyConfigPayload(data) {
   profiles = data.profiles;
   profileRequirements = data.profile_requirements;
   liveRows = data.live_rows;
+  fieldLabels = data.field_labels || fieldLabels;
   renderSiteFile();
 }
 
@@ -230,6 +232,7 @@ function renderProfile(profilePayload) {
     return `<tr data-register-index="${idx}">
       <td>${required ? '<span class="tag ok">required</span>' : ""}</td>
       <td><input data-field="channel" value="${esc(reg.channel)}" required></td>
+      <td data-decode>${esc(fieldLabel(reg.channel))}</td>
       <td><input data-field="address" type="number" step="1" value="${reg.address}" required></td>
       <td><select data-field="type">${["int16","uint16","int32","uint32"].map((t) => `<option value="${t}"${reg.type === t ? " selected" : ""}>${t}</option>`).join("")}</select></td>
       <td><input data-field="scale" type="number" step="0.0001" value="${reg.scale}" required></td>
@@ -257,6 +260,11 @@ function renderRealtime(readData = null) {
   renderLiveRows(readData ? readData.rows : liveRows);
 }
 
+function fieldLabel(channel) {
+  const name = String(channel ?? "");
+  const field = name.includes(".") ? name.slice(name.indexOf(".") + 1) : name;
+  return fieldLabels[field] || "";
+}
 function formatValue(value) {
   if (value === null || value === undefined) return "0";
   if (typeof value === "number") return Math.abs(value) >= 1000 ? value.toFixed(1) : (Number.isInteger(value) ? String(value) : value.toFixed(3));
@@ -265,7 +273,7 @@ function formatValue(value) {
 function renderLiveRows(rows) {
   $("liveRows").innerHTML = (rows || []).map((row) => `
     <tr>
-      <td>${esc(row.device)}</td><td>${esc(row.channel)}</td><td>${esc(formatValue(row.value))}</td>
+      <td>${esc(row.device)}</td><td>${esc(row.channel)}</td><td>${esc(row.description ?? fieldLabel(row.channel))}</td><td>${esc(formatValue(row.value))}</td>
       <td>${esc(row.unit)}</td><td><span class="tag">${esc(row.access)}</span></td><td>${esc(row.role)}</td>
     </tr>
   `).join("");
@@ -516,6 +524,13 @@ function showView(name) {
   }
 }
 
+document.addEventListener("input", (event) => {
+  // live decode while typing a channel name in the profile register editor
+  if (event.target.matches('[data-field="channel"]')) {
+    const cell = event.target.closest("tr")?.querySelector("[data-decode]");
+    if (cell) cell.textContent = fieldLabel(event.target.value) || "— not in vocabulary —";
+  }
+});
 document.addEventListener("change", async (event) => {
   const id = event.target.id || "";
   if (id.startsWith("scenario.") || id.startsWith("allocation.") || id.startsWith("setpoint_headroom.")) {
