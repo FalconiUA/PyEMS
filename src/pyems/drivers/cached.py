@@ -168,7 +168,12 @@ class CachedDriver(Driver):
             try:
                 if self._bus_down:
                     # SmartLogger / TCP gateways drop idle or overloaded sessions.
-                    # Re-establish before reading; connect() is off the control loop.
+                    # Drop the old sockets first: pymodbus connect() is a no-op
+                    # while a (possibly half-dead) socket object still exists,
+                    # and an aborted connection escapes recv() without close()
+                    # — without this the EMS would retry the zombie socket
+                    # forever and a safety trip would never release.
+                    self._inner.disconnect()
                     self._inner.connect()
                 self._inner.read_state(self._io_state)
                 snap = {n: self._io_state.get(n) for n in self._measured}
