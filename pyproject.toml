@@ -19,6 +19,7 @@ dev = ["pytest>=8.0"]
 pyems = "pyems.ems:main"
 pyems-ui = "pyems.ui:main"
 pyems-sim = "pyems.sim.harness:main"
+pyems-tags = "pyems.tag_registry:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

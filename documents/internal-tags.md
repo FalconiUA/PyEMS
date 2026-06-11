@@ -1,9 +1,16 @@
 # Internal EMS tags & setpoint register
 
 Single source of truth for every name the EMS itself produces or claims.
-**To rename anything below, edit `src/pyems/system_tags.py`** — all
-producers/consumers import the constants from there (modules re-export them
-for backwards compatibility, none redefine them). Keep this table in sync.
+**To rename anything below, edit `src/pyems/system_tags.py`** — that module
+is the only place these names are defined; every other file imports the
+constants from it directly (a test pins this). Device Modbus register names
+are a separate world on purpose: they live in `profiles/*.yaml` as data.
+
+For a LIVE cross-reference of one concrete site (every tag → origin →
+readers → writers), run:
+
+    pyems-tags --site config/site.sim.yaml
+    pyems-tags --site config/site.sim.yaml --markdown documents/tag-map.sim.md
 
 ## System status tags (`sys.*` — status words, not device registers)
 

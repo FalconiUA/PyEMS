@@ -6,7 +6,8 @@ from pathlib import Path
 
 from pyems.channels import Channel, SystemState
 from pyems.drivers.base import Driver
-from pyems.drivers.cached import COMMS_AGE_CHANNEL, CachedDriver
+from pyems.drivers.cached import CachedDriver
+from pyems.system_tags import COMMS_AGE_CHANNEL
 from pyems.drivers.modbus_device import DeviceProfile, ModbusDeviceDriver
 
 

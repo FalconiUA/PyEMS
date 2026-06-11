@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from pyems.controllers.safety import SAFE_MODE_CHANNEL
+from pyems.system_tags import SAFE_MODE_CHANNEL
 from pyems.ems import ROOT, build_ems
 from pyems.sim.harness import SimHarness, make_handler
 

@@ -21,9 +21,11 @@ from urllib.parse import parse_qs, unquote, urlparse
 import yaml
 
 from pyems.channels import Channel, SystemState
-from pyems.controllers.safety import SAFE_MODE_CHANNEL
-from pyems.controllers.setpoint_compliance import SETPOINT_VIOLATION_CHANNEL
-from pyems.drivers.cached import COMMS_AGE_CHANNEL
+from pyems.system_tags import (
+    COMMS_AGE_CHANNEL,
+    SAFE_MODE_CHANNEL,
+    SETPOINT_VIOLATION_CHANNEL,
+)
 from pyems.drivers.composite import CompositeDriver
 from pyems.ems import (
     DEFAULT_SITE,

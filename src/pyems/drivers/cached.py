@@ -31,8 +31,7 @@ from pyems.drivers.base import Driver
 # System diagnostic tag (IEC system status word, not a device register):
 # seconds since the last successful bus read. Safety logic reads it to detect a
 # dead bus and fail-safe. inf until the first successful read.
-# Name lives in pyems.system_tags (single place for all sys.* names);
-# re-exported here so `from pyems.drivers.cached import COMMS_AGE_CHANNEL` holds.
+# All EMS-internal names come from the single registry, pyems/system_tags.py.
 from pyems.system_tags import COMMS_AGE_CHANNEL
 
 logger = logging.getLogger(__name__)

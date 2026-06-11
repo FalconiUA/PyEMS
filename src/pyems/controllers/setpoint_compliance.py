@@ -29,8 +29,8 @@ import logging
 from pyems.allocation.request import RequestBoard
 from pyems.channels import SystemState
 from pyems.controllers.base import Controller
-# Name lives in pyems.system_tags (single place for all sys.* names);
-# re-exported here so existing imports keep working. 1.0 = unit not following.
+# All EMS-internal names come from the single registry, pyems/system_tags.py.
+# 1.0 = unit not following its applied setpoint.
 from pyems.system_tags import SETPOINT_VIOLATION_CHANNEL
 
 logger = logging.getLogger(__name__)

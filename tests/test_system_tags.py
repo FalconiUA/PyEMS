@@ -1,5 +1,5 @@
 """system_tags must stay THE single definition of every internal name —
-the re-exports in the producing modules must be the same objects, so a
+the producing modules import (never redefine) the same objects, so a
 rename in system_tags.py provably propagates everywhere."""
 from pyems import system_tags
 from pyems.controllers import safety, setpoint_compliance

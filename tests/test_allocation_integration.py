@@ -9,8 +9,8 @@ from pyems.allocation.request import ActivePowerRequest, RequestBoard
 from pyems.channels import Channel, SystemState
 from pyems.controllers.base import Controller
 from pyems.controllers.grid_export_limit import GridExportLimitController
-from pyems.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
-from pyems.drivers.cached import COMMS_AGE_CHANNEL
+from pyems.controllers.safety import SafetyController
+from pyems.system_tags import COMMS_AGE_CHANNEL, SAFE_MODE_CHANNEL
 from pyems.scheduler import Scheduler, Task
 
 

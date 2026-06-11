@@ -4,12 +4,12 @@ Safety now posts priority-0 claims on the board (min=max=target=safe value) and
 maintains `sys.safe_mode` as a status word. These tests assert both.
 """
 from pyems.allocation.request import RequestBoard
-from pyems.controllers.safety import (
+from pyems.controllers.safety import SafetyController
+from pyems.system_tags import (
+    COMMS_AGE_CHANNEL,
     SAFE_MODE_CHANNEL,
     SAFETY_REQUESTER,
-    SafetyController,
 )
-from pyems.drivers.cached import COMMS_AGE_CHANNEL
 
 
 def make_safety(channels=("pv.WSet",)):

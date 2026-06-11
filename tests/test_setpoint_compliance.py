@@ -10,10 +10,8 @@ import pytest
 
 from pyems.allocation.request import RequestBoard
 from pyems.channels import Channel, SystemState
-from pyems.controllers.setpoint_compliance import (
-    SETPOINT_VIOLATION_CHANNEL,
-    SetpointComplianceMonitor,
-)
+from pyems.controllers.setpoint_compliance import SetpointComplianceMonitor
+from pyems.system_tags import SETPOINT_VIOLATION_CHANNEL
 
 
 @pytest.fixture

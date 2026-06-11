@@ -22,23 +22,23 @@ from pyems.control.pid import PIDGains
 from pyems.controllers.connection_point_import_limit import ConnectionPointImportLimitController
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.grid_export_limit import GridExportLimitController
-from pyems.controllers.safety import SAFE_MODE_CHANNEL, SafetyController
-from pyems.controllers.setpoint_compliance import (
-    SETPOINT_VIOLATION_CHANNEL,
-    SetpointComplianceMonitor,
-)
+from pyems.controllers.safety import SafetyController
+from pyems.controllers.setpoint_compliance import SetpointComplianceMonitor
 from pyems.controllers.setpoint_headroom import SetpointHeadroomLimiter
-from pyems.drivers.cached import COMMS_AGE_CHANNEL, CachedDriver
+from pyems.drivers.cached import CachedDriver
 from pyems.drivers.composite import CompositeDriver
 import pyems.drivers.modbus_device as md
 from pyems.logging_config import setup_logging
 from pyems.recording import CycleRecorder
 from pyems.scheduler import Scheduler, Task
 from pyems.system_tags import (
+    COMMS_AGE_CHANNEL,
     CONNECTION_POINT_POWER_REQUESTER,
     EXPORT_LIMIT_REQUESTER,
     IMPORT_LIMIT_REQUESTER,
+    SAFE_MODE_CHANNEL,
     SETPOINT_HEADROOM_REQUESTER,
+    SETPOINT_VIOLATION_CHANNEL,
 )
 
 logger = logging.getLogger(__name__)

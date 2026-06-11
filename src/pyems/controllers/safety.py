@@ -40,10 +40,9 @@ import logging
 from pyems.allocation.request import ActivePowerRequest, RequestBoard
 from pyems.channels import SystemState
 from pyems.controllers.base import Controller
-from pyems.drivers.cached import COMMS_AGE_CHANNEL
-# Names live in pyems.system_tags (single place for all sys.* and requester
-# names); re-exported here so existing imports keep working.
+# All EMS-internal names come from the single registry, pyems/system_tags.py.
 from pyems.system_tags import (
+    COMMS_AGE_CHANNEL,
     SAFE_MODE_CHANNEL,  # 1.0 = tripped, 0.0 = healthy
     SAFETY_REQUESTER,   # board key + reserved priority-0 owner
 )
