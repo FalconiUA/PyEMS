@@ -50,6 +50,16 @@ setpoint_compliance:
   unit_active_power_setpoint_channel: pv.WSet
   tolerance_w: 2000
   max_violation_s: 30
+# Available-power tracking: the setpoint may sit at most headroom_w above
+# actual production. Without it, a unit short on resource (clouds) parks the
+# setpoint at the export cap, and the returning sun jumps production to that
+# stale value at the inverter's own speed — bypassing the active power
+# gradient and spiking export.
+setpoint_headroom:
+  headroom_w: 10000
+  priority: 6
+  unit_active_power_channel: pv.W
+  unit_active_power_setpoint_channel: pv.WSet
 allocation:
   channels:
   - setpoint_channel: pv.WSet

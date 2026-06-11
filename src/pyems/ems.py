@@ -27,6 +27,7 @@ from pyems.controllers.setpoint_compliance import (
     SETPOINT_VIOLATION_CHANNEL,
     SetpointComplianceMonitor,
 )
+from pyems.controllers.setpoint_headroom import SetpointHeadroomLimiter
 from pyems.drivers.cached import COMMS_AGE_CHANNEL, CachedDriver
 from pyems.drivers.composite import CompositeDriver
 import pyems.drivers.modbus_device as md
@@ -91,6 +92,12 @@ def required_channels(site: dict) -> list[str]:
             comp_cfg["unit_active_power_channel"],
             comp_cfg["unit_active_power_setpoint_channel"],
             SETPOINT_VIOLATION_CHANNEL,
+        ]
+    head_cfg = site.get("setpoint_headroom")
+    if head_cfg:
+        tags += [
+            head_cfg["unit_active_power_channel"],
+            head_cfg["unit_active_power_setpoint_channel"],
         ]
     return tags
 
@@ -303,6 +310,21 @@ def build_tasks(site: dict) -> list[Task]:
                 unit_active_power_setpoint_channel=comp_cfg["unit_active_power_setpoint_channel"],
                 tolerance_w=comp_cfg.get("tolerance_w", 2000.0),
                 max_violation_s=comp_cfg.get("max_violation_s", 30.0),
+            )
+        )
+
+    # Available-power tracking: keep the setpoint at most headroom_w above
+    # actual production, so a returning resource (cloud edge) cannot jump the
+    # unit to a stale inflated setpoint faster than the configured gradient.
+    head_cfg = site.get("setpoint_headroom")
+    if head_cfg:
+        fast_controllers.append(
+            SetpointHeadroomLimiter(
+                name="setpoint_headroom",
+                priority=head_cfg.get("priority", 6),
+                headroom_w=head_cfg["headroom_w"],
+                unit_active_power_channel=head_cfg["unit_active_power_channel"],
+                unit_active_power_setpoint_channel=head_cfg["unit_active_power_setpoint_channel"],
             )
         )
 
