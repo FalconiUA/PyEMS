@@ -44,18 +44,27 @@ class SetpointHeadroomLimiter(Controller):
         headroom_w: float,
         unit_active_power_channel: str,
         unit_active_power_setpoint_channel: str,
+        headroom_pct: float = 0.0,
     ) -> None:
+        """`headroom_w` is the absolute FLOOR of the allowed excess;
+        `headroom_pct` (percent of current unit output) makes the headroom
+        dynamic: cap = P_unit + max(headroom_w, headroom_pct/100 * P_unit).
+        The floor keeps the unit startable at zero production, where any
+        relative term vanishes."""
         if headroom_w <= 0:
             raise ValueError(
                 "headroom_w must be > 0 — with no headroom the setpoint could "
                 "never rise above current production and the unit would be "
                 "locked at its present output"
             )
+        if headroom_pct < 0:
+            raise ValueError("headroom_pct must be >= 0")
         if priority == 0:
             raise ValueError("priority 0 is reserved for safety claims")
         self._name = name
         self._priority = priority
         self._headroom_w = float(headroom_w)
+        self._headroom_pct = float(headroom_pct)
         self._unit_active_power_ch = unit_active_power_channel
         self._setpoint_ch = unit_active_power_setpoint_channel
 
@@ -63,7 +72,9 @@ class SetpointHeadroomLimiter(Controller):
         p_unit_w = state.get(self._unit_active_power_ch)
         # Generating convention: standby self-consumption (slightly negative
         # readings) must not drag the cap below the headroom itself.
-        cap_w = max(0.0, p_unit_w) + self._headroom_w
+        base_w = max(0.0, p_unit_w)
+        headroom_w = max(self._headroom_w, base_w * self._headroom_pct / 100.0)
+        cap_w = base_w + headroom_w
         board.post(
             self._setpoint_ch,
             ActivePowerRequest(
@@ -73,5 +84,6 @@ class SetpointHeadroomLimiter(Controller):
             ),
         )
         logger.debug(
-            "%s: P_unit=%.0f W -> setpoint cap %.0f W", self._setpoint_ch, p_unit_w, cap_w
+            "%s: P_unit=%.0f W -> setpoint cap %.0f W (headroom %.0f W)",
+            self._setpoint_ch, p_unit_w, cap_w, headroom_w,
         )

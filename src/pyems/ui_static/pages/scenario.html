@@ -44,11 +44,24 @@
         <input id="allocation.default_w" type="number" step="1" required>
         <span class="hint">Value used when no controller requests a setpoint.</span>
       </label>
-      <label>Active power gradient, W/s
+      <label>Active power gradient (up), W/s
         <input id="allocation.ramp_rate_w_per_s" type="number" step="1" min="0" required>
+        <span class="hint">Grid-code ramp for raising production.</span>
+      </label>
+      <label>Curtailment gradient (down), W/s
+        <input id="allocation.ramp_down_w_per_s" type="number" step="1" min="0">
+        <span class="hint">Fast ramp for reducing power (export-limit compliance). Empty = same as the up gradient.</span>
       </label>
       <label>Deadband, W
         <input id="allocation.deadband_w" type="number" step="1" min="0" required>
+      </label>
+      <label>Setpoint headroom floor, W
+        <input id="setpoint_headroom.headroom_w" type="number" step="100" min="1" required>
+        <span class="hint">The setpoint may sit at most this much above actual production — prevents export spikes when the resource returns.</span>
+      </label>
+      <label>Setpoint headroom, % of output
+        <input id="setpoint_headroom.headroom_pct" type="number" step="1" min="0">
+        <span class="hint">Dynamic part: percent of current production, applied when larger than the floor. 0 = floor only.</span>
       </label>
     </div>
   </div>

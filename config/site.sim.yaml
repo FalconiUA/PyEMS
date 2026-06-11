@@ -58,7 +58,8 @@ setpoint_compliance:
 # (bindings from the regulation unit, headroom = 10% of p_max_w); the section
 # only overrides values. Opt out with `enabled: false`.
 setpoint_headroom:
-  headroom_w: 10000
+  headroom_w: 5000      # absolute floor (keeps the unit startable at 0 W)
+  headroom_pct: 15      # dynamic part: % of current unit output, if larger
   priority: 6
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet

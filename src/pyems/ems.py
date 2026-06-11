@@ -34,6 +34,12 @@ import pyems.drivers.modbus_device as md
 from pyems.logging_config import setup_logging
 from pyems.recording import CycleRecorder
 from pyems.scheduler import Scheduler, Task
+from pyems.system_tags import (
+    CONNECTION_POINT_POWER_REQUESTER,
+    EXPORT_LIMIT_REQUESTER,
+    IMPORT_LIMIT_REQUESTER,
+    SETPOINT_HEADROOM_REQUESTER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +111,7 @@ def _setpoint_headroom_config(site: dict) -> dict | None:
     return {
         "priority": cfg.get("priority", 6),
         "headroom_w": float(headroom_w),
+        "headroom_pct": float(cfg.get("headroom_pct", 0.0)),
         "unit_active_power_channel": unit_ch,
         "unit_active_power_setpoint_channel": setpoint_ch,
     }
@@ -310,7 +317,7 @@ def build_tasks(site: dict) -> list[Task]:
         fast_controllers.extend(
             [
                 GridExportLimitController(
-                    name="export_limit",
+                    name=EXPORT_LIMIT_REQUESTER,
                     priority=exp_cfg["priority"],
                     export_limit_w=exp_cfg["limit_w"],
                     connection_point_active_power_channel=exp_cfg["connection_point_active_power_channel"],
@@ -318,7 +325,7 @@ def build_tasks(site: dict) -> list[Task]:
                     unit_active_power_setpoint_channel=exp_cfg["unit_active_power_setpoint_channel"],
                 ),
                 ConnectionPointPowerController(
-                    name="connection_point_active_power",
+                    name=CONNECTION_POINT_POWER_REQUESTER,
                     priority=cp_cfg["priority"],
                     export_limit_w=cp_cfg["export_limit_w"],
                     import_limit_w=cp_cfg["import_limit_w"],
@@ -332,7 +339,7 @@ def build_tasks(site: dict) -> list[Task]:
     else:
         fast_controllers.append(
             ConnectionPointImportLimitController(
-                name="connection_point_import_limit",
+                name=IMPORT_LIMIT_REQUESTER,
                 priority=cp_cfg["priority"],
                 import_limit_w=cp_cfg["import_limit_w"],
                 connection_point_active_power_channel=cp_cfg["connection_point_active_power_channel"],
@@ -363,16 +370,17 @@ def build_tasks(site: dict) -> list[Task]:
     head_cfg = _setpoint_headroom_config(site)
     if head_cfg:
         logger.info(
-            "Available-power headroom: %s <= %s + %g W (priority %d)",
+            "Available-power headroom: %s <= %s + max(%g W, %g%% of unit output) (priority %d)",
             head_cfg["unit_active_power_setpoint_channel"],
             head_cfg["unit_active_power_channel"],
-            head_cfg["headroom_w"], head_cfg["priority"],
+            head_cfg["headroom_w"], head_cfg["headroom_pct"], head_cfg["priority"],
         )
         fast_controllers.append(
             SetpointHeadroomLimiter(
-                name="setpoint_headroom",
+                name=SETPOINT_HEADROOM_REQUESTER,
                 priority=head_cfg["priority"],
                 headroom_w=head_cfg["headroom_w"],
+                headroom_pct=head_cfg["headroom_pct"],
                 unit_active_power_channel=head_cfg["unit_active_power_channel"],
                 unit_active_power_setpoint_channel=head_cfg["unit_active_power_setpoint_channel"],
             )

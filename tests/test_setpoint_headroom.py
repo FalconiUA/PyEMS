@@ -51,6 +51,35 @@ def test_negative_standby_reading_keeps_full_headroom():
     assert req.max_w == 10000.0
 
 
+def test_relative_headroom_grows_with_output_floor_wins_when_low():
+    limiter = SetpointHeadroomLimiter(
+        name="setpoint_headroom", priority=6, headroom_w=5000.0, headroom_pct=15.0,
+        unit_active_power_channel="pv.W",
+        unit_active_power_setpoint_channel="pv.WSet",
+    )
+    board = RequestBoard(["pv.WSet"])
+    limiter.execute(make_state(80000.0), board)   # 15% of 80 kW = 12 kW > floor
+    (req,) = posted(board)
+    assert req.max_w == pytest.approx(92000.0)
+
+    board = RequestBoard(["pv.WSet"])
+    limiter.execute(make_state(10000.0), board)   # 15% = 1.5 kW < 5 kW floor
+    (req,) = posted(board)
+    assert req.max_w == pytest.approx(15000.0)
+
+    board = RequestBoard(["pv.WSet"])
+    limiter.execute(make_state(0.0), board)       # startable at zero output
+    (req,) = posted(board)
+    assert req.max_w == pytest.approx(5000.0)
+
+    with pytest.raises(ValueError, match="headroom_pct"):
+        SetpointHeadroomLimiter(
+            name="x", priority=6, headroom_w=5000.0, headroom_pct=-1.0,
+            unit_active_power_channel="pv.W",
+            unit_active_power_setpoint_channel="pv.WSet",
+        )
+
+
 def test_rejects_nonpositive_headroom_and_safety_priority():
     with pytest.raises(ValueError, match="headroom_w"):
         make_limiter(headroom_w=0.0)

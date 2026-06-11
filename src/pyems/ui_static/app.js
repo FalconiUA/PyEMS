@@ -58,6 +58,10 @@ function allocationCfg() {
   }
   return site.allocation.channels[0];
 }
+function headroomCfg() {
+  site.setpoint_headroom ||= {};
+  return site.setpoint_headroom;
+}
 function deviceOptions(selected, filter = null) {
   return site.devices
     .filter((device) => !filter || filter(device))
@@ -81,7 +85,15 @@ function syncScenarioForm() {
   if ($("allocation.p_max_w")) alloc.p_max_w = parseNum($("allocation.p_max_w").value);
   if ($("allocation.default_w")) alloc.default_w = parseNum($("allocation.default_w").value);
   if ($("allocation.ramp_rate_w_per_s")) alloc.ramp_rate_w_per_s = parseNum($("allocation.ramp_rate_w_per_s").value);
+  if ($("allocation.ramp_down_w_per_s")) {
+    const down = $("allocation.ramp_down_w_per_s").value;
+    if (down === "") delete alloc.ramp_down_w_per_s;
+    else alloc.ramp_down_w_per_s = parseNum(down);
+  }
   if ($("allocation.deadband_w")) alloc.deadband_w = parseNum($("allocation.deadband_w").value);
+  const headroom = headroomCfg();
+  if ($("setpoint_headroom.headroom_w")) headroom.headroom_w = parseNum($("setpoint_headroom.headroom_w").value);
+  if ($("setpoint_headroom.headroom_pct")) headroom.headroom_pct = parseNum($("setpoint_headroom.headroom_pct").value);
 }
 
 async function loadPages() {
@@ -140,7 +152,11 @@ function renderScenario() {
   setValue("allocation.p_max_w", alloc.p_max_w);
   setValue("allocation.default_w", alloc.default_w);
   setValue("allocation.ramp_rate_w_per_s", alloc.ramp_rate_w_per_s);
+  setValue("allocation.ramp_down_w_per_s", alloc.ramp_down_w_per_s ?? "");
   setValue("allocation.deadband_w", alloc.deadband_w);
+  const headroom = headroomCfg();
+  setValue("setpoint_headroom.headroom_w", headroom.headroom_w ?? Math.round((alloc.p_max_w || 100000) * 0.1));
+  setValue("setpoint_headroom.headroom_pct", headroom.headroom_pct ?? 0);
   $("limitLabel").firstChild.textContent = scen.control_mode === "import_limit" ? "Import limit at connection point, W" : "Export limit at connection point, W";
   const cp = scen.connection_point_device_id || "grid";
   const unit = scen.unit_device_id || "pv";
@@ -310,14 +326,23 @@ function gatherSite() {
     kd: parseNum($("pid.kd").value),
     tt: parseNum($("pid.tt").value),
   };
-  next.allocation = { channels: [{
+  const allocChannel = {
     setpoint_channel: "",
     p_min_w: parseNum($("allocation.p_min_w").value),
     p_max_w: parseNum($("allocation.p_max_w").value),
     default_w: parseNum($("allocation.default_w").value),
     ramp_rate_w_per_s: parseNum($("allocation.ramp_rate_w_per_s").value),
     deadband_w: parseNum($("allocation.deadband_w").value),
-  }] };
+  };
+  if ($("allocation.ramp_down_w_per_s").value !== "") {
+    allocChannel.ramp_down_w_per_s = parseNum($("allocation.ramp_down_w_per_s").value);
+  }
+  next.allocation = { channels: [allocChannel] };
+  next.setpoint_headroom = {
+    ...(site.setpoint_headroom || {}),
+    headroom_w: parseNum($("setpoint_headroom.headroom_w").value),
+    headroom_pct: parseNum($("setpoint_headroom.headroom_pct").value),
+  };
   return next;
 }
 
@@ -493,7 +518,7 @@ function showView(name) {
 
 document.addEventListener("change", async (event) => {
   const id = event.target.id || "";
-  if (id.startsWith("scenario.") || id.startsWith("allocation.")) {
+  if (id.startsWith("scenario.") || id.startsWith("allocation.") || id.startsWith("setpoint_headroom.")) {
     syncScenarioForm();
     renderScenario();
     renderRealtime();

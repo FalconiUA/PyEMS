@@ -29,10 +29,11 @@ import logging
 from pyems.allocation.request import RequestBoard
 from pyems.channels import SystemState
 from pyems.controllers.base import Controller
+# Name lives in pyems.system_tags (single place for all sys.* names);
+# re-exported here so existing imports keep working. 1.0 = unit not following.
+from pyems.system_tags import SETPOINT_VIOLATION_CHANNEL
 
 logger = logging.getLogger(__name__)
-
-SETPOINT_VIOLATION_CHANNEL = "sys.setpoint_violation"  # 1.0 = unit not following
 
 
 class SetpointComplianceMonitor(Controller):

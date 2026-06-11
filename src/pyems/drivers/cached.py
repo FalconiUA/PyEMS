@@ -28,13 +28,14 @@ import time
 
 from pyems.channels import Channel, SystemState
 from pyems.drivers.base import Driver
-
-logger = logging.getLogger(__name__)
-
 # System diagnostic tag (IEC system status word, not a device register):
 # seconds since the last successful bus read. Safety logic reads it to detect a
 # dead bus and fail-safe. inf until the first successful read.
-COMMS_AGE_CHANNEL = "sys.comms_age_s"
+# Name lives in pyems.system_tags (single place for all sys.* names);
+# re-exported here so `from pyems.drivers.cached import COMMS_AGE_CHANNEL` holds.
+from pyems.system_tags import COMMS_AGE_CHANNEL
+
+logger = logging.getLogger(__name__)
 
 
 class CachedDriver(Driver):

@@ -125,6 +125,16 @@ def apply_scenario(site: dict[str, Any]) -> dict[str, Any]:
     allocation = _first_allocation(site)
     allocation["setpoint_channel"] = unit_active_power_setpoint_channel
     site["allocation"]["channels"] = [allocation]
+
+    # Available-power headroom: channel bindings always follow the selected
+    # unit; the numbers (floor W / % of output) are operator-tunable here.
+    headroom = site.setdefault("setpoint_headroom", {})
+    headroom.setdefault(
+        "headroom_w", round(0.1 * float(allocation.get("p_max_w", 100000.0)))
+    )
+    headroom.setdefault("headroom_pct", 0)
+    headroom["unit_active_power_channel"] = unit_active_power_channel
+    headroom["unit_active_power_setpoint_channel"] = unit_active_power_setpoint_channel
     return site
 
 
@@ -217,6 +227,13 @@ def validate_site_for_ui(site: dict[str, Any]) -> list[Channel]:
     _require_text(allocation_channels[0], "setpoint_channel", "allocation.channels[0]")
     for key in ("p_min_w", "p_max_w", "default_w", "ramp_rate_w_per_s", "deadband_w"):
         _require_number(allocation_channels[0], key, "allocation.channels[0]")
+    if "ramp_down_w_per_s" in allocation_channels[0]:
+        _require_number(allocation_channels[0], "ramp_down_w_per_s", "allocation.channels[0]")
+
+    headroom = site.get("setpoint_headroom") or {}
+    if headroom.get("enabled", True) is not False:
+        _require_number(headroom, "headroom_w", "setpoint_headroom")
+        _require_number(headroom, "headroom_pct", "setpoint_headroom")
 
     devices = _require_list(site, "devices", "site")
     if not devices:

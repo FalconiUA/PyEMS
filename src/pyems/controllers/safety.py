@@ -41,11 +41,14 @@ from pyems.allocation.request import ActivePowerRequest, RequestBoard
 from pyems.channels import SystemState
 from pyems.controllers.base import Controller
 from pyems.drivers.cached import COMMS_AGE_CHANNEL
+# Names live in pyems.system_tags (single place for all sys.* and requester
+# names); re-exported here so existing imports keep working.
+from pyems.system_tags import (
+    SAFE_MODE_CHANNEL,  # 1.0 = tripped, 0.0 = healthy
+    SAFETY_REQUESTER,   # board key + reserved priority-0 owner
+)
 
 logger = logging.getLogger(__name__)
-
-SAFE_MODE_CHANNEL = "sys.safe_mode"  # 1.0 = tripped, 0.0 = healthy
-SAFETY_REQUESTER = "safety"          # board key + reserved priority-0 owner
 
 
 class SafetyController(Controller):
