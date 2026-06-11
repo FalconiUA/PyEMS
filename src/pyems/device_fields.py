@@ -65,6 +65,12 @@ SUNSPEC_FIELDS: dict[str, str] = {
     "PPVphAB": "V",
     "PPVphBC": "V",
     "PPVphCA": "V",
+    # storage (model 802, Battery Base Model) — starter set; extend from the
+    # model JSON as storage scenarios need more points
+    "SoC": "%WHRtg",        # state of charge, % of nameplate energy capacity
+    "SoH": "%",             # state of health
+    "WChaRteMax": "W",      # nameplate max charge rate
+    "WDisChaRteMax": "W",   # nameplate max discharge rate
 }
 
 # EMS-specific fields ('' = dimensionless vendor status/enum word)

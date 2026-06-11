@@ -37,7 +37,7 @@ def _sunspec_points() -> dict[str, str | None]:
 
 # ── the vocabulary itself ─────────────────────────────────────────────────────
 def test_vocabulary_names_and_units_are_well_formed():
-    allowed_units = {"W", "var", "VA", "Hz", "A", "V", ""}
+    allowed_units = {"W", "var", "VA", "Hz", "A", "V", "%", "%WHRtg", ""}
     for name, unit in DEVICE_FIELDS.items():
         assert name.isidentifier(), f"field {name!r} must be a bare identifier"
         assert unit in allowed_units, f"field {name!r}: non-SI unit {unit!r}"
