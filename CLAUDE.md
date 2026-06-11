@@ -34,9 +34,15 @@ Rules:
 ## Channel tags
 
 - Tag = `<device id>.<field>` (e.g. `pv1.W`, `grid.W`). The `<field>` part
-  comes from the profile; the `<device id>` is the per-device namespace from
-  `site.yaml` (see `namespaced()` in `src/drivers/modbus_device.py`). Two
-  identical devices get distinct tags (`pv1.W`, `pv2.W`) — no collisions.
+  comes from the canonical vocabulary in `src/pyems/device_fields.py`
+  (SunSpec-style point names, identical across all device models); the
+  `<device id>` is the per-device namespace from `site.yaml` (see
+  `namespaced()` in `src/drivers/modbus_device.py`). Two identical devices
+  get distinct tags (`pv1.W`, `pv2.W`) — no collisions.
+- Profiles map vendor registers ONTO the vocabulary: the vendor doc
+  contributes only address/type/scale; vendor register-map display names are
+  never channel names. `DeviceProfile.load()` rejects an unknown field or a
+  non-canonical unit (values are SI: W, not kW — convert with `scale`).
 - System status tags use the `sys.` namespace (`sys.safe_mode`,
   `sys.comms_age_s`) — these are status words, not device registers.
 

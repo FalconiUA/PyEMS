@@ -70,7 +70,13 @@ Controllers never hardcode tag strings; these config keys wire them:
 
 ## Device tags (for completeness)
 
-`<device id>.<field>` — the `<field>` part comes from `profiles/*.yaml`, the
-`<device id>` from `site.yaml` (see `namespaced()` in
-`src/pyems/drivers/modbus_device.py`). Renaming those is a profile/site
-edit, not a code edit.
+`<device id>.<field>` — the `<device id>` comes from `site.yaml` (see
+`namespaced()` in `src/pyems/drivers/modbus_device.py`); the `<field>` part
+MUST come from the canonical vocabulary in `src/pyems/device_fields.py`
+(SunSpec-style point names: `W`, `WphA`, `VAR`, `PhVphA`, `WSet`, ...).
+Vendor register-map display names are never channel names: a profile maps
+vendor registers onto the vocabulary (address/type/scale per device, meaning
+and SI unit fixed by the vocabulary). `DeviceProfile.load()` rejects an
+unknown field or a non-canonical unit at startup. A genuinely new quantity
+is added ONCE in `device_fields.py`; `tests/test_device_fields.py`
+introspects the vocabulary and globs `profiles/`, so no test edits needed.

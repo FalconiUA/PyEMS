@@ -18,6 +18,9 @@ import yaml
 from pymodbus.client import ModbusSerialClient, ModbusTcpClient
 
 from pyems.channels import Channel, SystemState
+# Canonical field vocabulary: a profile's `channel:` names come from
+# pyems/device_fields.py, never from the vendor register map.
+from pyems.device_fields import validate_channel
 from pyems.drivers.base import Driver
 
 logger = logging.getLogger(__name__)
@@ -155,6 +158,14 @@ class DeviceProfile:
     def load(cls, path: str | Path) -> "DeviceProfile":
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
         regs = [RegisterDef(**r) for r in data["registers"]]
+        # Vocabulary enforcement at the data entry point: a profile authored
+        # from a vendor register map (wrong field name, kW instead of W) must
+        # fail HERE, not feed mis-scaled values into the control loop.
+        for r in regs:
+            try:
+                validate_channel(r.channel, r.unit)
+            except ValueError as exc:
+                raise ValueError(f"{path}: {exc}") from None
         return cls(
             model=data["model"],
             protocol=data["protocol"],
