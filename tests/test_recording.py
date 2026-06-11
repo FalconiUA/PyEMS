@@ -81,7 +81,7 @@ def make_site(tmp_path, **recording):
             "unit_active_power_setpoint_channel": "pv.WSet",
         },
         "safety": {"unit_active_power_setpoint_channels": ["pv.WSet"]},
-        "allocation": {"channels": [{"setpoint_channel": "pv.WSet"}]},
+        "allocation": {"channels": [{"setpoint_channel": "pv.WSet", "p_max_w": 100000.0}]},
         "recording": recording,
     }
 

@@ -67,6 +67,49 @@ def _active_power_binding_channels(controller_cfg: dict) -> list[str]:
     return [controller_cfg[key] for key in _ACTIVE_POWER_BINDING_KEYS]
 
 
+def _setpoint_headroom_config(site: dict) -> dict | None:
+    """Resolve the available-power headroom config — ENABLED BY DEFAULT.
+
+    A setpoint parked far above what the unit can deliver is a loaded spring:
+    if the device's own ramp is fast, the returning resource jumps production
+    to the stale value, bypassing the configured active power gradient. So
+    the limiter is on unless explicitly disabled (`setpoint_headroom:
+    enabled: false`); bindings default to the regulation unit and headroom_w
+    to 10 % of the unit's allocation envelope (p_max_w).
+    """
+    cfg = site.get("setpoint_headroom") or {}
+    if cfg.get("enabled", True) is False:
+        return None
+    cp_cfg = site["connection_point_active_power"]
+    unit_ch = cfg.get("unit_active_power_channel", cp_cfg["unit_active_power_channel"])
+    setpoint_ch = cfg.get(
+        "unit_active_power_setpoint_channel", cp_cfg["unit_active_power_setpoint_channel"]
+    )
+    headroom_w = cfg.get("headroom_w")
+    if headroom_w is None:
+        alloc = next(
+            (
+                ch
+                for ch in site["allocation"]["channels"]
+                if ch["setpoint_channel"] == setpoint_ch
+            ),
+            None,
+        )
+        if alloc is None or alloc.get("p_max_w") is None:
+            raise ValueError(
+                f"setpoint_headroom: no allocation channel with p_max_w for "
+                f"'{setpoint_ch}', so the default headroom (10% of p_max_w) "
+                f"cannot be derived — set headroom_w explicitly"
+            )
+        headroom_w = 0.1 * float(alloc["p_max_w"])
+    return {
+        "priority": cfg.get("priority", 6),
+        "headroom_w": float(headroom_w),
+        "unit_active_power_channel": unit_ch,
+        "unit_active_power_setpoint_channel": setpoint_ch,
+    }
+
+
 def required_channels(site: dict) -> list[str]:
     """All tags the controllers will read/drive, per site.yaml bindings.
 
@@ -93,7 +136,7 @@ def required_channels(site: dict) -> list[str]:
             comp_cfg["unit_active_power_setpoint_channel"],
             SETPOINT_VIOLATION_CHANNEL,
         ]
-    head_cfg = site.get("setpoint_headroom")
+    head_cfg = _setpoint_headroom_config(site)
     if head_cfg:
         tags += [
             head_cfg["unit_active_power_channel"],
@@ -316,12 +359,19 @@ def build_tasks(site: dict) -> list[Task]:
     # Available-power tracking: keep the setpoint at most headroom_w above
     # actual production, so a returning resource (cloud edge) cannot jump the
     # unit to a stale inflated setpoint faster than the configured gradient.
-    head_cfg = site.get("setpoint_headroom")
+    # ON by default; opt out with `setpoint_headroom: {enabled: false}`.
+    head_cfg = _setpoint_headroom_config(site)
     if head_cfg:
+        logger.info(
+            "Available-power headroom: %s <= %s + %g W (priority %d)",
+            head_cfg["unit_active_power_setpoint_channel"],
+            head_cfg["unit_active_power_channel"],
+            head_cfg["headroom_w"], head_cfg["priority"],
+        )
         fast_controllers.append(
             SetpointHeadroomLimiter(
                 name="setpoint_headroom",
-                priority=head_cfg.get("priority", 6),
+                priority=head_cfg["priority"],
                 headroom_w=head_cfg["headroom_w"],
                 unit_active_power_channel=head_cfg["unit_active_power_channel"],
                 unit_active_power_setpoint_channel=head_cfg["unit_active_power_setpoint_channel"],

@@ -98,6 +98,68 @@ def test_returning_resource_is_ramped_not_jumped():
     assert previous == pytest.approx(60000.0)  # reached the regulation target
 
 
+def minimal_site():
+    return {
+        "scenario": {"control_mode": "export_limit"},
+        "control": {"fast_cycle_s": 1.0},
+        "export_limit": {
+            "limit_w": 30000.0, "priority": 5,
+            "connection_point_active_power_channel": "grid.W",
+            "unit_active_power_channel": "pv.W",
+            "unit_active_power_setpoint_channel": "pv.WSet",
+        },
+        "connection_point_active_power": {
+            "export_limit_w": 30000.0, "import_limit_w": 1e9, "priority": 10,
+            "gains": {"kp": 0.4, "ki": 0.08, "kd": 0.0, "tt": 5.0},
+            "connection_point_active_power_channel": "grid.W",
+            "unit_active_power_channel": "pv.W",
+            "unit_active_power_setpoint_channel": "pv.WSet",
+        },
+        "safety": {"max_comms_age_s": 2.0,
+                   "unit_active_power_setpoint_channels": ["pv.WSet"]},
+        "allocation": {"channels": [{
+            "setpoint_channel": "pv.WSet", "p_min_w": 0.0, "p_max_w": 100000.0,
+            "default_w": 100000.0, "deadband_w": 200.0,
+        }]},
+    }
+
+
+def headroom_controllers(site):
+    from pyems.ems import build_tasks
+    fast = next(t for t in build_tasks(site) if t.name == "fast")
+    return [c for c in fast.controllers if isinstance(c, SetpointHeadroomLimiter)]
+
+
+def test_headroom_enabled_by_default_with_derived_values():
+    site = minimal_site()  # NO setpoint_headroom section at all
+    (limiter,) = headroom_controllers(site)
+    assert limiter._headroom_w == 10000.0  # 10% of p_max_w
+    assert limiter._unit_active_power_ch == "pv.W"
+    assert limiter._setpoint_ch == "pv.WSet"
+
+
+def test_headroom_explicit_opt_out():
+    site = minimal_site()
+    site["setpoint_headroom"] = {"enabled": False}
+    assert headroom_controllers(site) == []
+
+
+def test_headroom_section_overrides_defaults():
+    site = minimal_site()
+    site["setpoint_headroom"] = {"headroom_w": 5000.0, "priority": 7}
+    (limiter,) = headroom_controllers(site)
+    assert limiter._headroom_w == 5000.0
+    assert limiter._priority == 7
+
+
+def test_headroom_default_needs_matching_allocation_channel():
+    from pyems.ems import _setpoint_headroom_config
+    site = minimal_site()
+    site["allocation"]["channels"][0]["setpoint_channel"] = "other.WSet"
+    with pytest.raises(ValueError, match="headroom_w explicitly"):
+        _setpoint_headroom_config(site)
+
+
 def test_safety_claim_overrides_headroom_constraint():
     """A priority-0 forced value conflicting with the headroom cap discards the
     headroom request whole — safety must land exactly, in one cycle."""

@@ -54,7 +54,9 @@ setpoint_compliance:
 # actual production. Without it, a unit short on resource (clouds) parks the
 # setpoint at the export cap, and the returning sun jumps production to that
 # stale value at the inverter's own speed — bypassing the active power
-# gradient and spiking export.
+# gradient and spiking export. ENABLED BY DEFAULT even without this section
+# (bindings from the regulation unit, headroom = 10% of p_max_w); the section
+# only overrides values. Opt out with `enabled: false`.
 setpoint_headroom:
   headroom_w: 10000
   priority: 6

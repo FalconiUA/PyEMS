@@ -44,6 +44,12 @@ margin above actual output). Trade-off: return to full power takes the
 configured up-ramp instead of the inverter's own jump — slightly more
 energy left uncollected, no export excursion.
 
+Because the overshoot size depends on the device's OWN ramp setting (a stale
+inflated setpoint is a loaded spring on an inverter commissioned with a fast
+ramp), PyEMS enables the limiter BY DEFAULT: bindings are derived from the
+regulation unit and headroom defaults to 10 % of the unit's envelope.
+`setpoint_headroom: {enabled: false}` opts out explicitly.
+
 ## Comms-loss fallback — same mechanism as SunSpec
 
 SunSpec Immediate Controls (model 123) pairs `WMaxLimPct` with
