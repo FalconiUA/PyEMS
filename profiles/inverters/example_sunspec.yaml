@@ -41,7 +41,7 @@ registers:
     address: 40087
     type: int16
     scale: 0.1
-    unit: VAr
+    unit: var
     access: read
 
   # ── Frequency (Read Only) ─────────────────────────────────────────────────

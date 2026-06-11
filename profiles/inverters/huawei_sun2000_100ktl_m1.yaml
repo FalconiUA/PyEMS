@@ -32,8 +32,8 @@ registers:
   - channel: pv.VAR
     address: 32082
     type: int32
-    scale: 1.0              # gain 1000 → kvar; raw is in var, so VAr = raw
-    unit: VAr
+    scale: 1.0              # gain 1000 → kvar; raw is in var, so var = raw
+    unit: var
     access: read
 
   # ── Grid frequency (Read Only) — Elum pv.Hz ───────────────────────────────

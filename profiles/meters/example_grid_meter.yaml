@@ -34,25 +34,25 @@ registers:
   address: 40009
   type: int32
   scale: 1
-  unit: VAr
+  unit: var
   access: read
 - channel: grid.VARphA
   address: 40011
   type: int32
   scale: 1
-  unit: VAr
+  unit: var
   access: read
 - channel: grid.VARphB
   address: 40013
   type: int32
   scale: 1
-  unit: VAr
+  unit: var
   access: read
 - channel: grid.VARphC
   address: 40015
   type: int32
   scale: 1
-  unit: VAr
+  unit: var
   access: read
 - channel: grid.VA
   address: 40017

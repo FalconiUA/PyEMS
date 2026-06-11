@@ -42,26 +42,26 @@ registers:
   - channel: gen.VAR
     address: 1004
     type: int16
-    scale: 1000.0           # kVAr → VAr
-    unit: VAr
+    scale: 1000.0           # kvar → VAr
+    unit: var
     access: read
   - channel: gen.VARphA
     address: 1009
     type: int16
     scale: 1000.0
-    unit: VAr
+    unit: var
     access: read
   - channel: gen.VARphB
     address: 1010
     type: int16
     scale: 1000.0
-    unit: VAr
+    unit: var
     access: read
   - channel: gen.VARphC
     address: 1011
     type: int16
     scale: 1000.0
-    unit: VAr
+    unit: var
     access: read
 
   # ── Apparent power (Read Only) ────────────────────────────────────────────

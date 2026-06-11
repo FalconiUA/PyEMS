@@ -1,9 +1,19 @@
 """THE single place for canonical device field names — the profile vocabulary.
 
 A tag is `<device id>.<field>`: the `<device id>` half comes from site.yaml,
-the `<field>` half MUST come from this module. Field names follow SunSpec
-Modbus point names where SunSpec covers the quantity (W, VAR, Hz, AphA,
-PhVphA, ...) plus EMS-specific additions (WSet; vendor status words).
+the `<field>` half MUST come from this module.
+
+Provenance — two explicitly separated families:
+
+  - SUNSPEC_FIELDS: names and units taken verbatim from the SunSpec Modbus
+    information models. The authoritative model files are checked into this
+    repo at documents/SunSpec/model_103.json (three-phase inverter) and
+    model_203.json (three-phase wye meter); tests/test_device_fields.py
+    cross-checks every name and unit against them, so this dict provably
+    cannot drift from the standard.
+  - EMS_FIELDS: quantities the EMS needs that SunSpec does not model the way
+    we use them (an absolute active-power setpoint in W; vendor status
+    words). Tests assert these never shadow a SunSpec point name.
 
 Vendor register-map display names ("Phase A active power") are NEVER channel
 names. A profile maps vendor registers ONTO this vocabulary: the vendor doc
@@ -14,29 +24,28 @@ and zero binding edits.
 
 `DeviceProfile.load()` enforces the vocabulary: an unknown field, a malformed
 channel name or a non-canonical unit fails at profile load, not on live
-hardware. Values are SI base units so controllers never see kW/kVar — a
+hardware. Values are SI base units so controllers never see kW/kvar — a
 register published in scaled units is converted with the profile's `scale`
 (a MULTIPLIER on the raw register; note vendor "gain" is usually a divisor).
 
-To add a new quantity: add it HERE once, with its canonical SI unit and a
-comment saying what it means. Every profile and tool then accepts it;
-tests/test_device_fields.py introspects this dict, so no test edits needed.
+To add a new quantity: if SunSpec models it, use the SunSpec point name and
+unit (check the model JSONs) and add it to SUNSPEC_FIELDS; otherwise add it
+to EMS_FIELDS with its canonical SI unit and a comment saying what it means.
+Tests introspect both dicts — no test edits needed.
 """
 
-# field -> canonical unit ('' = dimensionless vendor status/enum word)
-DEVICE_FIELDS: dict[str, str] = {
+# field -> canonical unit, verbatim from the SunSpec models (see docstring)
+SUNSPEC_FIELDS: dict[str, str] = {
     # active power P (generating convention: + = injection into the AC bus)
     "W": "W",
     "WphA": "W",
     "WphB": "W",
     "WphC": "W",
-    # active power setpoint (absolute W) — written ONLY by the PowerAllocator
-    "WSet": "W",
-    # reactive power Q
-    "VAR": "VAr",
-    "VARphA": "VAr",
-    "VARphB": "VAr",
-    "VARphC": "VAr",
+    # reactive power Q (IEC symbol: var)
+    "VAR": "var",
+    "VARphA": "var",
+    "VARphB": "var",
+    "VARphC": "var",
     # apparent power S
     "VA": "VA",
     "VAphA": "VA",
@@ -56,11 +65,21 @@ DEVICE_FIELDS: dict[str, str] = {
     "PPVphAB": "V",
     "PPVphBC": "V",
     "PPVphCA": "V",
+}
+
+# EMS-specific fields ('' = dimensionless vendor status/enum word)
+EMS_FIELDS: dict[str, str] = {
+    # active power setpoint (absolute W) — written ONLY by the PowerAllocator.
+    # SunSpec models limiting as WMaxLimPct (percent, model 123); our devices
+    # take an absolute W command, hence an EMS name.
+    "WSet": "W",
     # vendor status/enum words (raw register value, device-specific meaning)
     "Status": "",
     "OperatingMode": "",
     "Alarm": "",
 }
+
+DEVICE_FIELDS: dict[str, str] = {**SUNSPEC_FIELDS, **EMS_FIELDS}
 
 
 def validate_channel(channel: str, unit: str) -> None:
