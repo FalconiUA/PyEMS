@@ -86,7 +86,7 @@ class ChannelArbiter:
         self._honored: dict[str, bool] = {}               # requester -> honored last cycle?
         self._target_owner: str | None = None             # owner of the winning target last cycle
 
-    def resolve(self, requests: list[ActivePowerRequest], now: float) -> float:
+    def resolve(self, requests: list[ActivePowerRequest]) -> float:
         cfg = self._cfg
         ch = cfg.setpoint_channel
 
@@ -210,5 +210,5 @@ class PowerAllocator:
         touches channels it is not configured for."""
         for channel, arbiter in self._arbiters.items():
             requests = self._board.valid_requests(channel, now)
-            value = arbiter.resolve(requests, now)
+            value = arbiter.resolve(requests)
             state.set(channel, value)

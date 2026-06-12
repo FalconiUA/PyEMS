@@ -5,10 +5,22 @@ Modbus registers, CAN frames, MQTT topics — all hidden behind this interface.
 """
 from abc import ABC, abstractmethod
 
-from pyems.channels import SystemState
+from pyems.channels import Channel, SystemState
 
 
 class Driver(ABC):
+    @abstractmethod
+    def connect(self) -> None:
+        """Open the underlying hardware/session resources."""
+
+    @abstractmethod
+    def disconnect(self) -> None:
+        """Close the underlying hardware/session resources."""
+
+    @abstractmethod
+    def channels(self) -> list[Channel]:
+        """Return the channels owned by this driver."""
+
     @abstractmethod
     def read_state(self, state: SystemState) -> None:
         """Read hardware → fill measurement channels in state."""
