@@ -41,6 +41,8 @@ from pyems.system_tags import (
     SAFETY_REQUESTER,
     SETPOINT_HEADROOM_REQUESTER,
     SETPOINT_VIOLATION_CHANNEL,
+    WRITE_AGE_CHANNEL,
+    comms_age_channel,
 )
 
 
@@ -86,6 +88,17 @@ def collect(site: dict) -> dict[str, TagEntry]:
         COMMS_AGE_CHANNEL, origin="system_tags.py (CachedDriver)", access="status",
         unit="s", writes=["CachedDriver (age of last good bus read)"],
     )
+    entries[WRITE_AGE_CHANNEL] = TagEntry(
+        WRITE_AGE_CHANNEL, origin="system_tags.py (CachedDriver)", access="status",
+        unit="s", writes=["CachedDriver (age of last good setpoint flush)"],
+    )
+    device_ids = [dev.get("id") for dev in site.get("devices", []) if dev.get("id")]
+    for dev_id in device_ids:
+        tag = comms_age_channel(dev_id)
+        entries[tag] = TagEntry(
+            tag, origin="system_tags.py (CachedDriver)", access="status",
+            unit="s", writes=[f"CachedDriver (age of last good read for {dev_id})"],
+        )
     entries[SAFE_MODE_CHANNEL] = TagEntry(
         SAFE_MODE_CHANNEL, origin="system_tags.py (SafetyController)", access="status",
         writes=["SafetyController (1 = trip)"],
@@ -123,6 +136,14 @@ def collect(site: dict) -> dict[str, TagEntry]:
     entry(COMMS_AGE_CHANNEL).reads.append(
         f"{SAFETY_REQUESTER} (trip if > {safe_cfg.get('max_comms_age_s')} s)"
     )
+    for dev_id, limit_s in safe_cfg.get("device_comms_max_age_s", {}).items():
+        entry(comms_age_channel(dev_id)).reads.append(
+            f"{SAFETY_REQUESTER} (trip if {dev_id} age > {limit_s} s)"
+        )
+    if safe_cfg.get("max_write_age_s") is not None:
+        entry(WRITE_AGE_CHANNEL).reads.append(
+            f"{SAFETY_REQUESTER} (trip if > {safe_cfg.get('max_write_age_s')} s)"
+        )
     for ch in safe_cfg.get("frozen_measurement_channels", []) or []:
         entry(ch).reads.append(
             f"{SAFETY_REQUESTER} freeze guard "
@@ -192,7 +213,7 @@ def requester_rows(site: dict) -> list[tuple[str, str, str]]:
     else:
         rows.append((IMPORT_LIMIT_REQUESTER,
                      str(site["connection_point_active_power"].get("priority")),
-                     "import-limit regulation target"))
+                     "ConnectionPointPowerController import-limit mode"))
     head_cfg = _setpoint_headroom_config(site)
     if head_cfg:
         rows.append((SETPOINT_HEADROOM_REQUESTER, str(head_cfg["priority"]),

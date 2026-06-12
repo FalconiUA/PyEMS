@@ -7,7 +7,8 @@ from pathlib import Path
 from pyems.channels import Channel, SystemState
 from pyems.drivers.base import Driver
 from pyems.drivers.cached import CachedDriver
-from pyems.system_tags import COMMS_AGE_CHANNEL
+from pyems.drivers.composite import CompositeReadError
+from pyems.system_tags import COMMS_AGE_CHANNEL, WRITE_AGE_CHANNEL, comms_age_channel
 from pyems.drivers.modbus_device import DeviceProfile, ModbusDeviceDriver
 
 
@@ -28,6 +29,7 @@ class FakeInner(Driver):
         self.connect_calls = 0
         self.read_event = threading.Event()
         self.write_event = threading.Event()
+        self.read_gate: threading.Event | None = None  # if set, read blocks on it
         self.written: dict[str, float] = {}
         self.write_calls = 0
 
@@ -41,6 +43,8 @@ class FakeInner(Driver):
         return self._channels
 
     def read_state(self, state: SystemState) -> None:
+        if self.read_gate is not None:  # simulate a slow/hung bus read
+            self.read_gate.wait()
         if self.fail:
             raise OSError("bus down")
         for name, value in self._measurements.items():
@@ -57,6 +61,49 @@ class FakeInner(Driver):
         self.write_event.set()
 
 
+class PerDeviceInner(Driver):
+    def __init__(self) -> None:
+        self.measurements = {"grid.W": 1.0, "pv.W": 10.0}
+        self.failed: set[str] = set()
+        self.connect_calls = 0
+        self.disconnect_calls = 0
+        self._channels = [
+            Channel("grid.W", unit="W"),
+            Channel("pv.W", unit="W"),
+            Channel("pv.WSet", unit="W", writable=True),
+        ]
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+
+    def disconnect(self) -> None:
+        self.disconnect_calls += 1
+
+    def channels(self) -> list[Channel]:
+        return self._channels
+
+    def device_channel_map(self) -> dict[str, list[str]]:
+        return {"grid": ["grid.W"], "pv": ["pv.W", "pv.WSet"]}
+
+    def read_state(self, state: SystemState) -> None:
+        failed = []
+        for dev_id, names in self.device_channel_map().items():
+            if dev_id in self.failed:
+                failed.append(dev_id)
+                continue
+            for name in names:
+                if name in self.measurements:
+                    state.apply_driver_value(name, self.measurements[name])
+        if failed:
+            raise CompositeReadError(
+                f"{len(failed)}/2 device reads failed",
+                frozenset(failed),
+            )
+
+    def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
+        pass
+
+
 def test_channels_include_comms_age_tag():
     drv = CachedDriver(FakeInner({"grid.W": 0.0}))
     assert COMMS_AGE_CHANNEL in [c.name for c in drv.channels()]
@@ -65,6 +112,59 @@ def test_channels_include_comms_age_tag():
 def test_age_is_inf_before_first_read():
     drv = CachedDriver(FakeInner({"grid.W": 0.0}))
     assert drv.age_s() == float("inf")
+
+
+def test_channels_include_write_age_tag():
+    drv = CachedDriver(FakeInner({"grid.W": 0.0}))
+    assert WRITE_AGE_CHANNEL in [c.name for c in drv.channels()]
+
+
+def test_write_age_is_inf_before_first_flush():
+    drv = CachedDriver(FakeInner({"grid.W": 0.0}))
+    assert drv.write_age_s() == float("inf")
+
+
+def test_write_age_finite_after_flush_and_published():
+    inner = FakeInner({"grid.W": 1.0})
+    drv = CachedDriver(inner, poll_interval_s=0.01)
+    drv.connect()
+    try:
+        st = SystemState(drv.channels())
+        st.set("pv.WSet", 5000.0)
+        drv.write_setpoints(st)
+        deadline = time.monotonic() + 2.0
+        while inner.written.get("pv.WSet") != 5000.0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert drv.write_age_s() < 2.0  # finite once a flush succeeded
+        read = SystemState(drv.channels())
+        drv.read_state(read)
+        assert read.get(WRITE_AGE_CHANNEL) < 2.0  # published into state
+    finally:
+        drv.disconnect()
+
+
+def test_write_age_grows_while_writes_fail():
+    """Reads keep succeeding (comms age fresh) but the write age grows — the
+    whole point of the signal: a write-blind EMS is not a dead bus."""
+    inner = FakeInner({"grid.W": 1.0})
+    inner.fail_writes = True
+    drv = CachedDriver(inner, poll_interval_s=0.01)
+    drv.connect()
+    try:
+        st = SystemState(drv.channels())
+        st.set("pv.WSet", 6000.0)
+        drv.write_setpoints(st)
+        assert inner.write_event.wait(timeout=2.0)  # at least one failed flush
+        time.sleep(0.05)
+        assert drv.write_age_s() == float("inf")  # never a successful flush
+        assert drv.age_s() < 2.0                   # ...yet reads are fresh
+        inner.fail_writes = False                  # writes accepted again
+        deadline = time.monotonic() + 2.0
+        while drv.write_age_s() == float("inf") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert drv.write_age_s() < 2.0             # recovers once a flush lands
+    finally:
+        drv.disconnect()
 
 
 def test_read_state_copies_cache_and_age_no_bus():
@@ -212,7 +312,10 @@ def test_write_failure_logged_once_until_recovery(caplog):
             assert len(failures) == 1  # transition-gated, no per-cycle spam
             inner.fail_writes = False  # bus accepts writes again
             deadline = time.monotonic() + 2.0
-            while inner.written.get("pv.WSet") != 1000.0 and time.monotonic() < deadline:
+            while (
+                not any("WRITE recovered" in r.message for r in caplog.records)
+                and time.monotonic() < deadline
+            ):
                 time.sleep(0.01)
             assert any("WRITE recovered" in r.message for r in caplog.records)
     finally:
@@ -282,6 +385,58 @@ def test_failed_flush_keeps_setpoint_dirty_and_retries():
         drv.disconnect()
 
 
+def test_setpoint_flush_not_delayed_by_slow_read():
+    """A hung/blocking bus read must not hold up flushing a (safety-critical)
+    setpoint to a healthy device: the worker writes before it reads. With the
+    old read-first order the first iteration would block forever on the read
+    and the setpoint would never flush."""
+    inner = FakeInner({"grid.W": 1.0})
+    inner.read_gate = threading.Event()  # never set → every read blocks
+    drv = CachedDriver(inner, poll_interval_s=0.01)
+    # publish the setpoint BEFORE connect, so it is pending on the first poll
+    st = SystemState(drv.channels())
+    st.set("pv.WSet", 8000.0)
+    drv.write_setpoints(st)
+    drv.connect()
+    try:
+        deadline = time.monotonic() + 2.0
+        while inner.written.get("pv.WSet") != 8000.0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert inner.written.get("pv.WSet") == 8000.0  # flushed despite the hung read
+    finally:
+        inner.read_gate.set()  # release the worker so it can shut down
+        drv.disconnect()
+
+
+def test_write_runs_before_read_each_iteration():
+    """The worker flushes setpoints before polling the bus."""
+    inner = FakeInner({"grid.W": 1.0})
+    calls: list[str] = []
+    orig_read, orig_write = inner.read_state, inner.write_setpoints
+
+    def rec_read(state):
+        calls.append("read")
+        return orig_read(state)
+
+    def rec_write(state, channels=None):
+        calls.append("write")
+        return orig_write(state, channels)
+
+    inner.read_state, inner.write_setpoints = rec_read, rec_write
+    drv = CachedDriver(inner, poll_interval_s=0.01)
+    st = SystemState(drv.channels())
+    st.set("pv.WSet", 1234.0)
+    drv.write_setpoints(st)  # pending before the worker's first iteration
+    drv.connect()
+    try:
+        deadline = time.monotonic() + 2.0
+        while inner.written.get("pv.WSet") != 1234.0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert calls[:2] == ["write", "read"]  # flush precedes the poll
+    finally:
+        drv.disconnect()
+
+
 def test_worker_reconnects_after_bus_failure():
     inner = FakeInner({"grid.W": 50.0})
     drv = CachedDriver(inner, poll_interval_s=0.01)
@@ -299,3 +454,60 @@ def test_worker_reconnects_after_bus_failure():
         assert inner.connect_calls > calls_before
     finally:
         drv.disconnect()
+
+
+def test_per_device_partial_failure_keeps_healthy_cache_fresh():
+    inner = PerDeviceInner()
+    drv = CachedDriver(inner)
+
+    drv._read_once()
+    inner.measurements["grid.W"] = 2.0
+    inner.measurements["pv.W"] = 99.0
+    inner.failed = {"pv"}
+    drv._read_once()
+
+    read = SystemState(drv.channels())
+    drv.read_state(read)
+    assert read.get("grid.W") == 2.0
+    assert read.get("pv.W") == 10.0  # failed device freezes at last good value
+    assert read.get(comms_age_channel("grid")) < 1.0
+    assert read.get(comms_age_channel("pv")) >= 0.0
+    assert drv.device_age_s("grid") < 1.0
+    assert drv.age_s() >= drv.device_age_s("grid")
+    assert inner.disconnect_calls == 0
+    assert inner.connect_calls == 0
+
+
+def test_per_device_age_splits_and_recovers():
+    inner = PerDeviceInner()
+    drv = CachedDriver(inner)
+
+    drv._read_once()
+    inner.failed = {"pv"}
+    time.sleep(0.02)
+    drv._read_once()
+    grid_age = drv.device_age_s("grid")
+    pv_age = drv.device_age_s("pv")
+    assert pv_age > grid_age
+    assert drv.age_s() >= pv_age
+
+    inner.failed = set()
+    drv._read_once()
+    assert drv.device_age_s("pv") < pv_age
+    assert drv.age_s() < pv_age
+
+
+def test_per_device_all_failed_uses_full_reconnect_next_poll():
+    inner = PerDeviceInner()
+    drv = CachedDriver(inner)
+
+    inner.failed = {"grid", "pv"}
+    drv._read_once()
+    assert inner.disconnect_calls == 0
+    assert inner.connect_calls == 0
+
+    inner.failed = set()
+    drv._read_once()
+
+    assert inner.disconnect_calls == 1
+    assert inner.connect_calls == 1

@@ -102,7 +102,14 @@ def test_build_recorder_validates_channels(tmp_path):
 
 def test_build_recorder_defaults_to_bound_channels(tmp_path):
     site = make_site(tmp_path, cycle_csv=str(tmp_path / "c.csv"))
-    available = ["grid.W", "pv.W", "pv.WSet", "sys.comms_age_s", "sys.safe_mode"]
+    available = [
+        "grid.W",
+        "pv.W",
+        "pv.WSet",
+        "sys.comms_age_s",
+        "sys.write_age_s",
+        "sys.safe_mode",
+    ]
     rec = build_recorder(site, available)
     try:
         assert set(rec.channels) == set(available)

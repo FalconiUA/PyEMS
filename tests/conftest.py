@@ -54,6 +54,7 @@ def channels() -> list[Channel]:
         Channel("pv.WSet", unit="W", min_val=0, max_val=100000, writable=True),
         Channel("sys.safe_mode", min_val=0, max_val=1, writable=True),
         Channel("sys.comms_age_s", unit="s", value=0.0),
+        Channel("sys.write_age_s", unit="s", value=0.0),
     ]
 
 

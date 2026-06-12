@@ -19,7 +19,6 @@ from pyems.allocation.allocator import PowerAllocator, SetpointChannelConfig
 from pyems.allocation.request import RequestBoard
 from pyems.channels import Channel, SystemState
 from pyems.control.pid import PIDGains
-from pyems.controllers.connection_point_import_limit import ConnectionPointImportLimitController
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.grid_export_limit import GridExportLimitController
 from pyems.controllers.safety import SafetyController
@@ -39,6 +38,8 @@ from pyems.system_tags import (
     SAFE_MODE_CHANNEL,
     SETPOINT_HEADROOM_REQUESTER,
     SETPOINT_VIOLATION_CHANNEL,
+    WRITE_AGE_CHANNEL,
+    comms_age_channel,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,9 +132,14 @@ def required_channels(site: dict) -> list[str]:
         *_active_power_binding_channels(exp_cfg),
         *_active_power_binding_channels(cp_cfg),
         COMMS_AGE_CHANNEL,
+        WRITE_AGE_CHANNEL,
         SAFE_MODE_CHANNEL,
         *safe_cfg["unit_active_power_setpoint_channels"],
         *safe_cfg.get("frozen_measurement_channels", []),
+        *(
+            comms_age_channel(dev_id)
+            for dev_id in safe_cfg.get("device_comms_max_age_s", {})
+        ),
         *(ch["setpoint_channel"] for ch in alloc_cfg["channels"]),
     ]
     comp_cfg = site.get("setpoint_compliance")
@@ -284,6 +290,41 @@ def validate_setpoint_keepalive(site: dict) -> None:
         )
 
 
+def validate_write_age_guard(site: dict) -> None:
+    """Raise if the optional write-age safety guard is mis-tuned.
+
+    `safety.max_write_age_s` trips safety when setpoints stop reaching the bus
+    even though reads still succeed (remote control lost, half-open socket).
+    Omit the key to disable the guard. When set, two bounds must hold:
+      - it must exceed the healthy keep-alive cadence (`setpoint_rewrite_s` plus
+        a couple of polls), or normal operation trips it every rewrite period;
+      - if the device has its own comms watchdog, the EMS must raise
+        `sys.safe_mode` no later than the device fail-safes, so
+        `max_write_age_s <= device_comms_watchdog_s`.
+    """
+    safe_cfg = site["safety"]
+    max_write_age_s = safe_cfg.get("max_write_age_s")
+    if max_write_age_s is None:
+        return
+    ctrl = site["control"]
+    rewrite_s = ctrl.get("setpoint_rewrite_s", 10.0)
+    poll_s = ctrl["poll_interval_s"]
+    floor = rewrite_s + 2 * poll_s
+    if max_write_age_s < floor:
+        raise ValueError(
+            f"safety.max_write_age_s ({max_write_age_s}s) must be at least "
+            f"setpoint_rewrite_s + 2*poll_interval_s ({floor}s), or the healthy "
+            f"keep-alive cadence itself trips the write-age guard"
+        )
+    watchdog_s = safe_cfg.get("device_comms_watchdog_s")
+    if watchdog_s is not None and max_write_age_s > watchdog_s:
+        raise ValueError(
+            f"safety.max_write_age_s ({max_write_age_s}s) must not exceed "
+            f"safety.device_comms_watchdog_s ({watchdog_s}s) — the EMS must "
+            f"raise sys.safe_mode no later than the device fail-safes"
+        )
+
+
 def build_tasks(site: dict) -> list[Task]:
     """Build the control tasks from a site config dict.
 
@@ -297,6 +338,10 @@ def build_tasks(site: dict) -> list[Task]:
     mode = control_mode(site)
 
     # PRIORITY 0 interlock — runs first, asserts safe state on a dead/frozen bus.
+    device_comms_limits = {
+        comms_age_channel(dev_id): float(limit_s)
+        for dev_id, limit_s in safe_cfg.get("device_comms_max_age_s", {}).items()
+    } or None
     safety_task = Task(
         name="safety",
         interval_s=fast_cycle_s,
@@ -308,6 +353,8 @@ def build_tasks(site: dict) -> list[Task]:
                 unit_active_power_setpoint_channels=safe_cfg["unit_active_power_setpoint_channels"],
                 frozen_measurement_channels=safe_cfg.get("frozen_measurement_channels"),
                 max_frozen_s=safe_cfg.get("max_measurement_frozen_s"),
+                max_write_age_s=safe_cfg.get("max_write_age_s"),
+                comms_age_limits=device_comms_limits,
             ),
         ],
     )
@@ -338,13 +385,16 @@ def build_tasks(site: dict) -> list[Task]:
         )
     else:
         fast_controllers.append(
-            ConnectionPointImportLimitController(
+            ConnectionPointPowerController(
                 name=IMPORT_LIMIT_REQUESTER,
                 priority=cp_cfg["priority"],
+                export_limit_w=cp_cfg.get("export_limit_w", 0.0),
                 import_limit_w=cp_cfg["import_limit_w"],
                 connection_point_active_power_channel=cp_cfg["connection_point_active_power_channel"],
                 unit_active_power_channel=cp_cfg["unit_active_power_channel"],
                 unit_active_power_setpoint_channel=cp_cfg["unit_active_power_setpoint_channel"],
+                gains=PIDGains(**cp_cfg["gains"]),
+                mode=IMPORT_LIMIT_MODE,
                 deadband_w=site["allocation"]["channels"][0].get("deadband_w", 200.0),
             )
         )
@@ -519,6 +569,7 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     # and a config that would neutralize the safety layer must never start.
     validate_safety_allocation(site)
     validate_setpoint_keepalive(site)
+    validate_write_age_guard(site)
 
     ctrl_cfg = site["control"]
 
@@ -527,7 +578,9 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     device_drivers = build_device_drivers(site["devices"])
 
     # One resource, multiple field devices (IEC §2.4.1.1): merged tag pool.
-    devices = CompositeDriver(device_drivers)
+    configured_ids = [dev.get("id") for dev in site["devices"]]
+    device_ids = configured_ids if all(configured_ids) else None
+    devices = CompositeDriver(device_drivers, device_ids=device_ids)
 
     # Non-blocking I/O: real Modbus runs in a background thread against a tag
     # cache, so a slow/hung bus transaction never stalls the control cycle.

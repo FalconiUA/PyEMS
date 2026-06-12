@@ -1,7 +1,12 @@
 import yaml
 
 from pyems.ems import ROOT
-from pyems.system_tags import COMMS_AGE_CHANNEL, SAFE_MODE_CHANNEL
+from pyems.system_tags import (
+    COMMS_AGE_CHANNEL,
+    SAFE_MODE_CHANNEL,
+    WRITE_AGE_CHANNEL,
+    comms_age_channel,
+)
 from pyems.tag_registry import collect, render_markdown, render_text, requester_rows
 
 SIM_SITE = ROOT / "config" / "site.sim.yaml"
@@ -27,6 +32,13 @@ def test_collect_cross_references_the_sim_site():
     assert COMMS_AGE_CHANNEL in entries
     assert SAFE_MODE_CHANNEL in entries
     assert any("trip" in r for r in entries[COMMS_AGE_CHANNEL].reads)
+    assert comms_age_channel("grid") in entries
+    assert any("grid age" in r for r in entries[comms_age_channel("grid")].reads)
+
+    # the sim site sets safety.max_write_age_s, so the write-age tag is present
+    # and read by safety for the write-path trip
+    assert WRITE_AGE_CHANNEL in entries
+    assert any("trip" in r for r in entries[WRITE_AGE_CHANNEL].reads)
 
 
 def test_binding_to_unknown_tag_is_flagged_not_hidden():

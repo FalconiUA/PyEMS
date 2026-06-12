@@ -33,6 +33,18 @@ def make_ctrl(**kw) -> ConnectionPointPowerController:
     return ConnectionPointPowerController(**params)
 
 
+def make_import_ctrl(**kw) -> ConnectionPointPowerController:
+    params = dict(
+        name="connection_point_import_limit",
+        export_limit_w=0.0,
+        import_limit_w=50000.0,
+        mode="import_limit",
+        deadband_w=0.0,
+    )
+    params.update(kw)
+    return make_ctrl(**params)
+
+
 def posted(board: RequestBoard):
     reqs = board.valid_requests(CH, now=0.0)
     assert len(reqs) == 1
@@ -65,6 +77,37 @@ def test_import_limit_posts_floor():
     req = posted(board)
     assert req.min_w == pytest.approx(30000.0)
     assert req.target_w >= req.min_w
+
+
+def test_import_mode_posts_minimum_generation_request():
+    state = make_state()
+    state.apply_driver_value("grid.W", 80000.0)
+    state.apply_driver_value("plant.W", 10000.0)
+    board = RequestBoard([CH])
+    board.tick(0.0)
+
+    make_import_ctrl().execute(state, board)
+
+    req = posted(board)
+    assert req.min_w == pytest.approx(40000.0)
+    assert req.target_w == pytest.approx(40000.0)
+
+
+def test_import_mode_withdraws_when_inside_limit():
+    state = make_state()
+    state.apply_driver_value("grid.W", 80000.0)
+    state.apply_driver_value("plant.W", 10000.0)
+    board = RequestBoard([CH])
+    board.tick(0.0)
+    ctrl = make_import_ctrl()
+    ctrl.execute(state, board)
+    assert board.valid_requests(CH, now=0.0)
+
+    state.apply_driver_value("grid.W", 30000.0)
+    board.tick(1.0)
+    ctrl.execute(state, board)
+
+    assert board.valid_requests(CH, now=1.0) == []
 
 
 def test_allocator_limits_rise_but_allows_fast_drop():

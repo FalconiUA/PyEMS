@@ -33,6 +33,11 @@ connection_point_active_power:
 
 safety:
   max_comms_age_s: 2.0
+  # Optional per-device read-freshness guard. Keys are device ids from
+  # `devices`; values are seconds. Omit to use only the global comms age.
+  # device_comms_max_age_s:
+  #   grid: 6.0
+  #   pv: 6.0
   unit_active_power_setpoint_channels:
     - pv.WSet
 
@@ -46,6 +51,10 @@ allocation:
       deadband_w: 200.0
 
 devices:
+  # Per device you may set `timeout_s` and `retries` (both protocols) to bound
+  # the worst-case poll time — a hung device costs ~(retries+1)*timeout_s per
+  # poll. Left unset here (pymodbus defaults ~3 s x 4); production sites should
+  # set them explicitly (see config/site.yaml for the arithmetic).
   - id: grid
     profile: meters/example_grid_meter.yaml
     host: 192.168.1.200

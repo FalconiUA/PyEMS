@@ -3,7 +3,6 @@ import pytest
 
 import pyems.drivers.modbus_device as md
 from pyems.drivers.modbus_device import DEFAULT_SERIAL
-from pyems.controllers.connection_point_import_limit import ConnectionPointImportLimitController
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.grid_export_limit import GridExportLimitController
 from pyems.ems import build_device_drivers, build_ems, build_tasks
@@ -15,9 +14,10 @@ class FakeTcpClient:
 
     instances = []
 
-    def __init__(self, host, port=502):
+    def __init__(self, host, port=502, **kwargs):
         self.host = host
         self.port = port
+        self.kwargs = kwargs  # timeout/retries, as the real client accepts
         self.connect_calls = 0
         FakeTcpClient.instances.append(self)
 
@@ -51,7 +51,9 @@ def test_build_ems_wires_scheduler(monkeypatch):
         assert priorities[0] == 0
         # all controller-bound tags from site.yaml exist in the tag pool
         names = set(sched._state.snapshot())
-        for tag in ("grid.W", "pv.W", "pv.WSet", "sys.safe_mode", "sys.comms_age_s"):
+        for tag in ("grid.W", "pv.W", "pv.WSet", "sys.safe_mode",
+                    "sys.comms_age_s", "sys.write_age_s",
+                    "sys.grid.comms_age_s", "sys.pv.comms_age_s"):
             assert tag in names
         # allocator + board wired from the allocation section, owning pv.WSet
         assert sched._allocator is not None
@@ -150,7 +152,7 @@ def test_build_device_drivers_conflicting_serial_settings_raise(monkeypatch):
         build_device_drivers(devices)
 
 
-def test_build_tasks_import_mode_uses_only_import_controller():
+def test_build_tasks_import_mode_uses_connection_point_power_controller():
     site = {
         "scenario": {"control_mode": "import_limit"},
         "control": {"fast_cycle_s": 1.0},
@@ -189,6 +191,7 @@ def test_build_tasks_import_mode_uses_only_import_controller():
 
     fast_task = next(task for task in build_tasks(site) if task.name == "fast")
 
-    assert any(isinstance(c, ConnectionPointImportLimitController) for c in fast_task.controllers)
+    assert any(isinstance(c, ConnectionPointPowerController) for c in fast_task.controllers)
     assert not any(isinstance(c, GridExportLimitController) for c in fast_task.controllers)
-    assert not any(isinstance(c, ConnectionPointPowerController) for c in fast_task.controllers)
+    ctrl = next(c for c in fast_task.controllers if isinstance(c, ConnectionPointPowerController))
+    assert ctrl._mode == "import_limit"

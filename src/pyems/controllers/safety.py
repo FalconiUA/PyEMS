@@ -2,8 +2,15 @@
 SafetyController = IEC 61131-3 PRIORITY 0 interlock layer.
 
 Runs first every cycle (highest priority TASK). It does not optimize — it only
-asserts a safe state when preconditions fail. It guards two faults:
+asserts a safe state when preconditions fail. It guards three faults:
   - stale measurements: the field bus went down — see CachedDriver.age_s();
+  - stale write path (optional): setpoints stopped reaching the bus even though
+    reads still succeed — see CachedDriver.write_age_s(). A device that drops
+    remote power control, or a half-open socket that fails only writes, leaves
+    the comms age fresh while the EMS is blind on actuation. The priority-0
+    claim posted on trip is futile WHILE writes fail, but it lands the instant
+    the write path recovers; meanwhile `sys.safe_mode` is the observable for
+    UI/SCADA and the device's own comms watchdog fail-safes the dead window.
   - frozen measurements: the bus answers but a watched tag has not changed for
     too long. A gateway serving cached register data (or a meter whose CPU
     hung) passes every Modbus read, so the comms age never grows — yet acting
@@ -31,7 +38,7 @@ Fail-safe value for export-limit mode:
 
 IEC 61131-3 equivalent:
   FUNCTION_BLOCK Safety
-    VAR_INPUT  comms_age_s : REAL; END_VAR
+    VAR_INPUT  comms_age_s : REAL; write_age_s : REAL; END_VAR
     VAR_OUTPUT safe_mode : BOOL; p_setpoint_claim_w : REAL; END_VAR
   END_FUNCTION_BLOCK
 """
@@ -45,6 +52,7 @@ from pyems.system_tags import (
     COMMS_AGE_CHANNEL,
     SAFE_MODE_CHANNEL,  # 1.0 = tripped, 0.0 = healthy
     SAFETY_REQUESTER,   # board key + reserved priority-0 owner
+    WRITE_AGE_CHANNEL,  # seconds since last good setpoint flush
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +66,8 @@ class SafetyController(Controller):
         unit_active_power_setpoint_channels: list[str],
         frozen_measurement_channels: list[str] | None = None,
         max_frozen_s: float | None = None,
+        max_write_age_s: float | None = None,
+        comms_age_limits: dict[str, float] | None = None,
     ) -> None:
         self._max_age = max_comms_age_s
         self._safe_active_power_w = safe_active_power_w
@@ -68,6 +78,12 @@ class SafetyController(Controller):
         # bit-identical value is still plausible.
         self._frozen_channels = frozen_measurement_channels or []
         self._max_frozen_s = max_frozen_s
+        # Write-path freshness guard (disabled when None): trip if setpoints
+        # stop reaching the bus for this long, even while reads stay fresh.
+        self._max_write_age_s = max_write_age_s
+        # Optional per-device read-freshness guards, keyed by the bound age tag
+        # name (for example sys.grid.comms_age_s), not by a raw device id.
+        self._comms_age_limits = comms_age_limits or {}
         # per-channel (last value, monotonic time it last changed)
         self._last_change: dict[str, tuple[float, float]] = {}
         self._tripped = False  # last state — log only on transition, not per cycle
@@ -94,6 +110,18 @@ class SafetyController(Controller):
         faults: list[str] = []
         if comms_age > self._max_age:
             faults.append(f"comms age {comms_age:.1f}s > {self._max_age:.1f}s limit")
+        for channel, max_age_s in self._comms_age_limits.items():
+            age = state.get(channel)
+            if age > max_age_s:
+                faults.append(
+                    f"{channel} age {age:.1f}s > {max_age_s:.1f}s limit"
+                )
+        if self._max_write_age_s is not None:
+            write_age = state.get(WRITE_AGE_CHANNEL)
+            if write_age > self._max_write_age_s:
+                faults.append(
+                    f"write age {write_age:.1f}s > {self._max_write_age_s:.1f}s limit"
+                )
         if frozen:
             faults.append(
                 f"measurements {frozen} frozen > {self._max_frozen_s:.1f}s"

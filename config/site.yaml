@@ -9,6 +9,9 @@ scenario:
 control:
   fast_cycle_s: 1
   poll_interval_s: 0.5
+  # Keep-alive rewrite period for unchanged setpoints (feeds the device comms
+  # watchdog). Stated explicitly because safety.max_write_age_s is tuned to it.
+  setpoint_rewrite_s: 10
 export_limit:
   limit_w: 10.0
   priority: 5
@@ -28,7 +31,22 @@ connection_point_active_power:
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
 safety:
-  max_comms_age_s: 2
+  # Global backstop: max over all per-device ages. Per-device limits below do
+  # the normal trip work; this catches sites without per-device config.
+  max_comms_age_s: 10
+  # Per-device read freshness: one bad device ages its own tag without freezing
+  # healthy devices. 6 s avoids false trips with a TCP-hung peer under the
+  # explicit 1.0 s / 1 retry settings, while still curtailing promptly.
+  device_comms_max_age_s:
+    grid: 6
+    pv: 6
+  # Write-path freshness guard: trip if setpoints stop reaching the bus for
+  # this long even while READS stay fresh (device dropped remote control, a
+  # half-open socket failing only writes). Must exceed the healthy keep-alive
+  # cadence (setpoint_rewrite_s 10 + 2*poll 0.5 = 11 s floor) and stay <= the
+  # device comms watchdog (60), so the EMS raises sys.safe_mode before the
+  # device fail-safes. Omit to disable (e.g. monitor-only sites).
+  max_write_age_s: 15
   # Frozen-measurement guard: a live connection-point measurement always
   # jitters; bit-identical values for this long mean a hung meter/gateway.
   # Watch jittery tags only (not pv.W — it sits at exactly 0 all night).
@@ -59,11 +77,24 @@ allocation:
     ramp_down_w_per_s: 50000
     deadband_w: 200
 devices:
+# timeout_s / retries bound the worst-case poll time so a hung device cannot
+# stall the loop long enough to spuriously trip safety. pymodbus raises on a
+# transport failure (it does not return an error response), and that exception
+# escapes ModbusDeviceDriver.read_state at the FIRST failed register — so a dead
+# device costs ~(retries+1)*timeout_s per poll, not per register. With 1.0s/1
+# the worst iteration (one TCP endpoint hung) is ~4 s end-to-end, safely inside
+# the device_comms_watchdog and below what would falsely trip a healthy site;
+# pymodbus defaults (~3 s x 4 attempts) would cost 9-12 s and a single 3 s
+# transient already exceeds max_comms_age_s. Use retries: 0 to halve all of it.
 - id: grid
   profile: meters/example_grid_meter.yaml
   host: 192.168.1.200
   slave_id: 1
+  timeout_s: 1.0
+  retries: 1
 - id: pv
   profile: inverters/huawei_sun2000_100ktl_m1.yaml
   host: 192.168.1.100
   slave_id: 1
+  timeout_s: 1.0
+  retries: 1

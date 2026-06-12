@@ -38,7 +38,13 @@ connection_point_active_power:
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
 safety:
-  max_comms_age_s: 2
+  max_comms_age_s: 10
+  device_comms_max_age_s:
+    grid: 6
+    pv: 6
+  # Trip if setpoints stop reaching the bus for 15 s while reads stay fresh.
+  # Exercise it with the `reject_writes` fault on pv in the sim panel.
+  max_write_age_s: 15
   max_measurement_frozen_s: 30
   frozen_measurement_channels:
   - grid.W
@@ -81,16 +87,22 @@ allocation:
 recording:
   cycle_csv: logs/sim_cycles.csv
 devices:
+# See config/site.yaml for the timeout_s/retries arithmetic. The sim exercises
+# the same bounds so the `offline` fault behaves like a real hung endpoint.
 - id: grid
   profile: meters/example_grid_meter.yaml
   host: 127.0.0.1
   port: 15021
   slave_id: 1
+  timeout_s: 1.0
+  retries: 1
 - id: pv
   profile: inverters/huawei_sun2000_100ktl_m1.yaml
   host: 127.0.0.1
   port: 15022
   slave_id: 1
+  timeout_s: 1.0
+  retries: 1
 # Sim-only knobs (the EMS ignores this section).
 simulation:
   tick_s: 0.2

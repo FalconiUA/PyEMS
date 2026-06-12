@@ -26,6 +26,8 @@ from pyems.system_tags import (
     COMMS_AGE_CHANNEL,
     SAFE_MODE_CHANNEL,
     SETPOINT_VIOLATION_CHANNEL,
+    WRITE_AGE_CHANNEL,
+    comms_age_channel,
 )
 from pyems.drivers.composite import CompositeDriver
 from pyems.ems import (
@@ -166,17 +168,28 @@ def list_profiles() -> list[str]:
     return sorted(path.relative_to(PROFILES).as_posix() for path in PROFILES.rglob("*.yaml"))
 
 
-def _system_channels() -> list[Channel]:
-    return [
+def _system_channels(device_ids: list[str] | None = None) -> list[Channel]:
+    channels = [
         Channel(COMMS_AGE_CHANNEL, unit="s", value=0.0),
+        Channel(WRITE_AGE_CHANNEL, unit="s", value=0.0),
         Channel(SAFE_MODE_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
         Channel(SETPOINT_VIOLATION_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
     ]
+    channels.extend(
+        Channel(comms_age_channel(device_id), unit="s", value=0.0)
+        for device_id in (device_ids or [])
+    )
+    return channels
 
 
 def _device_channels_for_site(site: dict[str, Any]) -> list[Channel]:
     drivers = build_device_drivers(site["devices"])
-    return CompositeDriver(drivers).channels() + _system_channels()
+    configured_ids = [device.get("id") for device in site["devices"]]
+    device_ids = configured_ids if all(configured_ids) else None
+    return (
+        CompositeDriver(drivers, device_ids=device_ids).channels()
+        + _system_channels(device_ids)
+    )
 
 
 def _require_mapping(mapping: dict[str, Any], key: str, path: str) -> dict[str, Any]:
@@ -284,12 +297,20 @@ def _device_name(channel_name: str) -> str:
 # from the canonical vocabulary, see field_label in pyems/device_fields.py).
 _SYS_LABELS = {
     COMMS_AGE_CHANNEL: "Seconds since the last good bus read (inf = never)",
+    WRITE_AGE_CHANNEL: "Seconds since the last good setpoint flush (inf = never)",
     SAFE_MODE_CHANNEL: "Safety trip active (1) / healthy (0)",
     SETPOINT_VIOLATION_CHANNEL: "Unit is not following its applied setpoint",
 }
 
 
 def channel_description(channel_name: str) -> str:
+    if (
+        channel_name.startswith("sys.")
+        and channel_name.endswith(".comms_age_s")
+        and channel_name != COMMS_AGE_CHANNEL
+    ):
+        device_id = channel_name[len("sys."):-len(".comms_age_s")]
+        return f"Seconds since the last good read for device '{device_id}'"
     return _SYS_LABELS.get(channel_name) or field_label(channel_name)
 
 
