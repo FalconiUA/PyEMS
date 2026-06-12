@@ -50,6 +50,13 @@ allocation:
       ramp_rate_w_per_s: 5000.0
       deadband_w: 200.0
 
+# Live-state snapshot for the read-only UI realtime view: one JSON document
+# rewritten atomically each control cycle. pyems-ui polls it off the filesystem
+# rather than opening its own Modbus session. Omit to disable; relative paths
+# resolve against the repo root.
+telemetry:
+  live_json: logs/live_state.json
+
 devices:
   # Per device you may set `timeout_s` and `retries` (both protocols) to bound
   # the worst-case poll time — a hung device costs ~(retries+1)*timeout_s per

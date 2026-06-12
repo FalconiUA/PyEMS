@@ -30,6 +30,7 @@ import pyems.drivers.modbus_device as md
 from pyems.logging import setup_logging
 from pyems.recording import CycleRecorder
 from pyems.scheduler import Scheduler, Task
+from pyems.telemetry import LiveSnapshotPublisher
 from pyems.system_tags import (
     COMMS_AGE_CHANNEL,
     CONNECTION_POINT_POWER_REQUESTER,
@@ -554,6 +555,27 @@ def build_recorder(site: dict, available: list[str]) -> CycleRecorder | None:
     return recorder
 
 
+def build_publisher(
+    site: dict, channels: list[Channel]
+) -> LiveSnapshotPublisher | None:
+    """Build the live-state JSON publisher from the optional `telemetry:` section.
+
+    One snapshot file rewritten each cycle, for the read-only UI to poll off the
+    filesystem (no second Modbus session). Channel metadata (unit/writable) is
+    captured so a consumer can render the snapshot without the device drivers.
+    """
+    tele_cfg = site.get("telemetry") or {}
+    json_path = tele_cfg.get("live_json")
+    if not json_path:
+        return None
+    path = Path(json_path)
+    if not path.is_absolute():
+        path = ROOT / path
+    publisher = LiveSnapshotPublisher(path, channels=channels)
+    logger.info("Live telemetry snapshot to %s (%d channels)", path, len(channels))
+    return publisher
+
+
 def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     logger.info("Building EMS from %s", Path(site_path).resolve())
     site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8"))
@@ -608,6 +630,7 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     tasks = build_tasks(site)
     allocator, board = build_allocation(site)
     recorder = build_recorder(site, [c.name for c in channels])
+    publisher = build_publisher(site, channels)
 
     logger.info(
         "EMS built: %d devices, %d channels, tasks=%s, allocator channels=%s",
@@ -616,7 +639,7 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     )
     return Scheduler(
         tasks=tasks, state=state, driver=driver, allocator=allocator, board=board,
-        recorder=recorder,
+        recorder=recorder, telemetry=publisher,
     )
 
 

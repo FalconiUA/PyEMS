@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from pyems import ui
@@ -74,3 +76,56 @@ def test_ui_app_error_log_keeps_recent_entries_newest_first(tmp_path):
 
     assert app.clear_error_log() == {"ok": True, "entries": []}
     assert app.error_log() == []
+
+
+def test_fast_loop_state_reads_published_snapshot(tmp_path):
+    snap = tmp_path / "live_state.json"
+    snap.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "timestamp": "2026-06-13 10:00:00",
+                "monotonic_s": 1.0,
+                "values": {
+                    "grid.W": -500.0,
+                    "pv.WSet": 4000.0,
+                    "sys.safe_mode": 0.0,
+                    "sys.comms_age_s": None,
+                },
+                "channels": [
+                    {"name": "grid.W", "unit": "W", "writable": False},
+                    {"name": "pv.WSet", "unit": "W", "writable": True},
+                    {"name": "sys.safe_mode", "unit": "", "writable": True},
+                    {"name": "sys.comms_age_s", "unit": "s", "writable": False},
+                ],
+                "cycle_s": 1.0,
+                "cycle_overrun": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = ui.fast_loop_state({"telemetry": {"live_json": str(snap)}})
+
+    assert result["ok"] is True
+    assert result["read_at"] == "2026-06-13 10:00:00"
+    rows = {row["channel"]: row for row in result["rows"]}
+    assert rows["grid.W"]["value"] == -500.0
+    assert rows["grid.W"]["access"] == "read"
+    assert rows["pv.WSet"]["access"] == "write"
+    assert rows["pv.WSet"]["role"] == "active power setpoint"
+    assert rows["sys.safe_mode"]["role"] == "system"
+    assert rows["sys.comms_age_s"]["value"] is None  # +inf was published as null
+
+
+def test_fast_loop_state_missing_snapshot_gives_clean_error(tmp_path):
+    result = ui.fast_loop_state({"telemetry": {"live_json": str(tmp_path / "nope.json")}})
+
+    assert result["ok"] is False
+    assert "not running" in result["error"]
+    assert result["rows"] == []
+
+
+def test_fast_loop_state_path_defaults_to_logs_live_state():
+    path = ui.fast_loop_state_path({})
+    assert path.name == "live_state.json"
+    assert path.is_absolute()
