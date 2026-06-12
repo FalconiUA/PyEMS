@@ -603,6 +603,7 @@ def fast_loop_state(site: dict[str, Any]) -> dict[str, Any]:
             "rows": [],
         }
     try:
+        age_s = max(0.0, time.time() - path.stat().st_mtime)
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return {
@@ -615,9 +616,15 @@ def fast_loop_state(site: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "path": str(path),
         "read_at": data.get("timestamp"),
+        # File freshness measured server-side (mtime vs wall clock), so the
+        # browser can flag a stale snapshot without comparing clock strings.
+        "age_s": round(age_s, 3),
         "monotonic_s": data.get("monotonic_s"),
         "cycle_s": data.get("cycle_s"),
         "cycle_overrun": data.get("cycle_overrun"),
+        # Raw tag → value map as published, for tag-addressed consumers (the
+        # Overview cards); `rows` below is the same data shaped for tables.
+        "values": data.get("values") or {},
         "rows": _fast_loop_rows(data),
     }
 

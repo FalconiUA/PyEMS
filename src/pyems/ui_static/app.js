@@ -134,6 +134,7 @@ function applyConfigPayload(data) {
 }
 
 function renderAll() {
+  renderOverview();
   renderScenario();
   renderSiteYaml();
   renderProfileSelector();
@@ -291,6 +292,510 @@ function renderLogs() {
       <td class="log-message">${esc(entry.message)}</td>
     </tr>
   `).join("");
+}
+
+// ── Overview: read-only dashboard fed by the fast-loop telemetry snapshot ────
+// All data comes from /api/fast-loop-state (the JSON the running EMS rewrites
+// each cycle) plus the already-loaded site config. NO direct Modbus polling.
+let overviewTimer = null;
+let lastSnapshot = null;
+let overviewHistory = [];
+const OVERVIEW_HISTORY_S = 600; // power-flows window: last 10 minutes
+
+function snapValues() {
+  return (lastSnapshot && lastSnapshot.ok && lastSnapshot.values) || {};
+}
+// Snapshot semantics: undefined = tag not published, null = +inf/NaN (e.g.
+// comms age before the first good read).
+function tagPresent(tag) {
+  return snapValues()[tag] !== undefined;
+}
+function tagValue(tag) {
+  const value = snapValues()[tag];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function gridDeviceId() {
+  return scenarioCfg().connection_point_device_id || "grid";
+}
+function unitDeviceId() {
+  return scenarioCfg().unit_device_id || "pv";
+}
+function formatQuantity(value, unit) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  if (abs >= 1e6) return (value / 1e6).toFixed(2) + " M" + unit;
+  if (abs >= 1e3) return (value / 1e3).toFixed(1) + " k" + unit;
+  return (abs >= 100 || Number.isInteger(value) ? Math.round(value) : value.toFixed(1)) + " " + unit;
+}
+function formatPower(w) {
+  return formatQuantity(w, "W");
+}
+function formatSeconds(s) {
+  if (s === null || s === undefined || !Number.isFinite(s)) return "never";
+  if (s < 10) return s.toFixed(1) + " s";
+  if (s < 120) return Math.round(s) + " s";
+  if (s < 7200) return Math.round(s / 60) + " min";
+  return (s / 3600).toFixed(1) + " h";
+}
+function telemetryStale() {
+  if (!lastSnapshot || !lastSnapshot.ok) return false;
+  const cycle = Number(lastSnapshot.cycle_s) || 1;
+  return typeof lastSnapshot.age_s === "number" && lastSnapshot.age_s > Math.max(5, 3 * cycle);
+}
+function emsState() {
+  if (!lastSnapshot || !lastSnapshot.ok) {
+    return { label: "No EMS data", kind: "off", detail: "No fast-loop telemetry snapshot found. Is pyems running?" };
+  }
+  if (telemetryStale()) {
+    return { label: "Telemetry stale", kind: "warn", detail: `Snapshot is ${formatSeconds(lastSnapshot.age_s)} old — the EMS stopped publishing.` };
+  }
+  if ((tagValue("sys.safe_mode") ?? 0) >= 0.5) {
+    return { label: "Safety trip / EMS error", kind: "bad", detail: "sys.safe_mode = 1 — units forced to the safe active power." };
+  }
+  return { label: "EMS active", kind: "ok", detail: "Telemetry fresh, no safety trip." };
+}
+function deviceCommsAge(deviceId) {
+  const values = snapValues();
+  const perDevice = values[`sys.${deviceId}.comms_age_s`];
+  if (perDevice !== undefined) return perDevice; // null = never read
+  return values["sys.comms_age_s"]; // global fallback when per-device tags absent
+}
+function deviceCommsLimit(deviceId) {
+  const safety = (site && site.safety) || {};
+  const perDevice = (safety.device_comms_max_age_s || {})[deviceId];
+  return Number(perDevice ?? safety.max_comms_age_s ?? 10);
+}
+function assetStatus(deviceId) {
+  if (!lastSnapshot || !lastSnapshot.ok) return { kind: "off", label: "No data" };
+  const age = deviceCommsAge(deviceId);
+  if (age === undefined || age === null) return { kind: "bad", label: "Disconnected" };
+  if (age > deviceCommsLimit(deviceId)) return { kind: "bad", label: "Stale" };
+  if (telemetryStale()) return { kind: "warn", label: "Telemetry stale" };
+  if ((tagValue(`${deviceId}.Alarm`) ?? 0) >= 0.5) return { kind: "warn", label: "Alarm" };
+  if (deviceId === unitDeviceId() && (tagValue("sys.setpoint_violation") ?? 0) >= 0.5) {
+    return { kind: "warn", label: "Setpoint violation" };
+  }
+  return { kind: "ok", label: "Connected" };
+}
+function unitEnvelopeMaxW() {
+  const channels = (site.allocation && site.allocation.channels) || [];
+  const setpointTag = `${unitDeviceId()}.WSet`;
+  const channel = channels.find((ch) => ch.setpoint_channel === setpointTag) || channels[0];
+  return channel && Number.isFinite(Number(channel.p_max_w)) ? Number(channel.p_max_w) : null;
+}
+function bessDeviceIds() {
+  return site.devices.map((device) => device.id).filter((id) => tagPresent(`${id}.SoC`));
+}
+function gensetDeviceIds() {
+  const taken = new Set([gridDeviceId(), unitDeviceId(), "load", ...bessDeviceIds()]);
+  return site.devices
+    .filter((device) => !taken.has(device.id))
+    .filter((device) => String(device.profile).includes("genset") || /^gen/i.test(String(device.id)))
+    .filter((device) => tagPresent(`${device.id}.W`))
+    .map((device) => device.id);
+}
+function loadActivePowerW() {
+  if (tagPresent("load.W")) return { value: tagValue("load.W"), estimated: false };
+  const gridW = tagValue(`${gridDeviceId()}.W`);
+  const unitW = tagValue(`${unitDeviceId()}.W`);
+  // generating-unit convention: grid.W = load - generation, so load = grid + unit
+  if (gridW === null || unitW === null) return { value: null, estimated: true };
+  return { value: gridW + unitW, estimated: true };
+}
+
+function renderStatusBar() {
+  const el = $("overviewStatusBar");
+  if (!el || !site) return;
+  const scen = scenarioCfg();
+  const state = emsState();
+  const live = lastSnapshot && lastSnapshot.ok;
+  const modeLabel = scen.control_mode === "import_limit" ? "Import limit" : "Export limit";
+  const items = [
+    ["Site", siteFileName(sitePath) + (editingSimSite() ? " (simulation)" : "")],
+    ["Controller time", live ? lastSnapshot.read_at || "—" : "—"],
+    ["Last telemetry", live ? `${formatSeconds(lastSnapshot.age_s)} ago` : "—"],
+    ["Control mode", modeLabel],
+    ["Configured limit", formatPower(Number(scen.active_power_limit_w ?? 0))],
+    ["Comms age", live ? formatSeconds(tagValue("sys.comms_age_s")) : "—"],
+    ["Write age", live ? formatSeconds(tagValue("sys.write_age_s")) : "—"],
+  ];
+  el.innerHTML = `
+    <div class="ems-state ${state.kind}" title="${esc(state.detail)}">${esc(state.label)}</div>
+    ${items.map(([name, value]) => `<div class="bar-item"><span class="name">${esc(name)}</span><span class="value">${esc(value)}</span></div>`).join("")}
+    <button class="bar-btn" disabled title="Start/stop requires a safe service-control API — not wired yet (read-only placeholder).">Start / Stop</button>
+  `;
+}
+
+function renderStatusCounters() {
+  const el = $("overviewCounters");
+  if (!el || !site) return;
+  if (!lastSnapshot || !lastSnapshot.ok) {
+    el.innerHTML = "";
+    return;
+  }
+  let green = 0;
+  let yellow = 0;
+  let red = 0;
+  for (const device of site.devices) {
+    const status = assetStatus(device.id);
+    if (status.kind === "ok") green += 1;
+    else if (status.kind === "warn") yellow += 1;
+    else red += 1;
+  }
+  el.innerHTML = [
+    ["ok", green, "connected, no alarms"],
+    ["warn", yellow, "with active alarms"],
+    ["bad", red, "disconnected / stale"],
+  ].map(([kind, count, label]) => `
+    <div class="counter ${kind}"><span class="count">${count}</span><span class="label">${esc(label)}</span></div>
+  `).join("");
+}
+
+function assetCard({ title, subtitle, status, primaryValue, primaryLabel, primaryKind = "", rows = [], badges = [], cardKind = null }) {
+  const kind = cardKind || status.kind;
+  return `<section class="asset-card state-${esc(kind)}">
+    <header>
+      <div><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div>
+      <span class="badge ${esc(status.kind)}">${esc(status.label)}</span>
+    </header>
+    <div class="primary-metric ${esc(primaryKind)}">
+      <span class="value">${esc(primaryValue)}</span>
+      <span class="label">${esc(primaryLabel)}</span>
+    </div>
+    ${badges.length ? `<div class="badges">${badges.map((badge) => `<span class="badge ${esc(badge.kind)}">${esc(badge.label)}</span>`).join("")}</div>` : ""}
+    <dl>${rows.filter(Boolean).map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
+  </section>`;
+}
+
+function gridCardHtml() {
+  const dev = gridDeviceId();
+  const scen = scenarioCfg();
+  const w = tagValue(`${dev}.W`);
+  const va = tagValue(`${dev}.VA`);
+  const hz = tagValue(`${dev}.Hz`);
+  const pf = w !== null && va !== null && va > 0 ? Math.min(1, Math.abs(w) / va) : null;
+  const limitW = Number(scen.active_power_limit_w ?? 0);
+  const exporting = w !== null && w < 0;
+  const overLimit = scen.control_mode !== "import_limit" && exporting && Math.abs(w) > limitW;
+  const volts = ["PhVphA", "PhVphB", "PhVphC"].map((field) => tagValue(`${dev}.${field}`)).filter((v) => v !== null);
+  let primaryLabel = "—";
+  let primaryKind = "flow-import";
+  if (w !== null) {
+    primaryLabel = exporting ? (overLimit ? "Export — over limit" : "Export") : "Import";
+    primaryKind = exporting ? (overLimit ? "flow-over" : "flow-export") : "flow-import";
+  }
+  return assetCard({
+    title: "Grid",
+    subtitle: `connection point — ${dev}`,
+    status: assetStatus(dev),
+    primaryValue: formatPower(w === null ? null : Math.abs(w)),
+    primaryLabel,
+    primaryKind,
+    cardKind: overLimit ? "bad" : null,
+    badges: overLimit ? [{ kind: "bad", label: "Export over configured limit" }] : [],
+    rows: [
+      ["Reactive (Q)", formatQuantity(tagValue(`${dev}.VAR`), "var")],
+      ["Apparent (S)", formatQuantity(va, "VA")],
+      ["Power factor", pf === null ? "—" : pf.toFixed(2)],
+      ["Frequency", hz === null ? "—" : hz.toFixed(2) + " Hz"],
+      volts.length ? ["Voltage", volts.map((v) => Math.round(v)).join(" / ") + " V"] : null,
+      [scen.control_mode === "import_limit" ? "Import limit" : "Export limit", formatPower(limitW)],
+    ],
+  });
+}
+
+function unitCardHtml() {
+  const dev = unitDeviceId();
+  const w = tagValue(`${dev}.W`);
+  const wset = tagValue(`${dev}.WSet`);
+  const pMaxW = unitEnvelopeMaxW();
+  const toleranceW = Number((site.setpoint_compliance || {}).tolerance_w ?? 2000);
+  const badges = [];
+  if (wset !== null && pMaxW !== null && wset < pMaxW) badges.push({ kind: "warn", label: "Curtailed" });
+  if (w !== null && wset !== null && w > wset + toleranceW) badges.push({ kind: "warn", label: "Above setpoint" });
+  if ((tagValue("sys.setpoint_violation") ?? 0) >= 0.5) badges.push({ kind: "bad", label: "Setpoint violation" });
+  const status = tagValue(`${dev}.Status`);
+  const opMode = tagValue(`${dev}.OperatingMode`);
+  const alarm = tagValue(`${dev}.Alarm`);
+  return assetCard({
+    title: "PV plant",
+    subtitle: `controlled unit — ${dev}`,
+    status: assetStatus(dev),
+    primaryValue: formatPower(w),
+    primaryLabel: "Generated",
+    rows: [
+      ["Setpoint", formatPower(wset)],
+      pMaxW !== null ? ["P_max", formatPower(pMaxW)] : null,
+      w !== null && pMaxW ? ["Utilization", Math.round((100 * w) / pMaxW) + " %"] : null,
+      ["Reactive (Q)", formatQuantity(tagValue(`${dev}.VAR`), "var")],
+      tagPresent(`${dev}.VA`) ? ["Apparent (S)", formatQuantity(tagValue(`${dev}.VA`), "VA")] : null,
+      tagPresent(`${dev}.Hz`) ? ["Frequency", tagValue(`${dev}.Hz`) === null ? "—" : tagValue(`${dev}.Hz`).toFixed(2) + " Hz"] : null,
+      tagPresent(`${dev}.Status`) ? ["Status word", status === null ? "—" : String(Math.round(status))] : null,
+      tagPresent(`${dev}.OperatingMode`) ? ["Operating mode", opMode === null ? "—" : String(Math.round(opMode))] : null,
+      tagPresent(`${dev}.Alarm`) ? ["Alarm word", alarm === null ? "—" : String(Math.round(alarm))] : null,
+    ],
+    badges,
+  });
+}
+
+function loadCardHtml() {
+  const { value, estimated } = loadActivePowerW();
+  const hasMeter = !estimated;
+  const rows = [];
+  if (hasMeter && tagPresent("load.VAR")) rows.push(["Reactive (Q)", formatQuantity(tagValue("load.VAR"), "var")]);
+  let status = { kind: "off", label: "No data" };
+  if (hasMeter) status = assetStatus("load");
+  else if (lastSnapshot && lastSnapshot.ok) {
+    // derived value is only as good as its source measurements
+    const sources = [assetStatus(gridDeviceId()), assetStatus(unitDeviceId())];
+    const worst = sources.find((s) => s.kind === "bad") || sources.find((s) => s.kind === "warn");
+    status = worst ? { kind: worst.kind, label: `Sources: ${worst.label.toLowerCase()}` } : { kind: "ok", label: "Derived" };
+  }
+  return assetCard({
+    title: "Load",
+    subtitle: hasMeter ? "site consumption — load" : `derived from ${gridDeviceId()}.W + ${unitDeviceId()}.W`,
+    status,
+    primaryValue: formatPower(value),
+    primaryLabel: "Consumption",
+    badges: estimated ? [{ kind: "", label: "Estimated" }] : [],
+    rows,
+  });
+}
+
+function bessCardHtml(deviceId) {
+  const w = tagValue(`${deviceId}.W`);
+  let primaryLabel = "Idle";
+  if (w !== null && w > 50) primaryLabel = "Discharging";
+  else if (w !== null && w < -50) primaryLabel = "Charging";
+  const soc = tagValue(`${deviceId}.SoC`);
+  return assetCard({
+    title: "BESS",
+    subtitle: `storage — ${deviceId}`,
+    status: assetStatus(deviceId),
+    primaryValue: formatPower(w === null ? null : Math.abs(w)),
+    primaryLabel,
+    rows: [
+      ["State of charge", soc === null ? "—" : soc.toFixed(1) + " %"],
+      tagPresent(`${deviceId}.SoH`) ? ["State of health", formatQuantity(tagValue(`${deviceId}.SoH`), "%")] : null,
+      ["Reactive (Q)", formatQuantity(tagValue(`${deviceId}.VAR`), "var")],
+      tagPresent(`${deviceId}.WSet`) ? ["Setpoint", formatPower(tagValue(`${deviceId}.WSet`))] : null,
+    ],
+  });
+}
+
+function gensetCardHtml(deviceId) {
+  const status = tagValue(`${deviceId}.Status`);
+  const opMode = tagValue(`${deviceId}.OperatingMode`);
+  return assetCard({
+    title: "Genset",
+    subtitle: `generator — ${deviceId}`,
+    status: assetStatus(deviceId),
+    primaryValue: formatPower(tagValue(`${deviceId}.W`)),
+    primaryLabel: "Output",
+    rows: [
+      ["Reactive (Q)", formatQuantity(tagValue(`${deviceId}.VAR`), "var")],
+      tagPresent(`${deviceId}.VA`) ? ["Apparent (S)", formatQuantity(tagValue(`${deviceId}.VA`), "VA")] : null,
+      tagPresent(`${deviceId}.Hz`) ? ["Frequency", tagValue(`${deviceId}.Hz`) === null ? "—" : tagValue(`${deviceId}.Hz`).toFixed(2) + " Hz"] : null,
+      tagPresent(`${deviceId}.Status`) ? ["Status word", status === null ? "—" : String(Math.round(status))] : null,
+      tagPresent(`${deviceId}.OperatingMode`) ? ["Operating mode", opMode === null ? "—" : String(Math.round(opMode))] : null,
+      tagPresent(`${deviceId}.WSet`) ? ["Setpoint", formatPower(tagValue(`${deviceId}.WSet`))] : null,
+    ],
+  });
+}
+
+function safetyCardHtml() {
+  const live = lastSnapshot && lastSnapshot.ok;
+  const safety = (site && site.safety) || {};
+  const safeMode = tagValue("sys.safe_mode");
+  const violation = tagValue("sys.setpoint_violation");
+  const commsAge = tagValue("sys.comms_age_s");
+  const writeAge = tagValue("sys.write_age_s");
+  const maxCommsAge = Number(safety.max_comms_age_s ?? 10);
+  const maxWriteAge = safety.max_write_age_s !== undefined ? Number(safety.max_write_age_s) : null;
+  let cardKind = "ok";
+  const badges = [];
+  if (!live) cardKind = "off";
+  else {
+    if ((commsAge === null || commsAge > maxCommsAge) && tagPresent("sys.comms_age_s")) {
+      cardKind = "bad";
+      badges.push({ kind: "bad", label: "Comms age over limit" });
+    }
+    if (maxWriteAge !== null && (writeAge === null || writeAge > maxWriteAge)) {
+      if (cardKind !== "bad") cardKind = "warn";
+      badges.push({ kind: "warn", label: "Write age over limit" });
+    }
+    if ((violation ?? 0) >= 0.5) {
+      if (cardKind === "ok") cardKind = "warn";
+      badges.push({ kind: "warn", label: "Setpoint violation" });
+    }
+    if ((safeMode ?? 0) >= 0.5) {
+      cardKind = "bad";
+      badges.push({ kind: "bad", label: "Safety trip" });
+    }
+  }
+  const stateLabel = !live ? "No data" : (safeMode ?? 0) >= 0.5 ? "Tripped" : cardKind === "ok" ? "Healthy" : "Degraded";
+  return assetCard({
+    title: "Safety / EMS",
+    subtitle: "why the status above is (not) green",
+    status: { kind: live ? cardKind : "off", label: stateLabel },
+    primaryValue: !live ? "—" : (safeMode ?? 0) >= 0.5 ? "TRIP" : "OK",
+    primaryLabel: "sys.safe_mode",
+    cardKind,
+    badges,
+    rows: [
+      ["Safe mode", !live || safeMode === null ? "—" : String(Math.round(safeMode))],
+      ["Global comms age", live ? `${formatSeconds(commsAge)} (limit ${formatSeconds(maxCommsAge)})` : "—"],
+      ["Write age", live ? `${formatSeconds(writeAge)}${maxWriteAge !== null ? ` (limit ${formatSeconds(maxWriteAge)})` : ""}` : "—"],
+      ["Setpoint violation", !live || violation === null ? "—" : String(Math.round(violation))],
+    ],
+  });
+}
+
+function renderAssetCards() {
+  const el = $("overviewCards");
+  if (!el || !site) return;
+  const cards = [gridCardHtml(), unitCardHtml(), loadCardHtml()];
+  for (const deviceId of bessDeviceIds()) cards.push(bessCardHtml(deviceId));
+  for (const deviceId of gensetDeviceIds()) cards.push(gensetCardHtml(deviceId));
+  cards.push(safetyCardHtml());
+  el.innerHTML = cards.join("");
+}
+
+function renderCommsRows() {
+  const el = $("overviewCommsRows");
+  if (!el || !site) return;
+  el.innerHTML = site.devices.map((device) => {
+    const status = assetStatus(device.id);
+    const age = lastSnapshot && lastSnapshot.ok ? deviceCommsAge(device.id) : undefined;
+    const alarm = tagValue(`${device.id}.Alarm`);
+    const endpoint = device.host ? `${device.host}${device.port ? ":" + device.port : ""}` : "—";
+    return `<tr>
+      <td><strong>${esc(device.id)}</strong></td>
+      <td>${esc(device.profile)}</td>
+      <td class="nowrap">${esc(endpoint)}</td>
+      <td>${esc(age === undefined ? "—" : formatSeconds(age))}</td>
+      <td>${tagPresent(`${device.id}.Alarm`) ? esc(alarm === null ? "—" : String(Math.round(alarm))) : "—"}</td>
+      <td><span class="badge ${esc(status.kind)}">${esc(status.label)}</span></td>
+    </tr>`;
+  }).join("");
+}
+
+function pushOverviewHistory() {
+  if (!lastSnapshot || !lastSnapshot.ok || telemetryStale()) return;
+  const t = Date.now() / 1000;
+  const grid = tagValue(`${gridDeviceId()}.W`);
+  const unit = tagValue(`${unitDeviceId()}.W`);
+  const wset = tagValue(`${unitDeviceId()}.WSet`);
+  const load = loadActivePowerW().value;
+  overviewHistory.push({ t, grid, unit, wset, load });
+  const cutoff = t - OVERVIEW_HISTORY_S;
+  while (overviewHistory.length && overviewHistory[0].t < cutoff) overviewHistory.shift();
+}
+
+function drawOverviewChart() {
+  const canvas = $("overviewChart");
+  if (!canvas) return;
+  const scen = scenarioCfg();
+  const width = (canvas.width = canvas.clientWidth || 900);
+  const height = canvas.height;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+  const series = [
+    { key: "grid", label: `Grid (${gridDeviceId()}.W)`, color: "#2563eb" },
+    { key: "unit", label: `Unit (${unitDeviceId()}.W)`, color: "#16a34a" },
+    { key: "wset", label: `Setpoint (${unitDeviceId()}.WSet)`, color: "#9333ea", dash: [6, 4] },
+    { key: "load", label: "Load" + (tagPresent("load.W") ? " (load.W)" : " (estimated)"), color: "#d97706" },
+  ];
+  // export shows up as NEGATIVE grid.W, so the export limit line sits at -limit
+  const limitW = scen.control_mode === "import_limit"
+    ? Number(scen.active_power_limit_w ?? 0)
+    : -Number(scen.active_power_limit_w ?? 0);
+  const legend = $("overviewChartLegend");
+  if (legend) {
+    legend.innerHTML = series
+      .map((s) => `<span class="legend-item"><span class="swatch" style="background:${esc(s.color)}"></span>${esc(s.label)}</span>`)
+      .join("") + `<span class="legend-item"><span class="swatch dashed"></span>Limit at connection point</span>`;
+  }
+  if (overviewHistory.length < 2) {
+    ctx.fillStyle = "#657086";
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.fillText("Collecting telemetry…", 12, 24);
+    return;
+  }
+  let minW = limitW;
+  let maxW = limitW;
+  for (const point of overviewHistory) {
+    for (const s of series) {
+      const v = point[s.key];
+      if (v === null || v === undefined) continue;
+      if (v < minW) minW = v;
+      if (v > maxW) maxW = v;
+    }
+  }
+  if (minW === maxW) { minW -= 1; maxW += 1; }
+  const pad = 0.08 * (maxW - minW);
+  minW -= pad;
+  maxW += pad;
+  const left = 8;
+  const right = width - 8;
+  const top = 8;
+  const bottom = height - 22;
+  const now = Date.now() / 1000;
+  const x = (t) => left + ((t - (now - OVERVIEW_HISTORY_S)) / OVERVIEW_HISTORY_S) * (right - left);
+  const y = (w) => bottom - ((w - minW) / (maxW - minW)) * (bottom - top);
+  // horizontal reference lines: zero and the configured limit
+  for (const [w, color, label] of [[0, "#d7dde6", "0"], [limitW, "#b3261e", formatPower(limitW)]]) {
+    if (w < minW || w > maxW) continue;
+    ctx.strokeStyle = color;
+    ctx.setLineDash(w === 0 ? [] : [6, 4]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(left, y(w));
+    ctx.lineTo(right, y(w));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color === "#d7dde6" ? "#657086" : color;
+    ctx.font = "11px system-ui, sans-serif";
+    ctx.fillText(label, left + 2, y(w) - 3);
+  }
+  for (const s of series) {
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash(s.dash || []);
+    ctx.beginPath();
+    let started = false;
+    for (const point of overviewHistory) {
+      const v = point[s.key];
+      if (v === null || v === undefined) { started = false; continue; }
+      const px = x(point.t);
+      const py = y(v);
+      if (!started) { ctx.moveTo(px, py); started = true; }
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.fillStyle = "#657086";
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.fillText("-10 min", left + 2, height - 8);
+  ctx.fillText("now", right - 28, height - 8);
+}
+
+function renderOverview() {
+  if (!site || !$("overviewStatusBar")) return;
+  renderStatusBar();
+  renderStatusCounters();
+  renderAssetCards();
+  renderCommsRows();
+  drawOverviewChart();
+}
+
+async function refreshOverview() {
+  const data = await api("/api/fast-loop-state");
+  lastSnapshot = data;
+  pushOverviewHistory();
+  renderOverview();
+  return data;
 }
 
 function gatherDevices() {
@@ -524,6 +1029,15 @@ function showView(name) {
     clearInterval(simTimer);
     simTimer = null;
   }
+  // Overview polls the fast-loop snapshot only while it is the active view —
+  // never /api/live, never a direct Modbus read.
+  if (name === "overview") {
+    refreshOverview().catch(handleError);
+    if (!overviewTimer) overviewTimer = setInterval(() => refreshOverview().catch(() => {}), 1000);
+  } else if (overviewTimer) {
+    clearInterval(overviewTimer);
+    overviewTimer = null;
+  }
 }
 
 document.addEventListener("input", (event) => {
@@ -579,4 +1093,5 @@ document.addEventListener("click", async (event) => {
 
 loadPages()
   .then(loadConfig)
+  .then(() => showView("overview")) // first/default view; starts the 1 s snapshot poll
   .catch(handleError);
