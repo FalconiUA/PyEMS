@@ -28,7 +28,7 @@ from pyems.controllers.setpoint_headroom import SetpointHeadroomLimiter
 from pyems.drivers.cached import CachedDriver
 from pyems.drivers.composite import CompositeDriver
 import pyems.drivers.modbus_device as md
-from pyems.logging_config import setup_logging
+from pyems.logging import setup_logging
 from pyems.recording import CycleRecorder
 from pyems.scheduler import Scheduler, Task
 from pyems.system_tags import (

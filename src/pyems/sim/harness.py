@@ -34,7 +34,7 @@ import yaml
 
 from pyems.drivers.modbus_device import DeviceProfile
 from pyems.ems import PROFILES, ROOT, control_mode
-from pyems.logging_config import setup_logging
+from pyems.logging import setup_logging
 from pyems.sim.device import FAULTS, SimulatedDevice
 from pyems.sim.plant import SimWorld, meter_register_fields, unit_register_fields
 from pyems.sim.sources import (

@@ -56,6 +56,7 @@ allocation:
     p_max_w: 100000
     default_w: 100000
     ramp_rate_w_per_s: 100
+    ramp_down_w_per_s: 50000
     deadband_w: 200
 devices:
 - id: grid
