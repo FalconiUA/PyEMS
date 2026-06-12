@@ -53,6 +53,7 @@ class Scheduler:
         allocator=None,
         board=None,
         recorder=None,
+        telemetry=None,
     ) -> None:
         self._tasks = sorted(tasks, key=lambda t: t.priority)
         self._state = state
@@ -65,6 +66,12 @@ class Scheduler:
         # Optional per-cycle CSV flight recorder (see pyems.recording).
         self._recorder = recorder
         self._recorder_failed = False  # log on transition, not per cycle
+        # Optional live-state publisher for the read-only UI (see pyems.telemetry).
+        self._telemetry = telemetry
+        self._telemetry_failed = False  # log on transition, not per cycle
+        # Slowest-task tick, for telemetry metadata; default None when tasks is
+        # empty (step()-only tests) so we never crash on an empty min().
+        self._tick_s = min((t.interval_s for t in self._tasks), default=None)
         self._overrunning = False  # last cycle-overrun state — log on transition
         self._ctrl_failed: dict[int, bool] = {}  # id(ctrl) → failing? (log on transition)
         self._stop = threading.Event()
@@ -119,6 +126,31 @@ class Scheduler:
                 if self._recorder_failed:
                     logger.warning("Cycle recording recovered")
                     self._recorder_failed = False
+
+        # publish the live-state snapshot AFTER arbitration and output, so the
+        # UI sees exactly what was commanded this cycle. Same contract as the
+        # recorder: a publish failure (full disk, yanked stick) is contained and
+        # logged once — the control loop never blocks on the read-only UI.
+        if self._telemetry is not None:
+            try:
+                self._telemetry.publish(
+                    now,
+                    self._state,
+                    metadata={
+                        "cycle_s": self._tick_s,
+                        "cycle_overrun": self._overrunning,
+                    },
+                )
+            except Exception:
+                if not self._telemetry_failed:
+                    logger.exception(
+                        "Live telemetry publish failed; control continues without it"
+                    )
+                    self._telemetry_failed = True
+            else:
+                if self._telemetry_failed:
+                    logger.warning("Live telemetry publish recovered")
+                    self._telemetry_failed = False
 
     def _execute_contained(self, ctrl, task: Task) -> None:
         """Run one non-safety controller; log its failure/recovery on transition

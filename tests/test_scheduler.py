@@ -92,6 +92,60 @@ def test_step_runs_allocator_after_tasks_before_write(state, fake_driver):
     assert fake_driver.written["pv.WSet"] == 42000.0  # allocator's value, flushed last
 
 
+# ── live telemetry: publish after arbitration/write, failures contained ──────
+def test_step_publishes_telemetry_after_write(state, fake_driver):
+    """Telemetry publishes AFTER the allocator resolves and the driver writes,
+    so the snapshot holds exactly what was commanded this cycle."""
+    events: list[str] = []
+
+    class RecordingAllocator:
+        def resolve(self, s: SystemState, now: float) -> None:
+            events.append("resolve")
+            s.set("pv.WSet", 42000.0)
+
+    class RecordingTelemetry:
+        def publish(self, now, s, metadata=None) -> None:
+            events.append("publish")
+            self.seen = s.get("pv.WSet")
+            self.metadata = metadata
+
+    orig_write = fake_driver.write_setpoints
+
+    def tracked_write(*args, **kwargs):
+        events.append("write")
+        return orig_write(*args, **kwargs)
+
+    fake_driver.write_setpoints = tracked_write
+    tele = RecordingTelemetry()
+    task = Task("t", 1.0, priority=1, controllers=[])
+    sched = Scheduler(
+        [task], state, fake_driver, allocator=RecordingAllocator(), telemetry=tele
+    )
+    sched.step(now=5.0)
+
+    assert events == ["resolve", "write", "publish"]
+    assert tele.seen == 42000.0  # allocator's value, observed post-write
+    assert tele.metadata == {"cycle_s": 1.0, "cycle_overrun": False}
+
+
+def test_step_contains_telemetry_failure(state, fake_driver, caplog):
+    """A publish failure (full disk) is logged once and never stops the loop;
+    the setpoint write still happens."""
+
+    class BoomTelemetry:
+        def publish(self, now, s, metadata=None) -> None:
+            raise RuntimeError("disk full")
+
+    task = Task("t", 1.0, priority=1, controllers=[])
+    sched = Scheduler([task], state, fake_driver, telemetry=BoomTelemetry())
+    sched.step(now=0.0)  # must not raise
+    sched.step(now=1.0)  # second failing cycle must not re-log
+
+    failures = [r for r in caplog.records if "telemetry publish failed" in r.message]
+    assert len(failures) == 1
+    assert "pv.WSet" in fake_driver.written  # write happened before the failed publish
+
+
 # ── shutdown paths: stop(), crash, Ctrl-C — driver must always disconnect ────
 class RaisingController(Controller):
     def __init__(self, exc: BaseException) -> None:

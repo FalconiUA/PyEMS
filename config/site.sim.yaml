@@ -86,6 +86,11 @@ allocation:
 # Analyze transients (load steps, trips, ramps) offline with pandas/Excel.
 recording:
   cycle_csv: logs/sim_cycles.csv
+# Live-state snapshot for the read-only UI: one JSON document rewritten
+# atomically each cycle, polled by pyems-ui (no second Modbus session). Omit to
+# disable; relative paths resolve against the repo root.
+telemetry:
+  live_json: logs/live_state.json
 devices:
 # See config/site.yaml for the timeout_s/retries arithmetic. The sim exercises
 # the same bounds so the `offline` fault behaves like a real hung endpoint.

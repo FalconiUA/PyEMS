@@ -446,25 +446,27 @@ async function testRead() {
   setStatus(`Read ${data.rows.length} channels in ${data.read_s.toFixed(3)} s.`, "ok");
   showView("realtime");
 }
-async function startLive() {
-  await saveConfig();
-  setStatus("Starting live read...");
-  await api("/api/live/start", { method: "POST", body: "{}" });
-  await refreshLive();
+async function startFastLoop() {
+  setStatus("Starting fast-loop monitor...");
+  showView("realtime");
+  await refreshFastLoop();
   if (liveTimer) clearInterval(liveTimer);
-  liveTimer = setInterval(() => refreshLive().catch(handleError), 1000);
-  setStatus("Live read is running.", "ok");
+  liveTimer = setInterval(() => refreshFastLoop().catch(handleError), 1000);
 }
-async function refreshLive() {
-  const data = await api("/api/live");
+async function refreshFastLoop() {
+  const data = await api("/api/fast-loop-state");
   renderRealtime(data);
+  if (data.ok) {
+    setStatus(`Fast-loop state at ${data.read_at ?? "?"} — ${data.rows.length} channels.`, "ok");
+  } else {
+    setStatus(data.error || "No fast-loop state available.", "warn");
+  }
   return data;
 }
-async function stopLive() {
+function stopFastLoop() {
   if (liveTimer) clearInterval(liveTimer);
   liveTimer = null;
-  await api("/api/live/stop", { method: "POST", body: "{}" });
-  setStatus("Live read stopped.", "ok");
+  setStatus("Fast-loop monitor stopped.", "ok");
 }
 async function clearErrorLog() {
   const data = await api("/api/error-log/clear", { method: "POST", body: "{}" });
@@ -548,9 +550,9 @@ document.addEventListener("click", async (event) => {
   if (target.id === "reloadBtn") loadConfig().catch(handleError);
   if (target.id === "saveBtn" || target.id === "saveSiteBtn") saveConfig().catch(handleError);
   if (target.id === "testReadBtn") testRead().catch(handleError);
-  if (target.id === "startLiveBtn") startLive().catch(handleError);
-  if (target.id === "refreshLiveBtn") refreshLive().catch(handleError);
-  if (target.id === "stopLiveBtn") stopLive().catch(handleError);
+  if (target.id === "startFastLoopBtn") startFastLoop().catch(handleError);
+  if (target.id === "refreshFastLoopBtn") refreshFastLoop().catch(handleError);
+  if (target.id === "stopFastLoopBtn") stopFastLoop().catch(handleError);
   if (target.id === "saveProfileBtn") saveProfile().catch(handleError);
   if (target.id === "refreshErrorLogBtn") loadErrorLog().catch(handleError);
   if (target.id === "clearErrorLogBtn") clearErrorLog().catch(handleError);

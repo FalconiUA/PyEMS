@@ -34,6 +34,7 @@ from pyems.ems import (
     DEFAULT_SITE,
     IMPORT_LIMIT_MODE,
     PROFILES,
+    ROOT,
     build_device_drivers,
     required_channels,
     validate_bindings,
@@ -543,6 +544,84 @@ def test_read_once(site: dict[str, Any]) -> dict[str, Any]:
         session.close()
 
 
+def fast_loop_state_path(site: dict[str, Any]) -> Path:
+    """Resolve the live-state snapshot path from the site's `telemetry:` section
+    (default logs/live_state.json) — the file the production EMS rewrites every
+    cycle. Relative paths resolve against the repo root, as in build_publisher."""
+    telemetry = site.get("telemetry") or {}
+    json_path = telemetry.get("live_json") or "logs/live_state.json"
+    path = Path(json_path)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
+def _fast_loop_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build display rows straight from the published snapshot — no device
+    drivers, no bus. Role/access come from the channel metadata the EMS wrote."""
+    values = data.get("values") or {}
+    meta = {item["name"]: item for item in (data.get("channels") or [])}
+    rows = []
+    for name in sorted(values):
+        item = meta.get(name, {})
+        writable = bool(item.get("writable"))
+        if name.startswith("sys."):
+            role = "system"
+        elif writable:
+            role = "active power setpoint"
+        else:
+            role = "measurement"
+        value = values[name]
+        rows.append(
+            {
+                "device": _device_name(name),
+                "channel": name,
+                "description": channel_description(name),
+                "value": _json_number(value) if isinstance(value, (int, float)) else None,
+                "unit": item.get("unit", ""),
+                "access": "write" if writable else "read",
+                "role": role,
+            }
+        )
+    return rows
+
+
+def fast_loop_state(site: dict[str, Any]) -> dict[str, Any]:
+    """Read the snapshot the running EMS publishes each cycle (read-only).
+
+    The realtime view's primary source: it reflects the values the control loop
+    actually acted on this cycle, with NO second Modbus session competing for
+    the bus. Returns a clean error (not an exception) when the EMS is not
+    running or telemetry is disabled, so the UI can say so plainly.
+    """
+    path = fast_loop_state_path(site)
+    if not path.exists():
+        return {
+            "ok": False,
+            "error": "pyems service not running or telemetry disabled",
+            "path": str(path),
+            "rows": [],
+        }
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {
+            "ok": False,
+            "error": f"could not read telemetry snapshot: {exc}",
+            "path": str(path),
+            "rows": [],
+        }
+    return {
+        "ok": True,
+        "path": str(path),
+        "read_at": data.get("timestamp"),
+        "monotonic_s": data.get("monotonic_s"),
+        "cycle_s": data.get("cycle_s"),
+        "cycle_overrun": data.get("cycle_overrun"),
+        "rows": _fast_loop_rows(data),
+    }
+
+
 class SimManager:
     """Start/stop the device simulator (`pyems-sim`) from the configuration UI.
 
@@ -809,6 +888,8 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json({"ok": True, "entries": app.error_log()})
                 elif path == "/api/live":
                     self._send_json(app.read_live())
+                elif path == "/api/fast-loop-state":
+                    self._send_json(fast_loop_state(load_site(app.site_path)))
                 elif path == "/api/sim/status":
                     self._send_json(app.sim.status())
                 else:
