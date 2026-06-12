@@ -108,6 +108,11 @@ def test_fast_loop_state_reads_published_snapshot(tmp_path):
 
     assert result["ok"] is True
     assert result["read_at"] == "2026-06-13 10:00:00"
+    # raw tag -> value map passes through for tag-addressed consumers (Overview)
+    assert result["values"]["grid.W"] == -500.0
+    assert result["values"]["sys.comms_age_s"] is None
+    # freshness measured from the file mtime, for the stale-telemetry banner
+    assert result["age_s"] >= 0.0
     rows = {row["channel"]: row for row in result["rows"]}
     assert rows["grid.W"]["value"] == -500.0
     assert rows["grid.W"]["access"] == "read"
@@ -129,3 +134,37 @@ def test_fast_loop_state_path_defaults_to_logs_live_state():
     path = ui.fast_loop_state_path({})
     assert path.name == "live_state.json"
     assert path.is_absolute()
+
+
+def test_fast_loop_state_reports_snapshot_age(tmp_path):
+    import os
+    import time
+
+    snap = tmp_path / "live_state.json"
+    snap.write_text(json.dumps({"values": {}, "channels": []}), encoding="utf-8")
+    old = time.time() - 120.0
+    os.utime(snap, (old, old))
+
+    result = ui.fast_loop_state({"telemetry": {"live_json": str(snap)}})
+
+    assert result["ok"] is True
+    assert result["age_s"] >= 119.0  # a two-minute-old snapshot reads as stale
+
+
+def test_overview_page_is_first_and_default_view():
+    """The Overview tab must be the first/default view (acceptance criterion),
+    served from its own static page that exists on disk."""
+    index = (ui.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    first_tab = index[index.index('class="tab') :]
+    assert 'data-view="overview"' in first_tab[: first_tab.index("</button>")]
+    assert (ui.STATIC_ROOT / "pages" / "overview.html").exists()
+
+
+def test_overview_does_not_poll_live_api():
+    """Overview must use only the fast-loop snapshot — never /api/live (which
+    opens a Modbus session) from refreshOverview."""
+    app_js = (ui.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    overview = app_js[app_js.index("async function refreshOverview") :]
+    body = overview[: overview.index("\n}")]
+    assert "/api/fast-loop-state" in body
+    assert "/api/live" not in body

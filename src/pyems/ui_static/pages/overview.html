@@ -1,0 +1,16 @@
+<div id="overviewStatusBar" class="top-status-bar"></div>
+<div id="overviewCounters" class="status-counters"></div>
+<div id="overviewCards" class="asset-card-grid"></div>
+<section class="panel chart-panel">
+  <h2>Power flows — last 10 minutes</h2>
+  <p class="hint">Built from the fast-loop telemetry snapshot polled every second — no direct Modbus polling. History accumulates while this page is open.</p>
+  <canvas id="overviewChart" height="260"></canvas>
+  <div id="overviewChartLegend" class="chart-legend"></div>
+</section>
+<section class="panel comms-panel">
+  <h2>Communications / devices</h2>
+  <table>
+    <thead><tr><th>Device</th><th>Profile</th><th>Endpoint</th><th>Comms age</th><th>Alarm</th><th>Status</th></tr></thead>
+    <tbody id="overviewCommsRows"></tbody>
+  </table>
+</section>

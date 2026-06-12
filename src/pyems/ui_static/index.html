@@ -13,7 +13,8 @@
       <select id="siteFileSelect" title="Which site file the UI edits. The EMS and the simulator each read their own file at startup."></select>
     </label>
     <nav class="tabs" aria-label="Views">
-      <button class="tab active" data-view="scenario">Scenario</button>
+      <button class="tab active" data-view="overview">Overview</button>
+      <button class="tab" data-view="scenario">Scenario</button>
       <button class="tab" data-view="siteYaml">Site YAML</button>
       <button class="tab" data-view="profiles">Device profiles</button>
       <button class="tab" data-view="realtime">Realtime</button>
@@ -23,7 +24,8 @@
   </header>
   <main>
     <div id="status" class="status">Loading interface...</div>
-    <section id="scenario" class="view active" data-page="/static/pages/scenario.html"></section>
+    <section id="overview" class="view active" data-page="/static/pages/overview.html"></section>
+    <section id="scenario" class="view" data-page="/static/pages/scenario.html"></section>
     <section id="siteYaml" class="view" data-page="/static/pages/site-yaml.html"></section>
     <section id="profiles" class="view" data-page="/static/pages/profiles.html"></section>
     <section id="realtime" class="view" data-page="/static/pages/realtime.html"></section>
