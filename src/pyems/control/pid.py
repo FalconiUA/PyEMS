@@ -50,6 +50,12 @@ class PIDController:
         self.out_min = float(out_min)
         self.out_max = float(out_max)
         self.derivative_on_measurement = derivative_on_measurement
+        self._integral = 0.0
+        self._deriv = 0.0
+        self._prev_meas: float | None = None
+        self._prev_error: float | None = None
+        self._last_output = 0.0
+        self._initialized = False
         self.reset()
 
     def reset(self, integral: float = 0.0) -> None:
@@ -91,18 +97,18 @@ class PIDController:
         d_term = self._derivative_term(error, measurement, dt)
 
         integral_candidate = self._integral + g.ki * error * dt
-        u_unsat = p_term + integral_candidate + d_term
-        u_sat = self._clamp(u_unsat)
+        u_unclamped = p_term + integral_candidate + d_term
+        u_clamped = self._clamp(u_unclamped)
 
         self._integral = integral_candidate
-        if g.ki != 0.0 and u_sat != u_unsat:
-            self._integral += self._tracking_beta(dt) * (u_sat - u_unsat)
+        if g.ki != 0.0 and u_clamped != u_unclamped:
+            self._integral += self._tracking_beta(dt) * (u_clamped - u_unclamped)
 
         self._prev_meas = measurement
         self._prev_error = error
-        self._last_output = u_sat
+        self._last_output = u_clamped
         self._initialized = True
-        return u_sat
+        return u_clamped
 
     def _derivative_term(self, error: float, measurement: float, dt: float) -> float:
         g = self.gains
