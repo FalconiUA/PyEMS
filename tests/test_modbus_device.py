@@ -160,7 +160,7 @@ def test_read_error_keeps_value_unchanged_and_raises():
     client = FakeModbusClient({}, fail_unknown=True)  # every read returns error
     drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
     st = SystemState(drv.channels())
-    st._channels["pv1.W"].value = 42.0
+    st.apply_driver_value("pv1.W", 42.0)
     # Error responses must fail the poll loudly — a gateway answering every
     # request with an exception code must not count as a successful read.
     with pytest.raises(ModbusReadError):
@@ -176,7 +176,7 @@ def test_implausible_value_fails_poll_and_keeps_last_value():
     client = FakeModbusClient({32080: [0x0007, 0xA120]})  # 500000
     drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
     st = SystemState(drv.channels())
-    st._channels["pv1.W"].value = 42.0
+    st.apply_driver_value("pv1.W", 42.0)
     with pytest.raises(ModbusReadError, match="pv1.W"):
         drv.read_state(st)
     assert st.get("pv1.W") == 42.0  # untouched on implausible read

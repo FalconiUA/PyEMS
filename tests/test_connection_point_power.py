@@ -41,8 +41,8 @@ def posted(board: RequestBoard):
 
 def test_over_export_posts_hard_cap():
     state = make_state()
-    state._channels["grid.W"].value = -70000.0
-    state._channels["plant.W"].value = 70000.0
+    state.apply_driver_value("grid.W", -70000.0)
+    state.apply_driver_value("plant.W", 70000.0)
     board = RequestBoard([CH])
     board.tick(0.0)
 
@@ -55,8 +55,8 @@ def test_over_export_posts_hard_cap():
 
 def test_import_limit_posts_floor():
     state = make_state()
-    state._channels["grid.W"].value = 30000.0
-    state._channels["plant.W"].value = 10000.0
+    state.apply_driver_value("grid.W", 30000.0)
+    state.apply_driver_value("plant.W", 10000.0)
     board = RequestBoard([CH])
     board.tick(0.0)
 
@@ -87,22 +87,22 @@ def test_allocator_limits_rise_but_allows_fast_drop():
     )
     ctrl = make_ctrl(gains=PIDGains(kp=0.0, ki=0.0))
 
-    state._channels["plant.W"].value = 0.0
-    state._channels["grid.W"].value = 0.0
+    state.apply_driver_value("plant.W", 0.0)
+    state.apply_driver_value("grid.W", 0.0)
     board.tick(0.0)
     ctrl.execute(state, board)
     alloc.resolve(state, now=0.0)
     assert state.get(CH) == pytest.approx(50000.0)
 
-    state._channels["plant.W"].value = 50000.0
-    state._channels["grid.W"].value = 10000.0
+    state.apply_driver_value("plant.W", 50000.0)
+    state.apply_driver_value("grid.W", 10000.0)
     board.tick(1.0)
     ctrl.execute(state, board)
     alloc.resolve(state, now=1.0)
     assert state.get(CH) == pytest.approx(51000.0)
 
-    state._channels["plant.W"].value = 51000.0
-    state._channels["grid.W"].value = -80000.0
+    state.apply_driver_value("plant.W", 51000.0)
+    state.apply_driver_value("grid.W", -80000.0)
     board.tick(2.0)
     ctrl.execute(state, board)
     alloc.resolve(state, now=2.0)
@@ -111,14 +111,14 @@ def test_allocator_limits_rise_but_allows_fast_drop():
 
 def test_external_anti_windup_under_allocator_ramp():
     state = make_state()
-    state._channels["plant.W"].value = 0.0
-    state._channels["grid.W"].value = 0.0
+    state.apply_driver_value("plant.W", 0.0)
+    state.apply_driver_value("grid.W", 0.0)
     board = RequestBoard([CH])
     ctrl = make_ctrl(gains=PIDGains(kp=0.0, ki=1.0, tt=1.0))
 
     board.tick(0.0)
     ctrl.execute(state, board)
-    state._channels[CH].value = 1000.0
+    state.apply_driver_value(CH, 1000.0)
     before = ctrl.pid.integral
 
     board.tick(1.0)
@@ -129,8 +129,8 @@ def test_external_anti_windup_under_allocator_ramp():
 
 def test_task_skip_uses_board_now_delta():
     state = make_state()
-    state._channels["plant.W"].value = 10000.0
-    state._channels["grid.W"].value = 0.0
+    state.apply_driver_value("plant.W", 10000.0)
+    state.apply_driver_value("grid.W", 0.0)
     board = RequestBoard([CH])
     ctrl = make_ctrl(gains=PIDGains(kp=0.0, ki=1.0, tt=100.0))
 

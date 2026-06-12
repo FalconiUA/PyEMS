@@ -326,7 +326,6 @@ class ModbusDeviceDriver(Driver):
         """
         failed: list[str] = []
         client, slave = self._client, self._slave
-        state_channels = state._channels
         for reg, tag in self._read_plan:
             result = _read_holding_registers(client, reg.address, reg.count, slave)
             if result.isError():
@@ -341,7 +340,7 @@ class ModbusDeviceDriver(Driver):
                 )
                 failed.append(tag)
                 continue
-            state_channels[tag].value = value
+            state.apply_driver_value(tag, value)
         if failed:
             raise ModbusReadError(
                 f"{self._profile.model} (slave {self._slave}): "

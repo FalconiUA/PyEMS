@@ -32,8 +32,8 @@ def make_ctrl() -> ConnectionPointImportLimitController:
 
 def test_over_import_posts_minimum_generation_request():
     state = make_state()
-    state._channels["grid.W"].value = 80000.0
-    state._channels["pv.W"].value = 10000.0
+    state.apply_driver_value("grid.W", 80000.0)
+    state.apply_driver_value("pv.W", 10000.0)
     board = RequestBoard([CH])
     board.tick(0.0)
 
@@ -46,14 +46,14 @@ def test_over_import_posts_minimum_generation_request():
 
 def test_inside_import_limit_withdraws_request():
     state = make_state()
-    state._channels["grid.W"].value = 80000.0
+    state.apply_driver_value("grid.W", 80000.0)
     board = RequestBoard([CH])
     board.tick(0.0)
     ctrl = make_ctrl()
     ctrl.execute(state, board)
     assert board.valid_requests(CH, now=0.0)
 
-    state._channels["grid.W"].value = 30000.0
+    state.apply_driver_value("grid.W", 30000.0)
     board.tick(1.0)
     ctrl.execute(state, board)
 

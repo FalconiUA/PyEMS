@@ -496,7 +496,7 @@ class ReadOnlyDeviceSession:
             started_at = time.monotonic()
             self._driver.read_state(self._state)
             read_s = time.monotonic() - started_at
-            self._state._channels[COMMS_AGE_CHANNEL].value = 0.0
+            self._state.apply_driver_value(COMMS_AGE_CHANNEL, 0.0)
             snapshot = self._state.snapshot()
         return {
             "ok": True,

@@ -116,7 +116,7 @@ def test_returning_resource_is_ramped_not_jumped():
     # climb by min(ramp, headroom) per cycle — never a jump to 60 kW.
     previous = state.get("pv.WSet")
     for cycle in range(3, 12):
-        state._channels["pv.W"].value = min(previous, 90000.0)  # unit at its cap
+        state.apply_driver_value("pv.W", min(previous, 90000.0))  # unit at its cap
         board.tick(float(cycle))
         limiter.execute(state, board)
         board.post("pv.WSet", regulation)

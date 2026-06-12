@@ -22,7 +22,7 @@ class StubDevice(Driver):
 
     def read_state(self, state: SystemState) -> None:
         for ch in self._channels:
-            state._channels[ch.name].value = ch.value
+            state.apply_driver_value(ch.name, ch.value)
 
     def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
         pass

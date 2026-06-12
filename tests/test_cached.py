@@ -44,7 +44,7 @@ class FakeInner(Driver):
         if self.fail:
             raise OSError("bus down")
         for name, value in self._measurements.items():
-            state._channels[name].value = value
+            state.apply_driver_value(name, value)
         self.read_event.set()
 
     def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:

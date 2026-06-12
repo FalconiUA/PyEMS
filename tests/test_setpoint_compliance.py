@@ -35,8 +35,8 @@ def make_monitor() -> SetpointComplianceMonitor:
 def run_cycle(monitor, state, now: float, p_unit: float, p_set: float) -> None:
     board = RequestBoard(["pv.WSet"])
     board.tick(now)
-    state._channels["pv.W"].value = p_unit
-    state._channels["pv.WSet"].value = p_set
+    state.apply_driver_value("pv.W", p_unit)
+    state.apply_driver_value("pv.WSet", p_set)
     monitor.execute(state, board)
 
 

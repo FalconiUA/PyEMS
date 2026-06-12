@@ -116,9 +116,9 @@ class CachedDriver(Driver):
         with self._lock:
             cache = dict(self._meas_cache)
         for name, value in cache.items():
-            state._channels[name].value = value
-        if COMMS_AGE_CHANNEL in state._channels:
-            state._channels[COMMS_AGE_CHANNEL].value = self.age_s()
+            state.apply_driver_value(name, value)
+        if COMMS_AGE_CHANNEL in state:
+            state.apply_driver_value(COMMS_AGE_CHANNEL, self.age_s())
 
     def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
         """Publish live setpoints → cache for the worker to flush. No Modbus here.
@@ -131,7 +131,7 @@ class CachedDriver(Driver):
             if channels is None
             else [n for n in self._writable if n in channels]
         )
-        sp = {name: state._channels[name].value for name in names}
+        sp = {name: state.get(name) for name in names}
         with self._lock:
             for name, value in sp.items():
                 if self._sp_cache.get(name) != value:
@@ -204,7 +204,7 @@ class CachedDriver(Driver):
                     pending = {n: self._sp_cache[n] for n in due}
                 if pending:
                     for name, value in pending.items():
-                        self._io_state._channels[name].value = value
+                        self._io_state.set(name, value)
                     try:
                         self._inner.write_setpoints(self._io_state, channels=due)
                         flushed = time.monotonic()

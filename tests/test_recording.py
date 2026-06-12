@@ -17,7 +17,7 @@ def test_recorder_writes_header_and_rows(tmp_path):
     state = SystemState([Channel("grid.W", value=-1234.5), Channel("pv.W", value=5000.0)])
     rec = CycleRecorder(tmp_path / "cycles.csv", ["grid.W", "pv.W"])
     rec.record(now=1.0, state=state)
-    state._channels["grid.W"].value = 100.0
+    state.apply_driver_value("grid.W", 100.0)
     rec.record(now=2.0, state=state)
     rec.close()
 

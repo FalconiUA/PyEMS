@@ -37,7 +37,7 @@ class FakeDriver(Driver):
 
     def read_state(self, state: SystemState) -> None:
         for name, value in self.measurements.items():
-            state._channels[name].value = value
+            state.apply_driver_value(name, value)
 
     def write_setpoints(self, state: SystemState, channels: set[str] | None = None) -> None:
         for ch in self._channels:

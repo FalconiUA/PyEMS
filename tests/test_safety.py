@@ -32,7 +32,7 @@ def only_claim(b: RequestBoard, channel="pv.WSet"):
 
 def test_healthy_clears_safe_mode_and_posts_nothing(state):
     b = board()
-    state._channels[COMMS_AGE_CHANNEL].value = 0.5
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 0.5)
     make_safety().execute(state, b)
     assert state.get(SAFE_MODE_CHANNEL) == 0.0
     assert b.valid_requests("pv.WSet", now=0.0) == []
@@ -40,7 +40,7 @@ def test_healthy_clears_safe_mode_and_posts_nothing(state):
 
 def test_stale_bus_trips_and_pins_claim(state):
     b = board()
-    state._channels[COMMS_AGE_CHANNEL].value = 5.0  # > 2.0 limit
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 5.0)  # > 2.0 limit
     make_safety().execute(state, b)
     assert state.get(SAFE_MODE_CHANNEL) == 1.0
     claim = only_claim(b)
@@ -53,12 +53,12 @@ def test_stale_bus_trips_and_pins_claim(state):
 def test_trip_then_release_withdraws_claim(state):
     safety = make_safety()
     b = board()
-    state._channels[COMMS_AGE_CHANNEL].value = 5.0
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 5.0)
     safety.execute(state, b)
     assert state.get(SAFE_MODE_CHANNEL) == 1.0
     assert only_claim(b).target_w == 50000.0
 
-    state._channels[COMMS_AGE_CHANNEL].value = 0.1
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 0.1)
     safety.execute(state, b)
     assert state.get(SAFE_MODE_CHANNEL) == 0.0
     assert b.valid_requests("pv.WSet", now=0.0) == []  # claim withdrawn
@@ -94,8 +94,8 @@ def test_frozen_measurement_trips(state):
     (hung meter/gateway) must trip exactly like a dead bus."""
     safety = make_frozen_safety()
     b = board()
-    state._channels[COMMS_AGE_CHANNEL].value = 0.1  # comms healthy
-    state._channels["grid.W"].value = -5000.0
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 0.1)  # comms healthy
+    state.apply_driver_value("grid.W", -5000.0)
 
     b.tick(0.0)
     safety.execute(state, b)  # first sight — starts the freeze clock
@@ -110,9 +110,9 @@ def test_frozen_measurement_trips(state):
 def test_changing_measurement_never_trips(state):
     safety = make_frozen_safety()
     b = board()
-    state._channels[COMMS_AGE_CHANNEL].value = 0.1
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 0.1)
     for now, value in [(0.0, -5000.0), (11.0, -5001.0), (22.0, -5000.0)]:
-        state._channels["grid.W"].value = value
+        state.apply_driver_value("grid.W", value)
         b.tick(now)
         safety.execute(state, b)
         assert state.get(SAFE_MODE_CHANNEL) == 0.0
@@ -122,15 +122,15 @@ def test_changing_measurement_never_trips(state):
 def test_frozen_trip_releases_when_value_moves_again(state):
     safety = make_frozen_safety()
     b = board()
-    state._channels[COMMS_AGE_CHANNEL].value = 0.1
-    state._channels["grid.W"].value = -5000.0
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 0.1)
+    state.apply_driver_value("grid.W", -5000.0)
     b.tick(0.0)
     safety.execute(state, b)
     b.tick(11.0)
     safety.execute(state, b)
     assert state.get(SAFE_MODE_CHANNEL) == 1.0
 
-    state._channels["grid.W"].value = -4000.0  # meter alive again
+    state.apply_driver_value("grid.W", -4000.0)  # meter alive again
     b.tick(12.0)
     safety.execute(state, b)
     assert state.get(SAFE_MODE_CHANNEL) == 0.0
@@ -141,8 +141,8 @@ def test_frozen_guard_disabled_without_config(state):
     """Default-constructed safety (no frozen params) must ignore frozen tags —
     backward compatible with sites that have not opted in."""
     b = board()
-    state._channels[COMMS_AGE_CHANNEL].value = 0.1
-    state._channels["grid.W"].value = -5000.0
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 0.1)
+    state.apply_driver_value("grid.W", -5000.0)
     safety = make_safety()
     for now in (0.0, 100.0, 1000.0):
         b.tick(now)
@@ -155,7 +155,7 @@ def test_trip_logs_once(state, caplog):
 
     safety = make_safety()
     b = board()
-    state._channels[COMMS_AGE_CHANNEL].value = 5.0
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 5.0)
     with caplog.at_level(logging.WARNING):
         safety.execute(state, b)
         safety.execute(state, b)  # second stale cycle must not re-log
