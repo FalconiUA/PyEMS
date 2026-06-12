@@ -1,0 +1,40 @@
+# PyEMS systemd unit.
+#
+# Install (paths assume the repo is cloned to /home/pi/PyEMS — adjust both
+# here and in DEPLOY.md if yours differs):
+#   sudo cp deploy/pyems.service /etc/systemd/system/pyems.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pyems
+#
+# Logs:    journalctl -u pyems -f
+# Status:  systemctl status pyems
+
+[Unit]
+Description=PyEMS — local energy management system (Modbus TCP/RTU)
+# Devices are reached over the LAN: wait for the network to actually be up,
+# not just for systemd's network target to be scheduled.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/PyEMS
+# The venv's console script; ROOT-relative data dirs (profiles/, config/)
+# are resolved from the package location, so the editable install layout
+# (git checkout + pip install -e .) is required.
+ExecStart=/home/pi/PyEMS/.venv/bin/pyems
+# Uncomment for per-cycle detail during commissioning:
+#Environment=PYEMS_LOG_LEVEL=DEBUG
+
+# A crashed EMS must come back by itself; the device's own comms watchdog
+# (safety.device_comms_watchdog_s) covers the gap while it restarts.
+Restart=on-failure
+RestartSec=5
+
+# systemd stops the service with SIGTERM; ems.py handles it by finishing the
+# control cycle and disconnecting the bus cleanly. Give it time to do so.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
