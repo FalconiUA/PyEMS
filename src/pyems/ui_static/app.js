@@ -219,11 +219,32 @@ function renderRequirementRows(requirements, targetId) {
   }).join("");
 }
 
+// The <class> prefix of a profile channel is cosmetic (namespaced() swaps it
+// for the site.yaml device id), but validate_channel() still requires SOME
+// prefix. Reuse the prefix the profile already uses so autocompleted channels
+// match its existing rows; fall back to "device" for an empty profile.
+function profilePrefix(profile) {
+  for (const reg of profile.registers || []) {
+    const head = String(reg.channel || "").split(".")[0];
+    if (head) return head;
+  }
+  return "device";
+}
+function renderChannelVocabulary(profile) {
+  const list = $("channelFields");
+  if (!list) return;
+  const prefix = profilePrefix(profile);
+  list.innerHTML = Object.entries(fieldLabels)
+    .map(([field, label]) => `<option value="${esc(prefix)}.${esc(field)}">${esc(label)}</option>`)
+    .join("");
+}
+
 function renderProfile(profilePayload) {
   currentProfile = profilePayload;
   setValue("profile.model", profilePayload.profile.model);
   setValue("profile.protocol", profilePayload.profile.protocol);
   setValue("profile.default_port", profilePayload.profile.default_port);
+  renderChannelVocabulary(profilePayload.profile);
   $("profileRequiredRows").innerHTML = profilePayload.requirements.map((item) => {
     const tagClass = item.present ? "ok" : "bad";
     return `<tr><td>${esc(item.field)}</td><td>${esc(item.expected_tag)}</td><td>${esc(item.profile_channel || "")}</td><td><span class="tag ${tagClass}">${item.present ? "OK" : "Missing"}</span></td></tr>`;
@@ -232,7 +253,7 @@ function renderProfile(profilePayload) {
     const required = profilePayload.requirements.some((item) => item.register_index === idx);
     return `<tr data-register-index="${idx}">
       <td>${required ? '<span class="tag ok">required</span>' : ""}</td>
-      <td><input data-field="channel" value="${esc(reg.channel)}" required></td>
+      <td><input data-field="channel" list="channelFields" value="${esc(reg.channel)}" required></td>
       <td data-decode>${esc(fieldLabel(reg.channel))}</td>
       <td><input data-field="address" type="number" step="1" value="${reg.address}" required></td>
       <td><select data-field="type">${["int16","uint16","int32","uint32"].map((t) => `<option value="${t}"${reg.type === t ? " selected" : ""}>${t}</option>`).join("")}</select></td>
@@ -1089,7 +1110,7 @@ document.addEventListener("click", async (event) => {
     renderAll();
   }
   if (target.id === "addRegisterBtn" && currentProfile) {
-    currentProfile.profile.registers.push({ channel: "device.W", address: 0, type: "int32", scale: 1, unit: "W", access: "read" });
+    currentProfile.profile.registers.push({ channel: profilePrefix(currentProfile.profile) + ".W", address: 0, type: "int32", scale: 1, unit: "W", access: "read" });
     renderProfile(currentProfile);
   }
   if (target.dataset.removeDevice !== undefined) {
