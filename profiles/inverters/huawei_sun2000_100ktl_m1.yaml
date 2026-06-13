@@ -1,129 +1,24 @@
-# Huawei SUN2000-100KTL-M1 — three-phase 100 kW commercial inverter.
-# Channel names follow Elum ePowerControl Manual §2.5.1 Table 3.
-# Register addresses verified against Huawei "SUN2000MA MODBUS Interface
-# Definitions" (cross-checked with sun2000_modbus library).
-#
-# scale = 1 / Huawei_gain  (driver computes value = raw * scale).
-#
-# !! SAFETY: this is a 100 kW inverter. Before enabling writes (pv.WSet):
-#    1. Confirm addresses against the Interface Definitions doc for YOUR firmware.
-#    2. Remote active-power control usually must be ENABLED on the inverter first
-#       (commissioning / "Power adjustment" settings) or writes are ignored.
-#    3. Test read-only first; enable WSet only after verifying on a safe setpoint.
-
-model: "Huawei SUN2000-100KTL-M1"
-protocol: modbus_tcp        # via SmartDongle/SmartLogger; RS485 = modbus_rtu
+model: Huawei SUN2000-100KTL-M1
+protocol: modbus_tcp
 default_port: 502
-
 registers:
-  # ── Active power, total (Read Only) — Elum pv.W ───────────────────────────
-  # min/max = plausibility bounds: a decoded value outside them fails the poll
-  # (comms age grows) instead of entering the control loop as a measurement.
-  - channel: pv.W
-    address: 32080
-    type: int32
-    scale: 1.0              # Huawei gain 1, W
-    unit: W
-    access: read
-    min_val: -10000         # standby self-consumption at most
-    max_val: 110000         # 110% of rated 100 kW
-
-  # ── Reactive power, total (Read Only) — Elum pv.VAR ───────────────────────
-  - channel: pv.VAR
-    address: 32082
-    type: int32
-    scale: 1.0              # gain 1000 → kvar; raw is in var, so var = raw
-    unit: var
-    access: read
-
-  # ── Grid frequency (Read Only) — Elum pv.Hz ───────────────────────────────
-  - channel: pv.Hz
-    address: 32085
-    type: uint16
-    scale: 0.01             # gain 100
-    unit: Hz
-    access: read
-
-  # ── Phase voltages (Read Only) — Elum pv.PhVphA/B/C ───────────────────────
-  - channel: pv.PhVphA
-    address: 32069
-    type: uint16
-    scale: 0.1              # gain 10
-    unit: V
-    access: read
-  - channel: pv.PhVphB
-    address: 32070
-    type: uint16
-    scale: 0.1
-    unit: V
-    access: read
-  - channel: pv.PhVphC
-    address: 32071
-    type: uint16
-    scale: 0.1
-    unit: V
-    access: read
-
-  # ── Phase currents (Read Only) — Elum pv.AphA/B/C ─────────────────────────
-  - channel: pv.AphA
-    address: 32072
-    type: int32
-    scale: 0.001            # gain 1000
-    unit: A
-    access: read
-  - channel: pv.AphB
-    address: 32074
-    type: int32
-    scale: 0.001
-    unit: A
-    access: read
-  - channel: pv.AphC
-    address: 32076
-    type: int32
-    scale: 0.001
-    unit: A
-    access: read
-
-  # ── Device status (Read Only) — Elum pv.Status ────────────────────────────
-  - channel: pv.Status
-    address: 32089
-    type: uint16
-    scale: 1.0
-    unit: ""
-    access: read
-
-  # ── Alarm 1 bitfield (Read Only) — Elum pv.Alarm ──────────────────────────
-  - channel: pv.Alarm
-    address: 32008
-    type: uint16
-    scale: 1.0
-    unit: ""
-    access: read
-
-  # ── Apparent power, total (Read Only) — Elum pv.VA ───────────────────────
-  - channel: pv.VA
-    address: 32078
-    type: int32
-    scale: 1.0              # gain 1, VA
-    unit: VA
-    access: read
-
-  # ── WSet: max active power setpoint (Read/Write) — Elum pv.WSet ────────────
-  # Huawei "Active power fixed value derated" @ 40126, UINT32, gain 1, W.
-  # Absolute power limit in W → direct match for Elum WSet semantics.
-  # Bounded 0..100000 W (rated power) as a write-safety guard.
-  # Alternative: percentage derating @ 40125 (INT16, gain 10, %).
-  - channel: pv.WSet
-    address: 40126
-    type: uint32
-    scale: 1.0
-    unit: W
-    access: read_write
-    min_val: 0
-    max_val: 100000
-
-# Not available in Huawei standard map (omit / derive if needed):
-#   pv.WphA/B/C    (per-phase active power — not exposed)
-#   pv.VARphA/B/C  (per-phase reactive power — not exposed)
-#   pv.VAphA/B/C   (per-phase apparent power — not exposed)
-#   pv.OperatingMode  (use pv.Status)
+- channel: pv.W
+  address: 30012
+  type: uint32
+  scale: 1
+  unit: W
+  access: read
+- channel: pv.VAR
+  address: 40390
+  type: int32
+  scale: 1
+  unit: var
+  access: read
+- channel: pv.WSet
+  address: 40378
+  type: uint32
+  scale: 100
+  unit: W
+  access: read_write
+  min_val: 0
+  max_val: 10000
