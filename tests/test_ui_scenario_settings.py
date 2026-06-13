@@ -49,3 +49,14 @@ def test_normalize_preserves_curtailment_gradient():
         ],
     })
     assert site["allocation"]["channels"][0]["ramp_down_w_per_s"] == 50000
+
+
+def test_frontend_gather_site_preserves_hidden_operational_settings():
+    app_js = (ui.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    gather = app_js[app_js.index("function gatherSite()") :]
+    gather = gather[: gather.index("function gatherProfile()")]
+
+    assert "const data = { ...(site.devices[idx] || {}) };" in app_js
+    assert "next.control = {\n    ...(site.control || {})," in gather
+    assert "next.safety = {\n    ...(site.safety || {})," in gather
+    assert "const allocChannel = {\n    ...(allocationCfg() || {})," in gather

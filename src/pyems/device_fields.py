@@ -83,6 +83,12 @@ EMS_FIELDS: dict[str, str] = {
     "Status": "",
     "OperatingMode": "",
     "Alarm": "",
+    # remote start/stop COMMAND registers (discrete, written one-shot — see the
+    # `command: true` register flag and CachedDriver.send_command). Vendors differ:
+    # some expose a single run/stop register, some two separate command registers.
+    "RunStop": "",     # single register: 1 = remote start, 0 = remote stop
+    "StartCmd": "",    # separate start command register
+    "StopCmd": "",     # separate stop command register
 }
 
 DEVICE_FIELDS: dict[str, str] = {**SUNSPEC_FIELDS, **EMS_FIELDS}
@@ -122,6 +128,9 @@ FIELD_LABELS: dict[str, str] = {
     "Status": "Vendor status word",
     "OperatingMode": "Vendor operating mode",
     "Alarm": "Vendor alarm bitfield",
+    "RunStop": "Remote start/stop command (1 = start, 0 = stop)",
+    "StartCmd": "Remote start command register",
+    "StopCmd": "Remote stop command register",
 }
 
 

@@ -1,4 +1,7 @@
 """Tests for the profile-driven Modbus driver (src/drivers/modbus_device.py)."""
+from dataclasses import replace
+from pathlib import Path
+
 import pytest
 
 import pyems.drivers.modbus_device as md
@@ -70,10 +73,29 @@ def test_registerdef_properties():
 
 
 # ── profile loading + namespaced channels ────────────────────────────────────
-# Anchor to the repo root so the test does not depend on the working directory.
-from pathlib import Path
-
 HUAWEI = Path(__file__).resolve().parents[1] / "profiles" / "inverters" / "huawei_sun2000_100ktl_m1.yaml"
+
+
+def profile_reg(profile: DeviceProfile, channel: str) -> RegisterDef:
+    return next(r for r in profile.registers if r.channel == channel)
+
+
+def words_for(value: float, regdef: RegisterDef) -> list[int]:
+    return _encode(int(value / regdef.scale), regdef)
+
+
+def profile_with_bounds(
+    profile: DeviceProfile, channel: str, min_val: float, max_val: float
+) -> DeviceProfile:
+    return replace(
+        profile,
+        registers=[
+            replace(r, min_val=min_val, max_val=max_val)
+            if r.channel == channel
+            else r
+            for r in profile.registers
+        ],
+    )
 
 
 def test_profile_load():
@@ -136,8 +158,8 @@ class FakeModbusClient:
 
 def test_read_state_decodes_and_scales_into_namespaced_tag():
     prof = DeviceProfile.load(HUAWEI)
-    # pv.W @32080 int32 scale 1.0 → value 65000 across two regs
-    client = FakeModbusClient({32080: [0x0000, 0xFDE8]})  # 65000
+    reg_w = profile_reg(prof, "pv.W")
+    client = FakeModbusClient({reg_w.address: words_for(65000.0, reg_w)})
     drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
     st = SystemState(drv.channels())
     drv.read_state(st)
@@ -146,13 +168,14 @@ def test_read_state_decodes_and_scales_into_namespaced_tag():
 
 def test_write_setpoints_encodes_from_namespaced_tag():
     prof = DeviceProfile.load(HUAWEI)
+    reg_wset = profile_reg(prof, "pv.WSet")
     client = FakeModbusClient({})
     drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
     st = SystemState(drv.channels())
-    st.set("pv1.WSet", 50000.0)
+    setpoint_w = 5000.0
+    st.set("pv1.WSet", setpoint_w)
     drv.write_setpoints(st)
-    # pv.WSet @40126; 50000 = 0x0000C350 → [0x0000, 0xC350]
-    assert client.writes[40126] == [0x0000, 0xC350]
+    assert client.writes[reg_wset.address] == words_for(setpoint_w, reg_wset)
 
 
 def test_read_error_keeps_value_unchanged_and_raises():
@@ -169,11 +192,12 @@ def test_read_error_keeps_value_unchanged_and_raises():
 
 
 def test_implausible_value_fails_poll_and_keeps_last_value():
-    prof = DeviceProfile.load(HUAWEI)
-    # pv.W @32080 bounded [-10000, 110000] in the profile; feed 500000 W —
+    prof = profile_with_bounds(DeviceProfile.load(HUAWEI), "pv.W", -10000.0, 110000.0)
+    reg_w = profile_reg(prof, "pv.W")
+    # Feed 500000 W outside the test-only bounded measurement range.
     # decodable, but implausible for a 100 kW unit (wrong scale/profile/gateway
     # garbage). It must fail the poll, not enter the loop as a measurement.
-    client = FakeModbusClient({32080: [0x0007, 0xA120]})  # 500000
+    client = FakeModbusClient({reg_w.address: words_for(500000.0, reg_w)})
     drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
     st = SystemState(drv.channels())
     st.apply_driver_value("pv1.W", 42.0)
@@ -187,8 +211,8 @@ def test_out_of_range_writable_register_does_not_fail_poll():
     (e.g. an out-of-range factory default in WSet before our first write) must
     not fail the poll — that would be a permanent spurious safety trip."""
     prof = DeviceProfile.load(HUAWEI)
-    # pv.WSet @40126 bounded [0, 100000]; device holds 0xFFFFFFFF (4294967295).
-    client = FakeModbusClient({40126: [0xFFFF, 0xFFFF]})
+    reg_wset = profile_reg(prof, "pv.WSet")
+    client = FakeModbusClient({reg_wset.address: [0xFFFF] * reg_wset.count})
     drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
     st = SystemState(drv.channels())
     drv.read_state(st)  # must not raise
@@ -219,8 +243,8 @@ def test_inverted_bounds_rejected_at_load():
 
 def test_partial_read_error_updates_good_registers_then_raises():
     prof = DeviceProfile.load(HUAWEI)
-    # only pv.W @32080 answers; every other register returns an error response
-    client = FakeModbusClient({32080: [0x0000, 0xFDE8]}, fail_unknown=True)
+    reg_w = profile_reg(prof, "pv.W")
+    client = FakeModbusClient({reg_w.address: words_for(65000.0, reg_w)}, fail_unknown=True)
     drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
     st = SystemState(drv.channels())
     with pytest.raises(ModbusReadError, match="pv1"):
@@ -230,16 +254,18 @@ def test_partial_read_error_updates_good_registers_then_raises():
 
 def test_write_setpoints_channel_subset_skips_other_registers():
     prof = DeviceProfile.load(HUAWEI)
+    reg_wset = profile_reg(prof, "pv.WSet")
     client = FakeModbusClient({})
     drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
     st = SystemState(drv.channels())
-    st.set("pv1.WSet", 50000.0)
+    setpoint_w = 5000.0
+    st.set("pv1.WSet", setpoint_w)
     drv.write_setpoints(st, channels=set())            # nothing due
     assert client.writes == {}
     drv.write_setpoints(st, channels={"other.WSet"})   # not this device's tag
     assert client.writes == {}
     drv.write_setpoints(st, channels={"pv1.WSet"})     # due → written
-    assert client.writes[40126] == [0x0000, 0xC350]
+    assert client.writes[reg_wset.address] == words_for(setpoint_w, reg_wset)
 
 
 def test_write_error_response_raises():
@@ -247,14 +273,15 @@ def test_write_error_response_raises():
     client = FakeModbusClient({}, fail_writes=True)
     drv = ModbusDeviceDriver(prof, client=client, slave_id=1, prefix="pv1")
     st = SystemState(drv.channels())
-    st.set("pv1.WSet", 50000.0)
+    st.set("pv1.WSet", 5000.0)
     with pytest.raises(ModbusWriteError, match="pv1.WSet"):
         drv.write_setpoints(st)
 
 
 def test_shared_client_keeps_per_driver_slave_id():
     prof = DeviceProfile.load(HUAWEI)
-    client = FakeModbusClient({32080: [0x0000, 0x03E8]})
+    reg_w = profile_reg(prof, "pv.W")
+    client = FakeModbusClient({reg_w.address: words_for(1000.0, reg_w)})
     d1 = ModbusDeviceDriver(prof, client=client, slave_id=0, prefix="plant")
     d2 = ModbusDeviceDriver(prof, client=client, slave_id=11, prefix="meter")
 

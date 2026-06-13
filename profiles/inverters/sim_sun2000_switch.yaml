@@ -1,0 +1,42 @@
+model: Huawei SUN2000-100KTL-M1 (sim + remote switch)
+protocol: modbus_tcp
+default_port: 502
+registers:
+- channel: pv.W
+  address: 30012
+  type: uint32
+  scale: 1
+  unit: W
+  access: read
+- channel: pv.VAR
+  address: 40390
+  type: int32
+  scale: 1
+  unit: var
+  access: read
+- channel: pv.WSet
+  address: 40378
+  type: uint32
+  scale: 100
+  unit: W
+  access: read_write
+  min_val: 0
+  max_val: 10000
+- channel: pv.StartCmd
+  address: 40197
+  type: uint16
+  scale: 1
+  unit: ''
+  access: read_write
+  command: true
+  min_val: 0
+  max_val: 0
+- channel: pv.StopCmd
+  address: 40196
+  type: uint16
+  scale: 1
+  unit: ''
+  access: read_write
+  command: true
+  min_val: 0
+  max_val: 0

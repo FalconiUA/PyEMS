@@ -21,9 +21,20 @@ from urllib.parse import parse_qs, unquote, urlparse
 import yaml
 
 from pyems.channels import Channel, SystemState
+from pyems.commands import (
+    read_command_file,
+    write_command_file,
+    write_inverter_command,
+)
 from pyems.device_fields import FIELD_LABELS, field_label
 from pyems.system_tags import (
+    COMMAND_AGE_CHANNEL,
     COMMS_AGE_CHANNEL,
+    GENERATION_ALLOWED_CHANNEL,
+    GENERATION_GATE_ACTIVE_CHANNEL,
+    INVERTER_COMMAND_CHANNEL,
+    INVERTER_COMMAND_ID_CHANNEL,
+    INVERTER_RUN_STATE_CHANNEL,
     SAFE_MODE_CHANNEL,
     SETPOINT_VIOLATION_CHANNEL,
     WRITE_AGE_CHANNEL,
@@ -183,6 +194,26 @@ def _system_channels(device_ids: list[str] | None = None) -> list[Channel]:
     return channels
 
 
+def _generation_channels(site: dict[str, Any]) -> list[Channel]:
+    """Operation status tags (generation gate + hard switch), present only when
+    the site enables them. Mirrors the channels build_ems adds, so the UI tag
+    pool matches the EMS one and validate_bindings agrees on both sides."""
+    channels: list[Channel] = []
+    if (site.get("control") or {}).get("command_json"):
+        channels += [
+            Channel(GENERATION_ALLOWED_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
+            Channel(GENERATION_GATE_ACTIVE_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
+            Channel(COMMAND_AGE_CHANNEL, unit="s", value=0.0),
+        ]
+    if site.get("hard_switch"):
+        channels += [
+            Channel(INVERTER_COMMAND_CHANNEL, unit="", min_val=0, max_val=1),
+            Channel(INVERTER_COMMAND_ID_CHANNEL, unit=""),
+            Channel(INVERTER_RUN_STATE_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
+        ]
+    return channels
+
+
 def _device_channels_for_site(site: dict[str, Any]) -> list[Channel]:
     drivers = build_device_drivers(site["devices"])
     configured_ids = [device.get("id") for device in site["devices"]]
@@ -190,6 +221,7 @@ def _device_channels_for_site(site: dict[str, Any]) -> list[Channel]:
     return (
         CompositeDriver(drivers, device_ids=device_ids).channels()
         + _system_channels(device_ids)
+        + _generation_channels(site)
     )
 
 
@@ -438,6 +470,11 @@ def validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"profile.registers[{idx}].unit must be a string")
         for key in ("address", "scale"):
             _require_number(reg, key, f"profile.registers[{idx}]")
+        if reg.get("command") and reg.get("access") != "read_write":
+            raise ValueError(
+                f"profile.registers[{idx}]: a command register must be "
+                f"'read_write' (written one-shot, not continuously)"
+            )
     return profile
 
 
@@ -629,6 +666,176 @@ def fast_loop_state(site: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def telemetry_fresh(fls: dict[str, Any]) -> bool:
+    """Is the published snapshot recent enough to mean the EMS is running now?
+
+    Mirrors the browser's `telemetryStale()`: fresh when the file age is within
+    max(5s, 3 cycles). A stale-but-parseable file (EMS stopped) is NOT fresh, so
+    this also tells a leftover snapshot apart from a live one."""
+    if not fls.get("ok"):
+        return False
+    age_s = fls.get("age_s")
+    cycle_s = fls.get("cycle_s") or 1.0
+    return isinstance(age_s, (int, float)) and age_s <= max(5.0, 3.0 * cycle_s)
+
+
+def command_file_path(site: dict[str, Any]) -> Path | None:
+    """Resolve the operator command file from `control.command_json` (relative
+    paths resolve against the repo root, as in build_ems). None when the site
+    has no generation gate configured."""
+    cmd_json = (site.get("control") or {}).get("command_json")
+    if not cmd_json:
+        return None
+    path = Path(cmd_json)
+    return path if path.is_absolute() else ROOT / path
+
+
+def generation_state(site: dict[str, Any]) -> dict[str, Any]:
+    """Current Operation state for the UI: the soft generation gate AND the hard
+    inverter switch — what the EMS reports (snapshot) plus what the UI last wrote
+    to the command file."""
+    path = command_file_path(site)
+    if path is None:
+        return {"ok": False, "error": "generation gate not configured (control.command_json)"}
+    fls = fast_loop_state(site)
+    values = fls.get("values") or {}
+    command = read_command_file(path)
+    return {
+        "ok": True,
+        "configured": True,
+        "ems_running": telemetry_fresh(fls),
+        # EMS-reported (authoritative) state; null when the EMS is not publishing.
+        "allowed": values.get(GENERATION_ALLOWED_CHANNEL),
+        "gate_active": values.get(GENERATION_GATE_ACTIVE_CHANNEL),
+        "command_age_s": values.get(COMMAND_AGE_CHANNEL),
+        # hard inverter switch (separate level: de-energizes, not just curtails).
+        "hard_switch": bool(site.get("hard_switch")),
+        # what the EMS last COMMANDED (1 started / 0 stopped / null never).
+        "inverter_run_state": values.get(INVERTER_RUN_STATE_CHANNEL),
+        # what the UI last wrote (may differ from EMS until the next cycle, or
+        # be ignored by the EMS as stale/leftover — fail-closed).
+        "command_file": command,
+        "path": str(path),
+    }
+
+
+class EmsManager:
+    """Start/stop the EMS control loop (`pyems`) as a child of the configuration UI.
+
+    Symmetric to SimManager. The EMS is a SEPARATE process — the UI never runs
+    the control loop in-process; it only spawns/terminates it and reports whether
+    a control loop is publishing telemetry (which also detects an EMS started by
+    systemd or by hand outside the UI).
+
+    `process_control` gates spawning/terminating: in plain production the UI is
+    a read-only status + generation console (`process_control=False`), and only
+    a managed/dev launch (`--manage-ems`) may start or stop the process. Either
+    way the UI never starts a SECOND EMS: start refuses while telemetry is fresh.
+    """
+
+    def __init__(
+        self,
+        site_path: str | Path,
+        process_control: bool = False,
+        log_level: str | None = None,
+    ) -> None:
+        self.site_path = Path(site_path)
+        self.process_control = process_control
+        self._log_level = log_level
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+
+    def _site(self) -> dict[str, Any]:
+        return load_site(self.site_path)
+
+    def _managed_alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def running(self) -> bool:
+        """A control loop is publishing fresh telemetry (managed or external)."""
+        return telemetry_fresh(fast_loop_state(self._site()))
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            managed = self._managed_alive()
+        fls = fast_loop_state(self._site())
+        running = telemetry_fresh(fls)
+        return {
+            "ok": True,
+            "managed": managed,
+            "running": running,
+            "external": running and not managed,
+            "process_control": self.process_control,
+            "site": str(self.site_path),
+            "age_s": fls.get("age_s"),
+            "command": f"pyems --site {self.site_path}",
+        }
+
+    def start(self, wait_s: float = 20.0) -> dict[str, Any]:
+        if not self.process_control:
+            raise ValueError(
+                "EMS process control is disabled in this UI; start the EMS where "
+                "it is supervised (e.g. systemctl start pyems), or run the UI "
+                "with --manage-ems"
+            )
+        if self.running():
+            raise ValueError(
+                "an EMS is already running (fresh telemetry); the UI will not "
+                "start a second control loop"
+            )
+        with self._lock:
+            if not self._managed_alive():
+                cmd = [sys.executable, "-m", "pyems.ems", "--site", str(self.site_path)]
+                if self._log_level:
+                    cmd += ["--log-level", self._log_level]
+                self._proc = subprocess.Popen(cmd)
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            if self.running():
+                return self.status()
+            with self._lock:
+                if self._proc is not None and self._proc.poll() is not None:
+                    code = self._proc.returncode
+                    self._proc = None
+                    raise ValueError(
+                        f"EMS exited immediately (code {code}) — likely a bad "
+                        f"{self.site_path}, a bus/connect error, or telemetry "
+                        f"disabled; see the pyems-ui console for its log"
+                    )
+            time.sleep(0.2)
+        # Process is alive but no fresh telemetry yet (e.g. telemetry section
+        # absent). Report status rather than killing a possibly-healthy loop.
+        return self.status()
+
+    def stop_managed(self) -> None:
+        """Terminate the child if we own one; never raises (shutdown path)."""
+        with self._lock:
+            proc, self._proc = self._proc, None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()  # POSIX SIGTERM → clean scheduler shutdown handler
+            try:
+                proc.wait(timeout=10.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5.0)
+
+    def stop(self) -> dict[str, Any]:
+        if not self.process_control:
+            raise ValueError(
+                "EMS process control is disabled in this UI; stop the EMS where "
+                "it is supervised (e.g. systemctl stop pyems)"
+            )
+        with self._lock:
+            external = not self._managed_alive()
+        if external and self.running():
+            raise ValueError(
+                "the EMS was started outside this UI; stop it where it was "
+                "started (Ctrl-C in its terminal, or systemctl stop pyems)"
+            )
+        self.stop_managed()
+        return self.status()
+
+
 class SimManager:
     """Start/stop the device simulator (`pyems-sim`) from the configuration UI.
 
@@ -731,9 +938,15 @@ class SimManager:
 
 
 class UIApp:
-    def __init__(self, site_path: str | Path, sim: SimManager | None = None) -> None:
+    def __init__(
+        self,
+        site_path: str | Path,
+        sim: SimManager | None = None,
+        ems: EmsManager | None = None,
+    ) -> None:
         self.site_path = Path(site_path)
         self.sim = sim or SimManager()
+        self.ems = ems or EmsManager(self.site_path)
         # The UI can edit either the hardware site or the simulation site.
         # They are SEPARATE configs on purpose (real device addresses vs
         # localhost simulators) — but editing one while testing against the
@@ -747,6 +960,39 @@ class UIApp:
         self._error_log: list[dict[str, Any]] = []
         self._next_error_id = 1
 
+    def generation_status(self) -> dict[str, Any]:
+        return generation_state(load_site(self.site_path))
+
+    def set_generation(self, enabled: bool) -> dict[str, Any]:
+        """Write the operator command file; the running EMS honors it next cycle
+        (fail-closed: a stale/leftover enable is ignored — see pyems.commands)."""
+        site = load_site(self.site_path)
+        path = command_file_path(site)
+        if path is None:
+            raise ValueError(
+                "generation gate not configured for this site "
+                "(set control.command_json in site.yaml)"
+            )
+        write_command_file(path, generation_enabled=enabled)
+        return generation_state(site)
+
+    def set_inverter_command(self, action: str) -> dict[str, Any]:
+        """Issue a latched hard start/stop (writes the device command register).
+
+        Distinct from generation (soft curtail): this de-energizes/energizes the
+        inverter. The EMS fires it once on the new id (see HardSwitchController)."""
+        site = load_site(self.site_path)
+        if not site.get("hard_switch"):
+            raise ValueError(
+                "hard inverter switch not configured for this site "
+                "(add a hard_switch: section to site.yaml)"
+            )
+        path = command_file_path(site)
+        if path is None:
+            raise ValueError("hard_switch requires control.command_json in site.yaml")
+        write_inverter_command(path, action=action)
+        return generation_state(site)
+
     def set_site_file(self, path_str: str) -> dict[str, Any]:
         """Switch which site file the whole UI edits (must be a known choice)."""
         target = next((p for p in self.site_choices if str(p) == str(path_str)), None)
@@ -757,6 +1003,7 @@ class UIApp:
             )
         self.close()  # the live session is bound to the previous file's devices
         self.site_path = target
+        self.ems.site_path = target  # EMS status/command channel follows the file
         return {"ok": True, "site_path": str(target)}
 
     def close(self) -> None:
@@ -899,6 +1146,10 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(fast_loop_state(load_site(app.site_path)))
                 elif path == "/api/sim/status":
                     self._send_json(app.sim.status())
+                elif path == "/api/ems/status":
+                    self._send_json(app.ems.status())
+                elif path == "/api/generation":
+                    self._send_json(app.generation_status())
                 else:
                     self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
             except FileNotFoundError:
@@ -930,6 +1181,18 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(app.sim.start())
                 elif path == "/api/sim/stop":
                     self._send_json(app.sim.stop())
+                elif path == "/api/ems/start":
+                    self._send_json(app.ems.start())
+                elif path == "/api/ems/stop":
+                    self._send_json(app.ems.stop())
+                elif path == "/api/generation/start":
+                    self._send_json(app.set_generation(True))
+                elif path == "/api/generation/stop":
+                    self._send_json(app.set_generation(False))
+                elif path == "/api/inverter/start":
+                    self._send_json(app.set_inverter_command("start"))
+                elif path == "/api/inverter/stop":
+                    self._send_json(app.set_inverter_command("stop"))
                 else:
                     self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
             except Exception as exc:
@@ -951,23 +1214,65 @@ def main(argv: list[str] | None = None) -> None:
         "--sim-port", default=8766, type=int,
         help="port for the simulator control panel (default: 8766)",
     )
+    parser.add_argument(
+        "--manage-ems", action="store_true",
+        help="allow starting/stopping the EMS control loop from the UI "
+             "(off by default: the UI is a read-only status + generation console)",
+    )
+    parser.add_argument(
+        "--autostart-ems", action="store_true",
+        help="start the EMS control loop on launch (implies --manage-ems); "
+             "generation stays disabled until enabled from the UI",
+    )
+    parser.add_argument(
+        "--start-sim", action="store_true",
+        help="start the device simulator on launch (local testing)",
+    )
+    parser.add_argument("--log-level", default=None, help="log level for a managed EMS")
     args = parser.parse_args(argv)
 
-    app = UIApp(
-        args.site,
-        sim=SimManager(args.sim_site, panel_host=args.host, panel_port=args.sim_port),
-    )
+    manage_ems = args.manage_ems or args.autostart_ems
+    sim = SimManager(args.sim_site, panel_host=args.host, panel_port=args.sim_port)
+    ems = EmsManager(args.site, process_control=manage_ems, log_level=args.log_level)
+    app = UIApp(args.site, sim=sim, ems=ems)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
     host, port = server.server_address[:2]
     print(f"PyEMS UI running at http://{host}:{port}")
+
+    if args.start_sim:
+        try:
+            app.sim.start()
+            print(f"Device simulator running at http://{host}:{args.sim_port}")
+        except Exception as exc:  # a sim failure must not stop the UI from serving
+            print(f"WARNING: could not start the simulator: {exc}")
+    if args.autostart_ems:
+        try:
+            app.ems.start()
+            print(f"EMS control loop started (generation disabled): {app.ems.site_path}")
+        except Exception as exc:
+            print(f"WARNING: could not start the EMS: {exc}")
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         app.close()
+        app.ems.stop_managed()  # an EMS we spawned dies with the UI
         app.sim.stop_managed()  # a simulator we spawned dies with the UI
         server.server_close()
+
+
+def main_dev(argv: list[str] | None = None) -> None:
+    """Local all-in-one entry point (`pyems-dev`): bring up the simulator, the
+    EMS (against the simulation site) and the UI with one command, EMS managed
+    and autostarted. Generation stays DISABLED until enabled from the web UI."""
+    preset = [
+        "--site", str(DEFAULT_SIM_SITE),
+        "--start-sim",
+        "--autostart-ems",
+    ]
+    main(preset + list(argv if argv is not None else sys.argv[1:]))
 
 
 if __name__ == "__main__":

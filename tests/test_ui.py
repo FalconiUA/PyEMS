@@ -9,6 +9,8 @@ def test_config_payload_lists_profiles_and_channels():
     payload = ui.config_payload()
 
     assert "inverters/huawei_sun2000_100ktl_m1.yaml" in payload["profiles"]
+    assert "inverters/sim_sun2000_switch.yaml" in payload["profiles"]
+    assert "inverters/sim_sun2000_runstop.yaml" in payload["profiles"]
     assert payload["validation"]["ok"] is True
     names = {channel["name"] for channel in payload["available_channels"]}
     assert {"grid.W", "pv.W", "pv.WSet", "sys.safe_mode", "sys.comms_age_s"} <= names

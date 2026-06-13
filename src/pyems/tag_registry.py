@@ -29,14 +29,23 @@ from pyems.ems import (
     DEFAULT_SITE,
     EXPORT_LIMIT_MODE,
     PROFILES,
+    _generation_gate_config,
+    _hard_switch_config,
     _setpoint_headroom_config,
     control_mode,
 )
 from pyems.system_tags import (
+    COMMAND_AGE_CHANNEL,
     COMMS_AGE_CHANNEL,
     CONNECTION_POINT_POWER_REQUESTER,
     EXPORT_LIMIT_REQUESTER,
+    GENERATION_ALLOWED_CHANNEL,
+    GENERATION_GATE_ACTIVE_CHANNEL,
+    GENERATION_GATE_REQUESTER,
     IMPORT_LIMIT_REQUESTER,
+    INVERTER_COMMAND_CHANNEL,
+    INVERTER_COMMAND_ID_CHANNEL,
+    INVERTER_RUN_STATE_CHANNEL,
     SAFE_MODE_CHANNEL,
     SAFETY_REQUESTER,
     SETPOINT_HEADROOM_REQUESTER,
@@ -189,6 +198,57 @@ def collect(site: dict) -> dict[str, TagEntry]:
             f" / down {ch_cfg.get('ramp_down_w_per_s', ch_cfg.get('ramp_rate_w_per_s'))} W/s)"
         )
 
+    # 8b) generation gate (operational interlock, opt-in via control.command_json)
+    gate_cfg = _generation_gate_config(site)
+    if gate_cfg:
+        entries[GENERATION_ALLOWED_CHANNEL] = TagEntry(
+            GENERATION_ALLOWED_CHANNEL,
+            origin="system_tags.py (CommandFileReader, from UI command file)",
+            access="status",
+            writes=["CommandFileReader (fail-closed: 1 = operator enabled generation)"],
+            reads=[f"{GENERATION_GATE_REQUESTER} (gate decision)"],
+        )
+        entries[GENERATION_GATE_ACTIVE_CHANNEL] = TagEntry(
+            GENERATION_GATE_ACTIVE_CHANNEL,
+            origin="system_tags.py (GenerationGateController)", access="status",
+            writes=["GenerationGateController (1 = pinning unit to floor)"],
+        )
+        entries[COMMAND_AGE_CHANNEL] = TagEntry(
+            COMMAND_AGE_CHANNEL, origin="system_tags.py (CommandFileReader)",
+            access="status", unit="s",
+            writes=["CommandFileReader (age of UI command file)"],
+        )
+        entry(gate_cfg["unit_active_power_setpoint_channel"]).writes.append(
+            f"{GENERATION_GATE_REQUESTER} -> PRIORITY-{gate_cfg['priority']} pin to "
+            f"{gate_cfg['floor_w']:g} W while generation disabled"
+        )
+
+    # 8c) hard inverter switch (latched remote start/stop)
+    hard_cfg = _hard_switch_config(site)
+    if hard_cfg:
+        entries[INVERTER_COMMAND_CHANNEL] = TagEntry(
+            INVERTER_COMMAND_CHANNEL,
+            origin="system_tags.py (CommandFileReader, from UI command file)",
+            access="status", writes=["CommandFileReader (1=start, 0=stop, NaN=none)"],
+            reads=["HardSwitchController (latched action)"],
+        )
+        entries[INVERTER_COMMAND_ID_CHANNEL] = TagEntry(
+            INVERTER_COMMAND_ID_CHANNEL,
+            origin="system_tags.py (CommandFileReader)", access="status",
+            writes=["CommandFileReader (id of this-run action; NaN for leftover)"],
+            reads=["HardSwitchController (fires once per new id)"],
+        )
+        entries[INVERTER_RUN_STATE_CHANNEL] = TagEntry(
+            INVERTER_RUN_STATE_CHANNEL,
+            origin="system_tags.py (HardSwitchController)", access="status",
+            writes=["HardSwitchController (last commanded: 1=started, 0=stopped)"],
+        )
+        for key, label in (("start_writes", "START"), ("stop_writes", "STOP")):
+            for ch, value in hard_cfg[key]:
+                entry(ch).writes.append(
+                    f"HardSwitchController -> one-shot command {value:g} on {label}"
+                )
+
     # 8) cycle recorder
     rec_cfg = site.get("recording") or {}
     if rec_cfg.get("cycle_csv"):
@@ -218,6 +278,10 @@ def requester_rows(site: dict) -> list[tuple[str, str, str]]:
     if head_cfg:
         rows.append((SETPOINT_HEADROOM_REQUESTER, str(head_cfg["priority"]),
                      "upper bound: P_unit + headroom (available-power tracking)"))
+    gate_cfg = _generation_gate_config(site)
+    if gate_cfg:
+        rows.append((GENERATION_GATE_REQUESTER, str(gate_cfg["priority"]),
+                     "pin unit to safe floor while generation disabled (operator interlock)"))
     return sorted(rows, key=lambda r: (r[1], r[0]))
 
 

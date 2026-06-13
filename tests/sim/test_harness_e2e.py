@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from pyems.commands import write_command_file
 from pyems.system_tags import SAFE_MODE_CHANNEL
 from pyems.ems import ROOT, build_ems
 from pyems.sim.harness import SimHarness, make_handler
@@ -33,12 +34,20 @@ def fast_sim_site(tmp_path: Path) -> dict:
     """site.sim.yaml with free ports and compressed time constants so the
     full convergence story fits in a few wall-clock seconds."""
     site = yaml.safe_load(SIM_SITE.read_text(encoding="utf-8"))
+    site["scenario"]["control_mode"] = "export_limit"
+    site["scenario"]["active_power_limit_w"] = 30000
+    site["export_limit"]["limit_w"] = 30000
+    site["connection_point_active_power"]["export_limit_w"] = 30000
+    site["connection_point_active_power"]["import_limit_w"] = 1000000000.0
     site["devices"][0]["port"] = free_port()
     site["devices"][1]["port"] = free_port()
     site["control"]["fast_cycle_s"] = 0.2
     site["control"]["poll_interval_s"] = 0.1
     site["safety"]["max_comms_age_s"] = 1.0
     site["allocation"]["channels"][0]["ramp_rate_w_per_s"] = 50000
+    site["control"]["command_json"] = str(tmp_path / "commands.json")
+    site["recording"]["cycle_csv"] = str(tmp_path / "sim_cycles.csv")
+    site["telemetry"]["live_json"] = str(tmp_path / "live_state.json")
     site["simulation"]["tick_s"] = 0.05
     site["simulation"]["unit"]["tau_s"] = 0.3
     path = tmp_path / "site.sim.yaml"
@@ -65,6 +74,7 @@ def test_real_ems_controls_simulated_plant_and_trips_on_offline(tmp_path):
         harness.set_source("load", {"mode": "manual", "value_w": 10000.0})
 
         sched = build_ems(site["_path"])
+        write_command_file(site["control"]["command_json"], generation_enabled=True)
         run_cycles(sched, seconds=6.0)
 
         state = sched._state
@@ -111,7 +121,7 @@ def test_control_panel_http_api(tmp_path):
 
         with urllib.request.urlopen(f"{base}/api/state", timeout=5) as resp:
             state = json.loads(resp.read())
-        assert state["scenario"]["active_power_limit_w"] == 30000
+        assert state["scenario"]["active_power_limit_w"] == site["scenario"]["active_power_limit_w"]
         assert {d["id"] for d in state["devices"]} == {"grid", "pv"}
         assert state["history_keys"][0] == "t_s"
         # EMS link diagnostics: no EMS is running in this test

@@ -72,7 +72,16 @@ class CachedDriver(Driver):
             self._age_channel, self._write_age_channel,
         ]
         # I/O sets are device channels only — the age tag is set locally, not polled.
-        self._writable = [c.name for c in self._device_channels if c.writable]
+        # Command channels (discrete remote start/stop) are writable but NOT part
+        # of the continuous setpoint mirror: they must never be flushed on startup
+        # or re-asserted by the keep-alive (would spam a one-shot command). They
+        # are written ONLY via send_command(), one forced write per call.
+        self._command = {
+            c.name for c in self._device_channels if c.writable and c.command
+        }
+        self._writable = [
+            c.name for c in self._device_channels if c.writable and c.name not in self._command
+        ]
         self._measured = [c.name for c in self._device_channels if not c.writable]
         self._poll = poll_interval_s
 
@@ -110,10 +119,15 @@ class CachedDriver(Driver):
         self._sp_flushed_at: dict[str, float] = {}      # monotonic ts of last good flush
         self._rewrite_s = setpoint_rewrite_s
         self._sp_ready = False                          # gate: don't write before first setpoint
+        # One-shot command queue (remote start/stop): each send_command() enqueues
+        # one forced write the worker drains on its next pass. Not a level mirror —
+        # a command is performed exactly once per call (works for pulse or level).
+        self._cmd_queue: list[tuple[str, float]] = []
         self._last_ok = 0.0                             # monotonic ts of last good read
         self._last_write_ok = 0.0                       # monotonic ts of last good flush
         self._bus_down = False                          # last bus health — log on transition
         self._write_failed = False                      # last flush health — log on transition
+        self._cmd_failed = False                        # last command-write health — log on transition
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="modbus-io", daemon=True)
 
@@ -186,6 +200,21 @@ class CachedDriver(Driver):
                     self._sp_dirty.add(name)
             self._sp_ready = True
 
+    def send_command(self, tag: str, value: float) -> None:
+        """Enqueue ONE forced write of a command register (remote start/stop).
+
+        Unlike a setpoint, a command is not a level the EMS keeps mirroring: it
+        is performed exactly once per call and never re-asserted by the
+        keep-alive. Posting against a non-command channel is a programming error.
+        """
+        if tag not in self._command:
+            raise ValueError(
+                f"send_command against '{tag}' which is not a command channel; "
+                f"command channels: {sorted(self._command)}"
+            )
+        with self._lock:
+            self._cmd_queue.append((tag, value))
+
     # ── freshness signals for safety logic ───────────────────────────────────
     @staticmethod
     def _age_of(last: float, now: float) -> float:
@@ -249,6 +278,7 @@ class CachedDriver(Driver):
             # read step, so it can never push back the flush either. Healthy-bus
             # latency is unchanged: a setpoint published this cycle still flushes
             # within one poll, just at the top of the next iteration.
+            self._flush_commands()
             self._flush_setpoints()
             self._read_once()
             self._stop.wait(max(0.0, self._poll - (time.monotonic() - t0)))
@@ -337,6 +367,36 @@ class CachedDriver(Driver):
         elif ok_ids and self._bus_down:
             logger.warning("Modbus bus RECOVERED (a device is responding again)")
             self._bus_down = False
+
+    def _flush_commands(self) -> None:
+        """Drain the one-shot command queue (remote start/stop): one forced write
+        per queued command, in FIFO order. A failed command is re-queued so a
+        stop/start is never silently dropped; logged on transition.
+        """
+        with self._lock:
+            pending = self._cmd_queue
+            self._cmd_queue = []
+        if not pending:
+            return
+        for tag, value in pending:
+            self._io_state.set(tag, value)
+        tags = {tag for tag, _ in pending}
+        try:
+            self._inner.write_setpoints(self._io_state, channels=tags)
+            flushed = time.monotonic()
+            with self._lock:
+                self._last_write_ok = flushed  # a delivered command is a healthy write
+            if self._cmd_failed:
+                logger.warning("Modbus COMMAND write recovered")
+                self._cmd_failed = False
+        except Exception:
+            if not self._cmd_failed:
+                logger.exception(
+                    "Modbus COMMAND write failed; remote start/stop not delivered, retrying"
+                )
+                self._cmd_failed = True
+            with self._lock:  # retry on the next pass — a stop must not be lost
+                self._cmd_queue[:0] = pending
 
     def _flush_setpoints(self) -> None:
         """Flush setpoints that changed (dirty) or are due a keep-alive rewrite.

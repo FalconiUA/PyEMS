@@ -182,6 +182,16 @@ class SimHarness:
     def _on_unit_setpoint(self, field: str, value_w: float) -> None:
         if field == "WSet":
             self.world.set_unit_active_power_setpoint_w(value_w)
+        elif field == "StartCmd":
+            self.world.set_unit_enabled(True)
+            self.log_event(f"unit hard START (StartCmd={value_w:g})")
+        elif field == "StopCmd":
+            self.world.set_unit_enabled(False)
+            self.log_event(f"unit hard STOP (StopCmd={value_w:g})")
+        elif field == "RunStop":
+            # Hard remote switch: 1 = start (energize), 0 = stop (de-energize).
+            self.world.set_unit_enabled(value_w >= 0.5)
+            self.log_event(f"unit hard {'START' if value_w >= 0.5 else 'STOP'} (RunStop={value_w:g})")
 
     # ── UI-facing state/control ───────────────────────────────────────────────
     def log_event(self, message: str) -> None:

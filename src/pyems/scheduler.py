@@ -54,6 +54,7 @@ class Scheduler:
         board=None,
         recorder=None,
         telemetry=None,
+        commands=None,
     ) -> None:
         self._tasks = sorted(tasks, key=lambda t: t.priority)
         self._state = state
@@ -69,6 +70,11 @@ class Scheduler:
         # Optional live-state publisher for the read-only UI (see pyems.telemetry).
         self._telemetry = telemetry
         self._telemetry_failed = False  # log on transition, not per cycle
+        # Optional operator-command input stage (see pyems.commands). Symmetric
+        # to telemetry but the other direction (UI → EMS): read once at the top
+        # of each cycle, mapped onto system tags before any controller runs.
+        self._commands = commands
+        self._commands_failed = False  # log on transition, not per cycle
         # Slowest-task tick, for telemetry metadata; default None when tasks is
         # empty (step()-only tests) so we never crash on an empty min().
         self._tick_s = min((t.interval_s for t in self._tasks), default=None)
@@ -82,6 +88,25 @@ class Scheduler:
         single cycle is testable."""
         # read all inputs first
         self._driver.read_state(self._state)
+
+        # map the operator command file onto system tags before any controller
+        # runs. Contained and fail-closed: the reader already disables generation
+        # on a missing/corrupt/stale file, and an unexpected failure here is
+        # logged once while the cycle continues (the gate then reads the tag's
+        # last/default value, which is "disabled").
+        if self._commands is not None:
+            try:
+                self._commands.apply(self._state, time.time())
+            except Exception:
+                if not self._commands_failed:
+                    logger.exception(
+                        "Command file read failed; generation stays as last known state"
+                    )
+                    self._commands_failed = True
+            else:
+                if self._commands_failed:
+                    logger.warning("Command file read recovered")
+                    self._commands_failed = False
 
         # stamp the board's cycle time so controllers can post without `now`
         if self._board is not None:

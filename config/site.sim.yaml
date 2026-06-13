@@ -1,15 +1,6 @@
-# Simulation site: the SAME schema as site.yaml, but every device points at
-# the local simulator (pyems-sim) instead of real hardware.
-#
-#   terminal 1:  pyems-sim                      # simulated devices + web panel
-#   terminal 2:  pyems --site config/site.sim.yaml
-#   browser:     http://127.0.0.1:8766
-#
-# The EMS process is completely unmodified — same controllers, same allocator,
-# same CachedDriver and real Modbus TCP on the wire.
 scenario:
-  control_mode: export_limit
-  active_power_limit_w: 30000
+  control_mode: import_limit
+  active_power_limit_w: 10000.0
   connection_point_device_id: grid
   unit_device_id: pv
   pid_tuning: auto
@@ -19,15 +10,17 @@ control:
   fast_cycle_s: 1
   poll_interval_s: 0.5
   setpoint_rewrite_s: 10
+  command_json: logs/commands.json
+  command_max_age_s: 30
 export_limit:
-  limit_w: 30000
+  limit_w: 0.0
   priority: 5
   connection_point_active_power_channel: grid.W
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
 connection_point_active_power:
-  export_limit_w: 30000
-  import_limit_w: 1000000000.0
+  export_limit_w: 0.0
+  import_limit_w: 10000.0
   priority: 10
   gains:
     kp: 0.4
@@ -39,83 +32,69 @@ connection_point_active_power:
   unit_active_power_setpoint_channel: pv.WSet
 safety:
   max_comms_age_s: 10
+  unit_active_power_setpoint_channels:
+  - pv.WSet
   device_comms_max_age_s:
     grid: 6
     pv: 6
-  # Trip if setpoints stop reaching the bus for 15 s while reads stay fresh.
-  # Exercise it with the `reject_writes` fault on pv in the sim panel.
   max_write_age_s: 15
   max_measurement_frozen_s: 30
   frozen_measurement_channels:
   - grid.W
   device_comms_watchdog_s: 60
-  unit_active_power_setpoint_channels:
-  - pv.WSet
-setpoint_compliance:
-  unit_active_power_channel: pv.W
-  unit_active_power_setpoint_channel: pv.WSet
-  tolerance_w: 2000
-  max_violation_s: 30
-# Available-power tracking: the setpoint may sit at most headroom_w above
-# actual production. Without it, a unit short on resource (clouds) parks the
-# setpoint at the export cap, and the returning sun jumps production to that
-# stale value at the inverter's own speed — bypassing the active power
-# gradient and spiking export. ENABLED BY DEFAULT even without this section
-# (bindings from the regulation unit, headroom = 10% of p_max_w); the section
-# only overrides values. Opt out with `enabled: false`.
-setpoint_headroom:
-  headroom_w: 5000      # absolute floor (keeps the unit startable at 0 W)
-  headroom_pct: 15      # dynamic part: % of current unit output, if larger
-  priority: 6
-  unit_active_power_channel: pv.W
-  unit_active_power_setpoint_channel: pv.WSet
 allocation:
   channels:
   - setpoint_channel: pv.WSet
     p_min_w: 0
     p_max_w: 100000
     default_w: 100000
-    # Asymmetric active power gradient: raising production follows the
-    # grid-code gradient, but CURTAILMENT must be fast — on a sharp load drop
-    # the export limit is violated until the setpoint comes down, and that
-    # excursion lasts (overshoot / ramp_down) seconds.
-    ramp_rate_w_per_s: 5000     # up (and the default for both directions)
-    ramp_down_w_per_s: 50000    # full envelope in 2 s
+    ramp_rate_w_per_s: 5000
     deadband_w: 200
-# Per-cycle CSV flight recorder: timestamp + every bound tag each scan cycle.
-# Analyze transients (load steps, trips, ramps) offline with pandas/Excel.
-recording:
-  cycle_csv: logs/sim_cycles.csv
-# Live-state snapshot for the read-only UI: one JSON document rewritten
-# atomically each cycle, polled by pyems-ui (no second Modbus session). Omit to
-# disable; relative paths resolve against the repo root.
+    ramp_down_w_per_s: 50000
 telemetry:
   live_json: logs/live_state.json
 devices:
-# See config/site.yaml for the timeout_s/retries arithmetic. The sim exercises
-# the same bounds so the `offline` fault behaves like a real hung endpoint.
 - id: grid
   profile: meters/example_grid_meter.yaml
   host: 127.0.0.1
   port: 15021
   slave_id: 1
-  timeout_s: 1.0
+  timeout_s: 1
   retries: 1
 - id: pv
-  profile: inverters/huawei_sun2000_100ktl_m1.yaml
+  profile: inverters/sim_sun2000_switch.yaml
   host: 127.0.0.1
   port: 15022
   slave_id: 1
-  timeout_s: 1.0
+  timeout_s: 1
   retries: 1
-# Sim-only knobs (the EMS ignores this section).
+setpoint_compliance:
+  unit_active_power_channel: pv.W
+  unit_active_power_setpoint_channel: pv.WSet
+  tolerance_w: 2000
+  max_violation_s: 30
+setpoint_headroom:
+  headroom_w: 5000
+  headroom_pct: 15
+  priority: 6
+  unit_active_power_channel: pv.W
+  unit_active_power_setpoint_channel: pv.WSet
+recording:
+  cycle_csv: logs/sim_cycles.csv
+hard_switch:
+  start_writes:
+  - channel: pv.StartCmd
+    value: 0
+  stop_writes:
+  - channel: pv.StopCmd
+    value: 0
 simulation:
   tick_s: 0.2
-  meter_noise_w: 25      # keeps grid.W jittering like a live meter
+  meter_noise_w: 25
   unit:
-    tau_s: 2.0           # inverter response lag to an active power setpoint
-    peak_w: 100000       # synthetic "clear day" peak
-    period_s: 600        # one synthetic day-night cycle, seconds
+    tau_s: 2
+    peak_w: 100000
+    period_s: 600
     noise_w: 500
   load:
     base_w: 30000

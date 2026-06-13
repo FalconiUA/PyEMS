@@ -11,6 +11,7 @@ TASKs and FUNCTION_BLOCKs, binding I/O per the CONFIGURATION in site.yaml.
 import argparse
 import logging
 import signal
+import time
 from pathlib import Path
 
 import yaml
@@ -18,9 +19,12 @@ import yaml
 from pyems.allocation.allocator import PowerAllocator, SetpointChannelConfig
 from pyems.allocation.request import RequestBoard
 from pyems.channels import Channel, SystemState
+from pyems.commands import DEFAULT_COMMAND_MAX_AGE_S, CommandFileReader
 from pyems.control.pid import PIDGains
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
+from pyems.controllers.generation_gate import GenerationGateController
 from pyems.controllers.grid_export_limit import GridExportLimitController
+from pyems.controllers.hard_switch import HardSwitchController
 from pyems.controllers.safety import SafetyController
 from pyems.controllers.setpoint_compliance import SetpointComplianceMonitor
 from pyems.controllers.setpoint_headroom import SetpointHeadroomLimiter
@@ -32,10 +36,17 @@ from pyems.recording import CycleRecorder
 from pyems.scheduler import Scheduler, Task
 from pyems.telemetry import LiveSnapshotPublisher
 from pyems.system_tags import (
+    COMMAND_AGE_CHANNEL,
     COMMS_AGE_CHANNEL,
     CONNECTION_POINT_POWER_REQUESTER,
     EXPORT_LIMIT_REQUESTER,
+    GENERATION_ALLOWED_CHANNEL,
+    GENERATION_GATE_ACTIVE_CHANNEL,
+    GENERATION_GATE_REQUESTER,
     IMPORT_LIMIT_REQUESTER,
+    INVERTER_COMMAND_CHANNEL,
+    INVERTER_COMMAND_ID_CHANNEL,
+    INVERTER_RUN_STATE_CHANNEL,
     SAFE_MODE_CHANNEL,
     SETPOINT_HEADROOM_REQUESTER,
     SETPOINT_VIOLATION_CHANNEL,
@@ -119,6 +130,95 @@ def _setpoint_headroom_config(site: dict) -> dict | None:
     }
 
 
+def _generation_gate_config(site: dict) -> dict | None:
+    """Resolve the generation-gate config, or None when not enabled.
+
+    The gate is opt-in via `control.command_json` (the file the UI writes and the
+    EMS reads — see pyems.commands). When set, the gate pins the controlled unit
+    to a safe floor while generation is disabled. Bindings follow the scenario's
+    regulation unit; the floor is 0 W when 0 sits inside the unit's allocation
+    envelope, else p_min_w — so a storage unit (p_min_w < 0) parks at its safe
+    minimum rather than being forced to charge.
+    """
+    cmd_json = site.get("control", {}).get("command_json")
+    if not cmd_json:
+        return None
+    setpoint_ch = site["connection_point_active_power"]["unit_active_power_setpoint_channel"]
+    alloc = next(
+        (ch for ch in site["allocation"]["channels"] if ch["setpoint_channel"] == setpoint_ch),
+        None,
+    )
+    if alloc is None:
+        raise ValueError(
+            f"generation gate: no allocation channel for setpoint '{setpoint_ch}', "
+            f"so the disabled-floor cannot be derived"
+        )
+    p_min_w = float(alloc["p_min_w"])
+    p_max_w = float(alloc["p_max_w"])
+    floor_w = 0.0 if p_min_w <= 0.0 <= p_max_w else p_min_w
+    path = Path(cmd_json)
+    if not path.is_absolute():
+        path = ROOT / path
+    return {
+        "path": path,
+        "max_age_s": float(site["control"].get("command_max_age_s", DEFAULT_COMMAND_MAX_AGE_S)),
+        "priority": int(site["control"].get("generation_gate_priority", 1)),
+        "unit_active_power_setpoint_channel": setpoint_ch,
+        "floor_w": floor_w,
+    }
+
+
+def _hard_switch_config(site: dict) -> dict | None:
+    """Resolve the hard inverter switch config, or None when not enabled.
+
+    Opt-in via the `hard_switch:` section. `start_writes`/`stop_writes` are lists
+    of `{channel, value}` — the device command register(s) and the values to
+    write for a remote start / stop. Vendor-flexible: one run/stop register or
+    two separate command registers, any values. Channel existence and the
+    `command` flag are validated in build_ems against the device tag pool.
+    """
+    cfg = site.get("hard_switch")
+    if not cfg:
+        return None
+
+    def parse(key: str) -> list[tuple[str, float]]:
+        pairs = []
+        for item in cfg.get(key) or []:
+            if not isinstance(item, dict) or "channel" not in item or "value" not in item:
+                raise ValueError(f"hard_switch.{key} entries must be {{channel, value}}")
+            pairs.append((str(item["channel"]), float(item["value"])))
+        return pairs
+
+    start_writes = parse("start_writes")
+    stop_writes = parse("stop_writes")
+    if not start_writes or not stop_writes:
+        raise ValueError("hard_switch needs non-empty start_writes and stop_writes")
+    return {"start_writes": start_writes, "stop_writes": stop_writes}
+
+
+def _validate_hard_switch_channels(hard_cfg: dict, channels: list[Channel]) -> None:
+    """Raise unless every hard-switch write targets a real `command` channel.
+
+    A start/stop write must land on a register flagged `command: true` in the
+    device profile: those are the only channels written one-shot (a plain
+    setpoint would be continuously mirrored/keep-alived, spamming the command).
+    """
+    by_name = {c.name: c for c in channels}
+    problems = []
+    for key in ("start_writes", "stop_writes"):
+        for ch, _ in hard_cfg[key]:
+            channel = by_name.get(ch)
+            if channel is None:
+                problems.append(f"hard_switch.{key} channel '{ch}' is not in the tag pool")
+            elif not getattr(channel, "command", False):
+                problems.append(
+                    f"hard_switch.{key} channel '{ch}' is not a command register "
+                    f"(set `command: true` on it in the device profile)"
+                )
+    if problems:
+        raise ValueError("hard_switch config error: " + "; ".join(problems))
+
+
 def required_channels(site: dict) -> list[str]:
     """All tags the controllers will read/drive, per site.yaml bindings.
 
@@ -155,6 +255,14 @@ def required_channels(site: dict) -> list[str]:
         tags += [
             head_cfg["unit_active_power_channel"],
             head_cfg["unit_active_power_setpoint_channel"],
+        ]
+    if _generation_gate_config(site):
+        tags += [GENERATION_ALLOWED_CHANNEL, GENERATION_GATE_ACTIVE_CHANNEL]
+    if _hard_switch_config(site):
+        tags += [
+            INVERTER_COMMAND_CHANNEL,
+            INVERTER_COMMAND_ID_CHANNEL,
+            INVERTER_RUN_STATE_CHANNEL,
         ]
     return tags
 
@@ -326,11 +434,15 @@ def validate_write_age_guard(site: dict) -> None:
         )
 
 
-def build_tasks(site: dict) -> list[Task]:
+def build_tasks(site: dict, command_sink=None) -> list[Task]:
     """Build the control tasks from a site config dict.
 
     Shared by build_ems() (real Modbus) and the simulation harness, so both
     exercise the *same* controllers and tuning — the sim verifies production.
+
+    `command_sink` (the CachedDriver) is required only for the hard inverter
+    switch (one-shot command writes); when None, the hard switch is skipped even
+    if configured — keeps build_tasks usable in tests with no driver.
     """
     exp_cfg = site["export_limit"]
     cp_cfg = site["connection_point_active_power"]
@@ -434,6 +546,42 @@ def build_tasks(site: dict) -> list[Task]:
                 headroom_pct=head_cfg["headroom_pct"],
                 unit_active_power_channel=head_cfg["unit_active_power_channel"],
                 unit_active_power_setpoint_channel=head_cfg["unit_active_power_setpoint_channel"],
+            )
+        )
+
+    # Generation gate (operational interlock, opt-in via control.command_json):
+    # a priority-1 pin to a safe floor while the operator has not enabled
+    # production. Below safety (0), above every economic requester.
+    gate_cfg = _generation_gate_config(site)
+    if gate_cfg:
+        logger.info(
+            "Generation gate: %s pinned to %.0f W while disabled (priority %d)",
+            gate_cfg["unit_active_power_setpoint_channel"], gate_cfg["floor_w"],
+            gate_cfg["priority"],
+        )
+        fast_controllers.append(
+            GenerationGateController(
+                name=GENERATION_GATE_REQUESTER,
+                priority=gate_cfg["priority"],
+                unit_active_power_setpoint_channel=gate_cfg["unit_active_power_setpoint_channel"],
+                floor_w=gate_cfg["floor_w"],
+            )
+        )
+
+    # Hard inverter switch (latched remote start/stop): drives the device command
+    # register(s) via the one-shot command sink. Needs the driver, so it is only
+    # added when a command_sink is supplied (build_ems passes the CachedDriver).
+    hard_cfg = _hard_switch_config(site)
+    if hard_cfg and command_sink is not None:
+        logger.info(
+            "Hard inverter switch: start=%s stop=%s",
+            hard_cfg["start_writes"], hard_cfg["stop_writes"],
+        )
+        fast_controllers.append(
+            HardSwitchController(
+                command_sink=command_sink,
+                start_writes=hard_cfg["start_writes"],
+                stop_writes=hard_cfg["stop_writes"],
             )
         )
 
@@ -619,6 +767,47 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
         Channel(SAFE_MODE_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
         Channel(SETPOINT_VIOLATION_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
     ]
+
+    # Generation gate (opt-in): the command tag the gate reads, its active flag,
+    # and the age of the UI command file. Added only when the gate is enabled so
+    # the tag pool stays unchanged for sites without an operator command channel.
+    gate_cfg = _generation_gate_config(site)
+    commands = None
+    if gate_cfg:
+        channels += [
+            Channel(GENERATION_ALLOWED_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
+            Channel(GENERATION_GATE_ACTIVE_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
+            Channel(COMMAND_AGE_CHANNEL, unit="s", value=float("inf")),
+        ]
+        # run_start_wall pins "this run": a leftover command file that enabled
+        # generation in a previous run must not re-enable it after a restart.
+        commands = CommandFileReader(
+            gate_cfg["path"],
+            run_start_wall=time.time(),
+            max_age_s=gate_cfg["max_age_s"],
+        )
+        logger.info(
+            "Generation gate command file: %s (max age %.0fs); generation starts DISABLED",
+            gate_cfg["path"], gate_cfg["max_age_s"],
+        )
+
+    # Hard inverter switch (opt-in): the latched command tags it reads + the
+    # run-state it reports. The command file (above) carries the action; require
+    # the gate's command_json so there IS a reader to publish the inverter tags.
+    hard_cfg = _hard_switch_config(site)
+    if hard_cfg:
+        if commands is None:
+            raise ValueError(
+                "hard_switch requires control.command_json (the UI command file "
+                "the EMS reads), so the inverter command can reach the EMS"
+            )
+        channels += [
+            Channel(INVERTER_COMMAND_CHANNEL, unit="", min_val=0, max_val=1, value=float("nan")),
+            Channel(INVERTER_COMMAND_ID_CHANNEL, unit="", value=float("nan")),
+            Channel(INVERTER_RUN_STATE_CHANNEL, unit="", min_val=0, max_val=1, writable=True, value=float("nan")),
+        ]
+        _validate_hard_switch_channels(hard_cfg, channels)
+
     state = SystemState(channels)
 
     # Fail fast: every controller-bound tag must exist before we start driving
@@ -627,7 +816,8 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     validate_bindings(site, [c.name for c in channels])
     validate_binding_directions(site, channels)
 
-    tasks = build_tasks(site)
+    # The CachedDriver is the command sink for the hard switch (one-shot writes).
+    tasks = build_tasks(site, command_sink=driver)
     allocator, board = build_allocation(site)
     recorder = build_recorder(site, [c.name for c in channels])
     publisher = build_publisher(site, channels)
@@ -639,7 +829,7 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     )
     return Scheduler(
         tasks=tasks, state=state, driver=driver, allocator=allocator, board=board,
-        recorder=recorder, telemetry=publisher,
+        recorder=recorder, telemetry=publisher, commands=commands,
     )
 
 

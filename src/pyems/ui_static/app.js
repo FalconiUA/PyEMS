@@ -260,6 +260,7 @@ function renderProfile(profilePayload) {
       <td><input data-field="scale" type="number" step="0.0001" value="${reg.scale}" required></td>
       <td><input data-field="unit" value="${esc(reg.unit ?? "")}"></td>
       <td><select data-field="access"><option value="read"${reg.access === "read" ? " selected" : ""}>read</option><option value="read_write"${reg.access === "read_write" ? " selected" : ""}>read_write</option></select></td>
+      <td><input data-field="command" type="checkbox" title="Discrete command register (e.g. remote start/stop): written one-shot, never keep-alive rewritten. Requires read_write."${reg.command ? " checked" : ""}></td>
       <td><input data-field="min_val" type="number" step="1" value="${Number.isFinite(reg.min_val) ? reg.min_val : ""}"></td>
       <td><input data-field="max_val" type="number" step="1" value="${Number.isFinite(reg.max_val) ? reg.max_val : ""}"></td>
       <td><button type="button" data-remove-register="${idx}">Remove</button></td>
@@ -443,7 +444,6 @@ function renderStatusBar() {
   el.innerHTML = `
     <div class="ems-state ${state.kind}" title="${esc(state.detail)}">${esc(state.label)}</div>
     ${items.map(([name, value]) => `<div class="bar-item"><span class="name">${esc(name)}</span><span class="value">${esc(value)}</span></div>`).join("")}
-    <button class="bar-btn" disabled title="Start/stop requires a safe service-control API — not wired yet (read-only placeholder).">Start / Stop</button>
   `;
 }
 
@@ -816,12 +816,14 @@ async function refreshOverview() {
   lastSnapshot = data;
   pushOverviewHistory();
   renderOverview();
+  refreshEmsControl().catch(() => {});
   return data;
 }
 
 function gatherDevices() {
   return [...document.querySelectorAll("[data-device-index]")].map((row) => {
-    const data = {};
+    const idx = Number(row.dataset.deviceIndex);
+    const data = { ...(site.devices[idx] || {}) };
     for (const input of row.querySelectorAll("[data-field]")) {
       const field = input.dataset.field;
       if (field === "port") {
@@ -849,10 +851,15 @@ function gatherSite() {
     regulation_priority: parseNum($("scenario.regulation_priority").value),
   };
   next.control = {
+    ...(site.control || {}),
     fast_cycle_s: parseNum($("control.fast_cycle_s").value),
     poll_interval_s: parseNum($("control.poll_interval_s").value),
   };
-  next.safety = { max_comms_age_s: parseNum($("safety.max_comms_age_s").value), unit_active_power_setpoint_channels: [] };
+  next.safety = {
+    ...(site.safety || {}),
+    max_comms_age_s: parseNum($("safety.max_comms_age_s").value),
+    unit_active_power_setpoint_channels: [],
+  };
   next.connection_point_active_power ||= {};
   next.connection_point_active_power.gains = {
     kp: parseNum($("pid.kp").value),
@@ -861,6 +868,7 @@ function gatherSite() {
     tt: parseNum($("pid.tt").value),
   };
   const allocChannel = {
+    ...(allocationCfg() || {}),
     setpoint_channel: "",
     p_min_w: parseNum($("allocation.p_min_w").value),
     p_max_w: parseNum($("allocation.p_max_w").value),
@@ -889,7 +897,9 @@ function gatherProfile() {
       const data = {};
       for (const input of row.querySelectorAll("[data-field]")) {
         const field = input.dataset.field;
-        if (["address", "scale", "min_val", "max_val"].includes(field)) {
+        if (field === "command") {
+          if (input.checked) data[field] = true;  // omit when false (default)
+        } else if (["address", "scale", "min_val", "max_val"].includes(field)) {
           if (input.value !== "") data[field] = parseNum(input.value);
         } else {
           data[field] = input.value;
@@ -1040,6 +1050,136 @@ async function stopSim() {
   setStatus("Simulator stopped.", "ok");
 }
 
+// ── Operation: EMS service + generation gate (Overview control panel) ────────
+let emsStatus = null;
+let genStatus = null;
+
+function generationAllowed() {
+  return genStatus && genStatus.configured && (genStatus.allowed ?? 0) >= 0.5;
+}
+function renderEmsControlRow() {
+  const row = $("emsControlRow");
+  if (!row || !emsStatus) return;
+  const running = emsStatus.running;
+  const where = emsStatus.external ? "external" : emsStatus.managed ? "managed" : "";
+  const chip = running
+    ? `<span class="badge ok">EMS running${where ? " (" + where + ")" : ""}</span>`
+    : `<span class="badge off">EMS stopped</span>`;
+  let controls = "";
+  if (emsStatus.process_control) {
+    const stopTitle = "Stops the control loop (service). Generation is disabled first; "
+      + "the last setpoint stays on the inverter until its comms watchdog. Not an emergency stop.";
+    controls = `
+      <button class="primary" id="startEmsBtn"${running ? " disabled" : ""}>Start EMS</button>
+      <button class="danger" id="stopEmsBtn"${running && emsStatus.managed ? "" : " disabled"} title="${esc(stopTitle)}">Stop EMS service</button>`;
+  } else {
+    controls = `<span class="hint">Process control disabled — run the UI with <code>--manage-ems</code> to start/stop the EMS here, or use systemd.</span>`;
+  }
+  row.innerHTML = chip + controls;
+}
+function renderGenerationControlRow() {
+  const row = $("generationControlRow");
+  if (!row) return;
+  if (!genStatus || !genStatus.ok || !genStatus.configured) {
+    row.innerHTML = `<span class="hint">Generation gate not configured for this site (set <code>control.command_json</code>).</span>`;
+    return;
+  }
+  const emsRunning = genStatus.ems_running;
+  const allowed = generationAllowed();
+  let chip;
+  if (!emsRunning) chip = `<span class="badge off">Generation —</span>`;
+  else if (allowed) chip = `<span class="badge ok">Generation ON</span>`;
+  else chip = `<span class="badge warn">Generation OFF (pinned to floor)</span>`;
+  row.innerHTML = `
+    ${chip}
+    <button class="primary" id="startGenBtn"${!emsRunning || allowed ? " disabled" : ""}>Start generation</button>
+    <button class="danger" id="stopGenBtn"${!emsRunning || !allowed ? " disabled" : ""}>Stop generation</button>`;
+}
+function renderInverterControlRow() {
+  const row = $("inverterControlRow");
+  if (!row) return;
+  if (!genStatus || !genStatus.ok || !genStatus.hard_switch) {
+    row.innerHTML = ""; // hard switch not configured for this site
+    return;
+  }
+  const emsRunning = genStatus.ems_running;
+  const runState = genStatus.inverter_run_state; // 1 started, 0 stopped, null never
+  let chip;
+  if (!emsRunning || runState === null || runState === undefined) chip = `<span class="badge off">Inverter —</span>`;
+  else if (runState >= 0.5) chip = `<span class="badge ok">Inverter started</span>`;
+  else chip = `<span class="badge bad">Inverter stopped (de-energized)</span>`;
+  const stopTitle = "HARD stop: de-energizes the inverter via its remote stop register. "
+    + "Restart is slow (DC reconnect, anti-islanding timer). Not the same as Stop generation (soft curtail to 0 W).";
+  row.innerHTML = `
+    ${chip}
+    <span class="hint">Hard switch:</span>
+    <button id="startInverterBtn"${!emsRunning ? " disabled" : ""}>Hard start</button>
+    <button class="danger" id="stopInverterBtn"${!emsRunning ? " disabled" : ""} title="${esc(stopTitle)}">Hard stop</button>`;
+}
+function renderControlBar() {
+  renderEmsControlRow();
+  renderGenerationControlRow();
+  renderInverterControlRow();
+}
+async function refreshEmsControl() {
+  const [e, g] = await Promise.all([api("/api/ems/status"), api("/api/generation")]);
+  emsStatus = e;
+  genStatus = g;
+  renderControlBar();
+}
+async function startEms() {
+  setStatus("Starting EMS control loop...");
+  $("startEmsBtn").disabled = true;
+  await api("/api/ems/start", { method: "POST", body: "{}" });
+  await refreshEmsControl();
+  setStatus("EMS started. Generation stays disabled until you start it.", "ok");
+}
+async function waitForGateActive(timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const g = await api("/api/generation");
+    if (!g.configured || (g.gate_active ?? 0) >= 0.5 || !g.ems_running) return;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+async function stopEmsService() {
+  // Not an emergency stop: ramp generation down first, then stop the process.
+  if (generationAllowed()) {
+    setStatus("Disabling generation before stopping the EMS...");
+    await api("/api/generation/stop", { method: "POST", body: "{}" });
+    await waitForGateActive();
+  }
+  setStatus("Stopping EMS control loop...");
+  await api("/api/ems/stop", { method: "POST", body: "{}" });
+  await refreshEmsControl();
+  setStatus("EMS stopped. Last setpoint persists on the unit until its comms watchdog.", "ok");
+}
+async function startGeneration() {
+  setStatus("Enabling inverter generation...");
+  await api("/api/generation/start", { method: "POST", body: "{}" });
+  await refreshEmsControl();
+  setStatus("Generation enabled — the unit ramps up under allocator control.", "ok");
+}
+async function stopGeneration() {
+  setStatus("Disabling inverter generation...");
+  await api("/api/generation/stop", { method: "POST", body: "{}" });
+  await refreshEmsControl();
+  setStatus("Generation disabled — the unit ramps down to its floor.", "ok");
+}
+async function startInverter() {
+  setStatus("Hard start: energizing inverter...");
+  await api("/api/inverter/start", { method: "POST", body: "{}" });
+  await refreshEmsControl();
+  setStatus("Hard start sent — the inverter re-energizes (cold start may be slow).", "ok");
+}
+async function stopInverter() {
+  if (!window.confirm("HARD stop de-energizes the inverter (restart is slow). Use 'Stop generation' for a soft curtail to 0 W. Proceed with hard stop?")) return;
+  setStatus("Hard stop: de-energizing inverter...");
+  await api("/api/inverter/stop", { method: "POST", body: "{}" });
+  await refreshEmsControl();
+  setStatus("Hard stop sent — the inverter is commanded off.", "ok");
+}
+
 function showView(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === name));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === name));
@@ -1105,6 +1245,12 @@ document.addEventListener("click", async (event) => {
   if (target.id === "simStartBtn") startSim().catch((error) => { handleError(error); refreshSim().catch(() => {}); });
   if (target.id === "simStopBtn") stopSim().catch(handleError);
   if (target.id === "simOpenBtn" && simStatus) window.open(simPanelUrl(), "_blank");
+  if (target.id === "startEmsBtn") startEms().catch((error) => { handleError(error); refreshEmsControl().catch(() => {}); });
+  if (target.id === "stopEmsBtn") stopEmsService().catch((error) => { handleError(error); refreshEmsControl().catch(() => {}); });
+  if (target.id === "startGenBtn") startGeneration().catch(handleError);
+  if (target.id === "stopGenBtn") stopGeneration().catch(handleError);
+  if (target.id === "startInverterBtn") startInverter().catch(handleError);
+  if (target.id === "stopInverterBtn") stopInverter().catch(handleError);
   if (target.id === "addDeviceBtn") {
     site.devices.push({ id: "unit" + (site.devices.length + 1), profile: profiles[0] || "", host: "", slave_id: 1 });
     renderAll();

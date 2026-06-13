@@ -21,6 +21,21 @@ WRITE_AGE_CHANNEL = "sys.write_age_s"            # seconds since last good setpo
 SAFE_MODE_CHANNEL = "sys.safe_mode"              # 1.0 = safety trip active, 0.0 = healthy
 SETPOINT_VIOLATION_CHANNEL = "sys.setpoint_violation"  # 1.0 = unit not following its setpoint
 
+# ── generation gate (operational interlock, NOT a safety-rated E-stop) ────────
+# Two-level operation: the EMS process being alive (safety + polling) is
+# separate from generation being permitted. The gate lets an operator pin the
+# unit to a safe floor until they explicitly enable production from the UI.
+GENERATION_ALLOWED_CHANNEL = "sys.generation_allowed"      # 1.0 = production permitted, 0.0 = pinned to floor
+GENERATION_GATE_ACTIVE_CHANNEL = "sys.generation_gate_active"  # 1.0 = gate is actively pinning the unit
+COMMAND_AGE_CHANNEL = "sys.command_age_s"        # seconds since the UI command file was issued; inf if none
+
+# ── hard inverter switch (latched remote start/stop — an OPERATOR ACTION) ─────
+# Separate level from the soft gate: this drives the device's own start/stop
+# command register(s), de-energizing the inverter, not just curtailing to 0 W.
+INVERTER_COMMAND_CHANNEL = "sys.inverter_command"      # latest requested action: 1=start, 0=stop, NaN=none
+INVERTER_COMMAND_ID_CHANNEL = "sys.inverter_command_id"  # wall-clock id of that action; NaN if none/leftover
+INVERTER_RUN_STATE_CHANNEL = "sys.inverter_run_state"  # what the EMS last commanded: 1=started, 0=stopped, NaN=never
+
 # Per-device read-freshness tag (parametric, so a helper not a constant):
 # `sys.<device id>.comms_age_s`, seconds since THAT device's last good read.
 # Prefixed with `sys.` so it never collides with the device's own tags
@@ -36,3 +51,4 @@ EXPORT_LIMIT_REQUESTER = "export_limit"                      # export cap constr
 CONNECTION_POINT_POWER_REQUESTER = "connection_point_active_power"  # PID regulation target
 IMPORT_LIMIT_REQUESTER = "connection_point_import_limit"     # ConnectionPointPowerController import mode
 SETPOINT_HEADROOM_REQUESTER = "setpoint_headroom"            # available-power tracking cap
+GENERATION_GATE_REQUESTER = "generation_gate"               # priority-1 pin-to-floor when generation disabled

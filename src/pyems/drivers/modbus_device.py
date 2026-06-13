@@ -113,6 +113,10 @@ class RegisterDef:
     access: str  # "read" | "read_write"
     min_val: float = float("-inf")
     max_val: float = float("inf")
+    # Discrete command register (e.g. remote start/stop): written only via a
+    # one-shot forced command, never by the continuous setpoint flush/keep-alive
+    # (see CachedDriver). Must be read_write.
+    command: bool = False
     # Derived from `type`/`access` once at load; plain attributes (not
     # properties) because they sit on the per-register poll/flush hot path.
     count: int = field(init=False, repr=False, compare=False)
@@ -137,6 +141,11 @@ class RegisterDef:
             )
         if self.scale == 0:
             raise ValueError(f"register '{self.channel}': scale must be non-zero")
+        if self.command and self.access != "read_write":
+            raise ValueError(
+                f"register '{self.channel}': command registers must be "
+                f"'read_write' (they are written, just one-shot not continuously)"
+            )
         if self.min_val > self.max_val:
             raise ValueError(
                 f"register '{self.channel}': min_val ({self.min_val}) > "
@@ -182,6 +191,7 @@ class DeviceProfile:
                 min_val=r.min_val,
                 max_val=r.max_val,
                 writable=r.writable,
+                command=r.command,
             )
             for r in self.registers
         ]

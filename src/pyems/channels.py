@@ -13,6 +13,10 @@ class Channel:
     min_val: float = float("-inf")
     max_val: float = float("inf")
     writable: bool = False  # True = setpoint (VAR_OUTPUT to hardware)
+    # True = discrete COMMAND register (e.g. remote start/stop): writable, but
+    # written only via a one-shot forced command, never mirrored by the
+    # continuous setpoint flush / keep-alive rewrite (see CachedDriver).
+    command: bool = False
 
 
 class SystemState:

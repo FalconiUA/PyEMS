@@ -5,7 +5,7 @@ import time
 import pytest
 from pymodbus.client import ModbusTcpClient
 
-from pyems.drivers.modbus_device import DeviceProfile
+from pyems.drivers.modbus_device import DeviceProfile, RegisterDef, _encode
 from pyems.ems import PROFILES
 from pyems.sim.device import SimulatedDevice
 
@@ -58,6 +58,14 @@ def read_grid_w(client: ModbusTcpClient) -> float:
     return float(value)
 
 
+def profile_reg(profile: DeviceProfile, channel: str) -> RegisterDef:
+    return next(r for r in profile.registers if r.channel == channel)
+
+
+def words_for(value: float, regdef: RegisterDef) -> list[int]:
+    return _encode(int(value / regdef.scale), regdef)
+
+
 def test_meter_serves_negative_int32(meter_device):
     meter_device.set_fields({"W": -23456.0})
     client = connect(meter_device)
@@ -68,14 +76,17 @@ def test_meter_serves_negative_int32(meter_device):
 
 
 def test_write_setpoint_decoded_and_routed(pv_device):
+    reg_wset = profile_reg(pv_device.profile, "pv.WSet")
+    setpoint_w = 5000.0
     client = connect(pv_device)
     try:
-        # pv.WSet @ 40126 uint32: 54321 W
-        result = client.write_registers(40126, [0x0000, 0xD431], device_id=1)
+        result = client.write_registers(
+            reg_wset.address, words_for(setpoint_w, reg_wset), device_id=1
+        )
         assert not result.isError()
     finally:
         client.close()
-    assert pv_device.setpoints == [("WSet", 54321.0)]
+    assert pv_device.setpoints == [("WSet", setpoint_w)]
 
 
 def test_freeze_fault_serves_stale_values(meter_device):
@@ -106,33 +117,43 @@ def test_modbus_exception_fault(meter_device):
 
 
 def test_reject_writes_fault(pv_device):
+    reg_w = profile_reg(pv_device.profile, "pv.W")
+    reg_wset = profile_reg(pv_device.profile, "pv.WSet")
     client = connect(pv_device)
     try:
         pv_device.set_fault("reject_writes", True)
-        result = client.write_registers(40126, [0, 100], device_id=1)
+        result = client.write_registers(
+            reg_wset.address, words_for(5000.0, reg_wset), device_id=1
+        )
         assert result.isError()
         # the rejected write must not reach the plant model
         assert pv_device.setpoints == []
         # reads still work while writes are rejected
         pv_device.set_fields({"W": 1234.0})
-        read = client.read_holding_registers(32080, count=2, device_id=1)
+        read = client.read_holding_registers(reg_w.address, count=reg_w.count, device_id=1)
         assert not read.isError()
     finally:
         client.close()
 
 
 def test_link_age_tracks_ems_reads_and_writes(pv_device):
+    reg_w = profile_reg(pv_device.profile, "pv.W")
+    reg_wset = profile_reg(pv_device.profile, "pv.WSet")
     ages = pv_device.link_age_s()
     assert ages == {"read_age_s": None, "write_age_s": None}
 
     client = connect(pv_device)
     try:
-        assert not client.read_holding_registers(32080, count=2, device_id=1).isError()
+        assert not client.read_holding_registers(
+            reg_w.address, count=reg_w.count, device_id=1
+        ).isError()
         ages = pv_device.link_age_s()
         assert ages["read_age_s"] is not None and ages["read_age_s"] < 2.0
         assert ages["write_age_s"] is None  # a read is not a write
 
-        assert not client.write_registers(40126, [0, 100], device_id=1).isError()
+        assert not client.write_registers(
+            reg_wset.address, words_for(5000.0, reg_wset), device_id=1
+        ).isError()
         ages = pv_device.link_age_s()
         assert ages["write_age_s"] is not None and ages["write_age_s"] < 2.0
     finally:

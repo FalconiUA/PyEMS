@@ -40,10 +40,16 @@ class GeneratingUnitSim:
         # Fault: remote power control disabled — the unit ignores the setpoint
         # (drives SetpointComplianceMonitor in the EMS).
         self.ignore_setpoint = False
+        # Hard remote switch: when stopped, the inverter is de-energized and
+        # produces nothing regardless of available resource or setpoint.
+        self.enabled = True
 
     def step(self, dt_s: float, available_w: float) -> float:
-        cap = self.p_max_w if self.ignore_setpoint else self.active_power_setpoint_w
-        target = max(0.0, min(available_w, cap, self.p_max_w))
+        if not self.enabled:
+            target = 0.0
+        else:
+            cap = self.p_max_w if self.ignore_setpoint else self.active_power_setpoint_w
+            target = max(0.0, min(available_w, cap, self.p_max_w))
         if self.tau_s <= 0:
             self.active_power_w = target
         else:
@@ -86,6 +92,11 @@ class SimWorld:
     def set_ignore_setpoint(self, active: bool) -> None:
         with self._lock:
             self.unit.ignore_setpoint = active
+
+    def set_unit_enabled(self, enabled: bool) -> None:
+        """Hard remote start/stop from EMS command register(s)."""
+        with self._lock:
+            self.unit.enabled = enabled
 
     def tick(self, now_s: float) -> dict[str, float]:
         available_w = self.unit_available_source.value_w(now_s)

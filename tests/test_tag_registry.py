@@ -21,7 +21,7 @@ def test_collect_cross_references_the_sim_site():
 
     grid_w = entries["grid.W"]
     assert "reg @40001" in grid_w.origin
-    assert any("export_limit" in r for r in grid_w.reads)
+    assert any("connection_point_" in r for r in grid_w.reads)
     assert any("freeze guard" in r for r in grid_w.reads)
 
     wset = entries["pv.WSet"]
