@@ -98,7 +98,26 @@ The systemd-managed EMS is still started/stopped with `systemctl` (the UI does
 not manage it). Config edited in the UI is read at EMS startup, so apply changes
 with `sudo systemctl restart pyems`.
 
-## 6. Update
+## 6. Clock / time sync (the Pi has no RTC)
+
+The control loop times itself with the **monotonic** clock, so it is correct
+regardless of the wall clock. But the **wall clock** drives operator-command
+freshness and every log/telemetry/CSV timestamp — and a Raspberry Pi has **no
+battery-backed RTC**, so at boot it may read a stale or epoch-near time until
+NTP syncs. The EMS logs a WARNING at startup if the clock looks unsynced, and
+the units order themselves `After=time-sync.target`.
+
+For a clock that is correct immediately at boot (e.g. offline sites, or to make
+post-mortem timestamps trustworthy):
+
+```bash
+sudo apt install -y chrony            # keep the clock disciplined when online
+# Offline between boots? add fake-hwclock to restore the last-known time:
+sudo apt install -y fake-hwclock
+# Best: fit a hardware RTC module (DS3231) and enable its kernel overlay.
+```
+
+## 7. Update
 
 ```bash
 cd /home/pi/PyEMS

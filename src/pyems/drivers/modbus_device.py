@@ -117,6 +117,20 @@ class RegisterDef:
     # one-shot forced command, never by the continuous setpoint flush/keep-alive
     # (see CachedDriver). Must be read_write.
     command: bool = False
+    # 32-bit word order: "big" = high word at the lower address (the historic
+    # default), "little" = low word first (word-swapped). The single most common
+    # Modbus interop mismatch — many inverters/meters publish int32/uint32
+    # low-word-first. Ignored for 16-bit registers.
+    word_order: str = "big"
+    # Swap the two bytes WITHIN each 16-bit register (rare, but some gateways
+    # present byte-swapped data). Applied after the word order.
+    byte_swap: bool = False
+    # Modbus object the register lives in: "holding" (FC03 read / FC16|FC06
+    # write) or "input" (FC04, read-only — many meters expose measurements here).
+    register_type: str = "holding"
+    # Use FC06 (write single register) instead of FC16 (write multiple) for a
+    # 16-bit setpoint — some devices reject FC16 on a single register.
+    write_single: bool = False
     # Derived from `type`/`access` once at load; plain attributes (not
     # properties) because they sit on the per-register poll/flush hot path.
     count: int = field(init=False, repr=False, compare=False)
@@ -151,9 +165,34 @@ class RegisterDef:
                 f"register '{self.channel}': min_val ({self.min_val}) > "
                 f"max_val ({self.max_val})"
             )
+        if self.word_order not in ("big", "little"):
+            raise ValueError(
+                f"register '{self.channel}': word_order must be 'big' or "
+                f"'little', got {self.word_order!r}"
+            )
+        if self.register_type not in ("holding", "input"):
+            raise ValueError(
+                f"register '{self.channel}': register_type must be 'holding' or "
+                f"'input', got {self.register_type!r}"
+            )
+        if self.register_type == "input" and self.access != "read":
+            raise ValueError(
+                f"register '{self.channel}': input registers are read-only "
+                f"(set access: read) — they cannot be written"
+            )
         self.count = _REG_COUNT[self.type]
         self.signed = self.type.startswith("int")
         self.writable = self.access == "read_write"
+        if self.write_single and not self.writable:
+            raise ValueError(
+                f"register '{self.channel}': write_single only applies to a "
+                f"writable (read_write) register"
+            )
+        if self.write_single and self.count != 1:
+            raise ValueError(
+                f"register '{self.channel}': write_single (FC06) writes one "
+                f"16-bit register, but type {self.type!r} spans {self.count}"
+            )
 
 
 @dataclass
@@ -197,12 +236,18 @@ class DeviceProfile:
         ]
 
 
+def _swap_bytes(reg16: int) -> int:
+    return ((reg16 & 0xFF) << 8) | ((reg16 >> 8) & 0xFF)
+
+
 def _decode(raw_regs: list[int], reg: RegisterDef) -> int:
+    regs = [_swap_bytes(r) for r in raw_regs] if reg.byte_swap else list(raw_regs)
     if reg.count == 2:
-        value = (raw_regs[0] << 16) | raw_regs[1]
+        hi, lo = (regs[1], regs[0]) if reg.word_order == "little" else (regs[0], regs[1])
+        value = (hi << 16) | lo
         bits = 32
     else:
-        value = raw_regs[0]
+        value = regs[0]
         bits = 16
     if reg.signed and value >= (1 << (bits - 1)):
         value -= 1 << bits
@@ -212,8 +257,24 @@ def _decode(raw_regs: list[int], reg: RegisterDef) -> int:
 def _encode(value: int, reg: RegisterDef) -> list[int]:
     if reg.count == 2:
         v = value & 0xFFFFFFFF
-        return [(v >> 16) & 0xFFFF, v & 0xFFFF]
-    return [value & 0xFFFF]
+        hi, lo = (v >> 16) & 0xFFFF, v & 0xFFFF
+        words = [lo, hi] if reg.word_order == "little" else [hi, lo]
+    else:
+        words = [value & 0xFFFF]
+    return [_swap_bytes(w) for w in words] if reg.byte_swap else words
+
+
+def _int_range(reg: RegisterDef) -> tuple[int, int]:
+    """Inclusive [lo, hi] the register's raw integer must fit, by type/sign.
+
+    Guards the write path against a silent two's-complement wraparound: an
+    out-of-range scaled value (a profile scale/type mistake, or a setpoint whose
+    envelope does not match the register) would otherwise be masked into a wildly
+    different command on the bus."""
+    bits = reg.count * 16
+    if reg.signed:
+        return -(1 << (bits - 1)), (1 << (bits - 1)) - 1
+    return 0, (1 << bits) - 1
 
 
 # Signature inspection is expensive and its result is fixed per pymodbus
@@ -248,12 +309,41 @@ def _read_holding_registers(client, address: int, count: int, slave_id: int):
     return method(address, count=count, **{unit_kw: slave_id})
 
 
+def _read_input_registers(client, address: int, count: int, slave_id: int):
+    method = client.read_input_registers
+    unit_kw = _modbus_unit_kw(method)
+    if unit_kw is None:
+        return method(address, count=count)
+    return method(address, count=count, **{unit_kw: slave_id})
+
+
+def _read_registers(client, reg: RegisterDef, slave_id: int):
+    """Read one register's words via FC03 (holding) or FC04 (input)."""
+    fn = _read_input_registers if reg.register_type == "input" else _read_holding_registers
+    return fn(client, reg.address, reg.count, slave_id)
+
+
 def _write_registers(client, address: int, values: list[int], slave_id: int):
     method = client.write_registers
     unit_kw = _modbus_unit_kw(method)
     if unit_kw is None:
         return method(address, values)
     return method(address, values, **{unit_kw: slave_id})
+
+
+def _write_single_register(client, address: int, value: int, slave_id: int):
+    method = client.write_register
+    unit_kw = _modbus_unit_kw(method)
+    if unit_kw is None:
+        return method(address, value)
+    return method(address, value, **{unit_kw: slave_id})
+
+
+def _write_register_words(client, reg: RegisterDef, words: list[int], slave_id: int):
+    """Write one register via FC06 (write_single) or FC16 (write_registers)."""
+    if reg.write_single:
+        return _write_single_register(client, reg.address, words[0], slave_id)
+    return _write_registers(client, reg.address, words, slave_id)
 
 
 class ModbusDeviceDriver(Driver):
@@ -337,7 +427,7 @@ class ModbusDeviceDriver(Driver):
         failed: list[str] = []
         client, slave = self._client, self._slave
         for reg, tag in self._read_plan:
-            result = _read_holding_registers(client, reg.address, reg.count, slave)
+            result = _read_registers(client, reg, slave)
             if result.isError():
                 logger.debug("Read error %s @%d (%s)", reg.channel, reg.address, result)
                 failed.append(tag)
@@ -373,7 +463,20 @@ class ModbusDeviceDriver(Driver):
             if channels is not None and tag not in channels:
                 continue
             raw = int(state.get(tag) / reg.scale)
-            result = _write_registers(client, reg.address, _encode(raw, reg), slave)
+            lo, hi = _int_range(reg)
+            if not (lo <= raw <= hi):
+                # Refuse rather than let _encode silently wrap a bad value onto
+                # the bus (scale/type/envelope mismatch). Surfaced like a rejected
+                # write so it raises ModbusWriteError and never lands as garbage.
+                logger.error(
+                    "Refusing %s @%d: raw %d outside %s range [%d, %d] "
+                    "(value %g, scale %g) — would wrap on the wire",
+                    reg.channel, reg.address, raw, reg.type, lo, hi,
+                    state.get(tag), reg.scale,
+                )
+                failed.append(tag)
+                continue
+            result = _write_register_words(client, reg, _encode(raw, reg), slave)
             if result is not None and result.isError():
                 logger.debug("Write error %s @%d (%s)", reg.channel, reg.address, result)
                 failed.append(tag)

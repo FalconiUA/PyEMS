@@ -53,12 +53,21 @@ class CachedDriver(Driver):
         inner: Driver,
         poll_interval_s: float = 0.5,
         setpoint_rewrite_s: float = 10.0,
+        managed_setpoint_channels: list[str] | None = None,
     ) -> None:
         """`setpoint_rewrite_s`: keep-alive period for UNCHANGED setpoints.
 
         Changed setpoints flush on the next poll; unchanged ones are re-written
         only every `setpoint_rewrite_s` — often enough to feed a device-side
         comms watchdog, without hammering every writable register each poll.
+
+        `managed_setpoint_channels` (the channels the allocator drives): when
+        given, ONLY these writable registers are mirrored/keep-alived. This stops
+        the EMS from blindly writing every read_write register it finds — a
+        register the control loop never commands (a reactive-power or config
+        register, or any setpoint before its first read) would otherwise be
+        flushed at its default 0, fighting the device's own HMI. None keeps the
+        legacy behavior (mirror every writable register) for standalone use.
         """
         self._inner = inner
         self._device_channels: list[Channel] = inner.channels()
@@ -79,9 +88,25 @@ class CachedDriver(Driver):
         self._command = {
             c.name for c in self._device_channels if c.writable and c.command
         }
-        self._writable = [
+        mirrorable = [
             c.name for c in self._device_channels if c.writable and c.name not in self._command
         ]
+        if managed_setpoint_channels is None:
+            self._writable = mirrorable
+        else:
+            managed = set(managed_setpoint_channels)
+            self._writable = [n for n in mirrorable if n in managed]
+            unmanaged = [n for n in mirrorable if n not in managed]
+            if unmanaged:
+                # A read_write register the allocator does not drive: the EMS
+                # will NOT write it (safe), but the profile probably should not
+                # mark it writable. Log once so the mismatch is visible.
+                logger.warning(
+                    "Writable device registers not driven by the allocator, so "
+                    "left untouched: %s. If the EMS should command them, add an "
+                    "allocation channel; otherwise set access: read in the profile.",
+                    unmanaged,
+                )
         self._measured = [c.name for c in self._device_channels if not c.writable]
         self._poll = poll_interval_s
 

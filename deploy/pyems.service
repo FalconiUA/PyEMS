@@ -15,6 +15,13 @@ Description=PyEMS — local energy management system (Modbus TCP/RTU)
 # not just for systemd's network target to be scheduled.
 Wants=network-online.target
 After=network-online.target
+# The Raspberry Pi has no battery-backed RTC: start after the clock is synced so
+# operator-command freshness and log/telemetry timestamps are correct from the
+# first cycle. (Control timing is on the monotonic clock, so it is safe either
+# way — but fit an RTC module or install chrony + fake-hwclock for a clock that
+# is sane immediately at boot. See DEPLOY.md.)
+Wants=time-sync.target
+After=time-sync.target
 
 [Service]
 Type=simple

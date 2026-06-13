@@ -20,8 +20,10 @@
 
 [Unit]
 Description=PyEMS web UI (status, generation control, log viewer)
-After=network-online.target pyems.service
-Wants=network-online.target
+# time-sync.target: the Pi has no RTC, and the log viewer renders wall-clock
+# timestamps — start after the clock is synced (see DEPLOY.md).
+After=network-online.target time-sync.target pyems.service
+Wants=network-online.target time-sync.target
 
 [Service]
 Type=simple

@@ -511,3 +511,45 @@ def test_per_device_all_failed_uses_full_reconnect_next_poll():
 
     assert inner.disconnect_calls == 1
     assert inner.connect_calls == 1
+
+
+class _TwoWritableInner(Driver):
+    """Inner driver with a driven setpoint AND an extra writable register the
+    control loop does not command (e.g. a reactive-power register)."""
+
+    def __init__(self) -> None:
+        self._channels = [
+            Channel("pv.W", unit="W"),
+            Channel("pv.WSet", unit="W", writable=True, min_val=0, max_val=1e5),
+            Channel("pv.QSet", unit="var", writable=True, min_val=-1e5, max_val=1e5),
+        ]
+
+    def connect(self) -> None:
+        pass
+
+    def disconnect(self) -> None:
+        pass
+
+    def channels(self) -> list[Channel]:
+        return self._channels
+
+    def read_state(self, state: SystemState) -> None:
+        state.apply_driver_value("pv.W", 100.0)
+
+    def write_setpoints(self, state: SystemState, channels=None) -> None:
+        pass
+
+
+def test_managed_setpoints_restrict_mirror_to_driven_channels(caplog):
+    inner = _TwoWritableInner()
+    with caplog.at_level(logging.WARNING):
+        drv = CachedDriver(inner, poll_interval_s=0.01, managed_setpoint_channels=["pv.WSet"])
+    # Only the driven setpoint is mirrored/keep-alived; the undriven writable is
+    # left untouched (no blind 0-write fighting the device HMI), and flagged.
+    assert drv._writable == ["pv.WSet"]
+    assert "pv.QSet" in caplog.text
+
+
+def test_no_managed_setpoints_mirrors_all_writable():
+    drv = CachedDriver(_TwoWritableInner(), poll_interval_s=0.01)
+    assert set(drv._writable) == {"pv.WSet", "pv.QSet"}  # legacy behavior

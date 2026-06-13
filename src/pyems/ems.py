@@ -796,10 +796,14 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
 
     # Non-blocking I/O: real Modbus runs in a background thread against a tag
     # cache, so a slow/hung bus transaction never stalls the control cycle.
+    # Only the allocator's setpoint channels are mirrored/keep-alived — the EMS
+    # never blindly writes a read_write register it does not actively command.
+    managed_setpoints = [ch["setpoint_channel"] for ch in site["allocation"]["channels"]]
     driver = CachedDriver(
         devices,
         poll_interval_s=ctrl_cfg["poll_interval_s"],
         setpoint_rewrite_s=ctrl_cfg.get("setpoint_rewrite_s", 10.0),
+        managed_setpoint_channels=managed_setpoints,
     )
     driver.connect()
 
@@ -875,6 +879,30 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     )
 
 
+# A wall clock reading before this instant means the system clock has not been
+# set/synced yet. The Raspberry Pi has no battery-backed RTC, so until NTP/chrony
+# syncs (or an RTC module is fitted) `time.time()` can read epoch-near or a stale
+# value. Control timing uses time.monotonic() and is unaffected; this only flags
+# that WALL-clock-derived things (operator-command freshness, log/telemetry/CSV
+# timestamps) may be unreliable for the early seconds after boot.
+_MIN_PLAUSIBLE_WALL_S = 1_704_067_200.0  # 2024-01-01 UTC
+
+
+def warn_if_clock_unsynced(now_wall: float | None = None) -> bool:
+    """Log a warning when the wall clock looks unset (returns True if it does)."""
+    now = time.time() if now_wall is None else now_wall
+    if now < _MIN_PLAUSIBLE_WALL_S:
+        logger.warning(
+            "System wall clock reads %s — looks UNSYNCED (no RTC yet?). Control "
+            "timing is on the monotonic clock and unaffected, but operator-command "
+            "freshness and log/telemetry timestamps may be wrong until time sync. "
+            "Order the service After=time-sync.target and/or fit an RTC.",
+            time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now)),
+        )
+        return True
+    return False
+
+
 def main() -> None:
     """Console entry point (see [project.scripts] in pyproject.toml)."""
     parser = argparse.ArgumentParser(
@@ -891,6 +919,7 @@ def main() -> None:
     args = parser.parse_args()
 
     setup_logging(args.log_level, log_file=log_file_path(args.site))
+    warn_if_clock_unsynced()
     scheduler = build_ems(args.site)
 
     # systemd stops services with SIGTERM: request a clean shutdown (finish the

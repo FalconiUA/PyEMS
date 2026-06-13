@@ -5,7 +5,14 @@ import pyems.drivers.modbus_device as md
 from pyems.drivers.modbus_device import DEFAULT_SERIAL
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.grid_export_limit import GridExportLimitController
-from pyems.ems import ROOT, build_device_drivers, build_ems, build_tasks, log_file_path
+from pyems.ems import (
+    ROOT,
+    build_device_drivers,
+    build_ems,
+    build_tasks,
+    log_file_path,
+    warn_if_clock_unsynced,
+)
 from pyems.scheduler import Scheduler
 
 
@@ -55,6 +62,12 @@ def test_log_file_path_defaults_overrides_and_disables(tmp_path):
 
     # an unreadable site file must not crash setup_logging — fall back to None
     assert log_file_path(tmp_path / "missing.yaml") is None
+
+
+def test_warn_if_clock_unsynced():
+    # An epoch-near reading (no RTC, pre-NTP) is flagged; a current time is not.
+    assert warn_if_clock_unsynced(now_wall=1000.0) is True
+    assert warn_if_clock_unsynced(now_wall=1_800_000_000.0) is False
 
 
 def test_build_ems_wires_scheduler(monkeypatch):

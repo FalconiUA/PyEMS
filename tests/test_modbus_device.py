@@ -130,7 +130,9 @@ class FakeModbusClient:
         self._fail_unknown = fail_unknown  # unknown address → Modbus error response
         self._fail_writes = fail_writes    # every write → Modbus error response
         self.writes: dict[int, list[int]] = {}
+        self.single_writes: dict[int, int] = {}
         self.reads: list[tuple[int, int, int]] = []
+        self.input_reads: list[tuple[int, int, int]] = []
         self.connect_calls = 0
         self.close_calls = 0
 
@@ -149,11 +151,25 @@ class FakeModbusClient:
             return FakeResult([0] * count)
         return FakeResult(self._reads[address])
 
+    def read_input_registers(self, address, count, slave):
+        self.input_reads.append((address, count, slave))
+        if address not in self._reads:
+            if self._fail_unknown:
+                return FakeResult([], error=True)
+            return FakeResult([0] * count)
+        return FakeResult(self._reads[address])
+
     def write_registers(self, address, values, slave):
         if self._fail_writes:
             return FakeResult([], error=True)
         self.writes[address] = values
         return FakeResult(values)
+
+    def write_register(self, address, value, slave):
+        if self._fail_writes:
+            return FakeResult([], error=True)
+        self.single_writes[address] = value
+        return FakeResult([value])
 
 
 def test_read_state_decodes_and_scales_into_namespaced_tag():
@@ -290,6 +306,87 @@ def test_shared_client_keeps_per_driver_slave_id():
 
     assert any(slave == 0 for _, _, slave in client.reads)
     assert any(slave == 11 for _, _, slave in client.reads)
+
+
+# ── word order / byte swap (32-bit endianness) ───────────────────────────────
+def test_decode_int32_word_order_little():
+    r = RegisterDef("x", 0, "uint32", 1.0, "W", "read", word_order="little")
+    # 0x00010000 low-word-first → regs [low=0x0000, high=0x0001]
+    assert _decode([0x0000, 0x0001], r) == 0x00010000
+
+
+def test_encode_word_order_little_is_reversed_words():
+    little = RegisterDef("x", 0, "int32", 1.0, "W", "read_write", word_order="little")
+    big = RegisterDef("x", 0, "int32", 1.0, "W", "read_write")
+    assert _encode(123456, little) == list(reversed(_encode(123456, big)))
+    assert _decode(_encode(-2, little), little) == -2  # roundtrip
+
+
+def test_byte_swap_roundtrip_and_swaps_bytes():
+    r = RegisterDef("x", 0, "uint16", 1.0, "W", "read", byte_swap=True)
+    assert _encode(0x1234, r) == [0x3412]
+    assert _decode(_encode(0x1234, r), r) == 0x1234
+
+
+def test_word_order_invalid_rejected_at_load():
+    with pytest.raises(ValueError, match="word_order"):
+        RegisterDef("x", 0, "uint32", 1.0, "W", "read", word_order="middle")
+
+
+# ── write range guard (no silent two's-complement wrap) ──────────────────────
+def _single_reg_profile(type_, access="read_write", channel="pv.WSet", **kw):
+    return DeviceProfile(
+        "test", "modbus_tcp", 502,
+        [RegisterDef(channel, 0, type_, 1.0, "W", access, **kw)],
+    )
+
+
+def test_write_out_of_range_is_refused_not_wrapped():
+    drv = ModbusDeviceDriver(_single_reg_profile("uint16"), client=FakeModbusClient({}))
+    st = SystemState(drv.channels())
+    st.set("pv.WSet", -1000.0)  # negative into uint16 would wrap to 64536
+    with pytest.raises(ModbusWriteError, match="pv.WSet"):
+        drv.write_setpoints(st)
+    assert drv._client.writes == {}  # nothing reached the bus
+
+
+def test_write_in_range_still_succeeds():
+    client = FakeModbusClient({})
+    drv = ModbusDeviceDriver(_single_reg_profile("int16"), client=client)
+    st = SystemState(drv.channels())
+    st.set("pv.WSet", -1000.0)  # valid for int16
+    drv.write_setpoints(st)
+    assert client.writes[0] == _encode(-1000, drv._profile.registers[0])
+
+
+# ── FC04 input registers / FC06 single-register write ────────────────────────
+def test_input_register_read_uses_fc04():
+    prof = _single_reg_profile("uint16", access="read", channel="grid.W",
+                               register_type="input")
+    client = FakeModbusClient({0: [1234]})
+    drv = ModbusDeviceDriver(prof, client=client)
+    drv.read_state(SystemState(drv.channels()))
+    assert client.input_reads and not client.reads  # FC04 used, never FC03
+
+
+def test_write_single_register_uses_fc06():
+    client = FakeModbusClient({})
+    drv = ModbusDeviceDriver(_single_reg_profile("uint16", write_single=True), client=client)
+    st = SystemState(drv.channels())
+    st.set("pv.WSet", 50.0)
+    drv.write_setpoints(st)
+    assert client.single_writes[0] == 50
+    assert client.writes == {}  # FC16 not used
+
+
+def test_input_register_must_be_read_only():
+    with pytest.raises(ValueError, match="input registers are read-only"):
+        RegisterDef("x", 0, "uint16", 1.0, "W", "read_write", register_type="input")
+
+
+def test_write_single_requires_one_register():
+    with pytest.raises(ValueError, match="write_single"):
+        RegisterDef("x", 0, "uint32", 1.0, "W", "read_write", write_single=True)
 
 
 # ── make_client: per-protocol client construction (RTU serial params) ────────
