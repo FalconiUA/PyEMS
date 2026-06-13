@@ -29,12 +29,17 @@ Interlock pattern (how safety wins despite running before normal control):
     word for UI and history — it is no longer a behavioral interlock other
     controllers must check.
 
-Fail-safe value for export-limit mode:
-  With no connection-point measurement we cannot know the real export, so we cap
-  unit active power at the export limit itself. Then even with zero site load,
-  export = limit (never exceeds it); any real load makes export smaller. This
-  stays compliant while preserving as much generation as is provably safe —
-  better than curtailing the unit to 0.
+Fail-safe value (`safe_active_power_w`, resolved in ems._safe_active_power_w):
+  The value pinned on trip is mode-INDEPENDENT. It comes from
+  `safety.safe_active_power_w` when configured, else defaults to 0 W when 0 sits
+  inside the unit's allocation envelope, else `p_min_w` (so a storage unit with
+  p_min_w < 0 parks at its safe minimum rather than being forced to charge).
+  Curtailing to 0 W is the conservative default: with no trustworthy
+  connection-point measurement we cannot prove any non-zero output is safe.
+  An operator who instead wants to preserve generation in export-limit mode can
+  set `safety.safe_active_power_w` to the export limit explicitly — then even at
+  zero site load export = limit (never exceeds it) and any real load makes it
+  smaller; the EMS does not assume this on their behalf.
 
 IEC 61131-3 equivalent:
   FUNCTION_BLOCK Safety

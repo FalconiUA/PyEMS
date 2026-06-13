@@ -10,6 +10,8 @@ from pyems.channels import Channel, SystemState
 from pyems.controllers.base import Controller
 from pyems.controllers.grid_export_limit import GridExportLimitController
 from pyems.controllers.safety import SafetyController
+from pyems.controllers.setpoint_headroom import SetpointHeadroomLimiter
+from pyems.ems import build_allocation, build_tasks
 from pyems.system_tags import COMMS_AGE_CHANNEL, SAFE_MODE_CHANNEL
 from pyems.scheduler import Scheduler, Task
 
@@ -134,6 +136,76 @@ def test_two_units_resolved_independently(fake_driver_cls):
     sched.step(now=0.0)
     assert driver.written["pv.WSet"] == 60000.0
     assert driver.written["ess.WSet"] == -30000.0   # negative = charge, accepted
+
+
+def _import_limit_site_with_headroom(headroom_priority):
+    """Import-limit site (regulation priority 10) with the spike-protection
+    headroom enabled and DELIBERATELY mis-prioritized at `headroom_priority`."""
+    return {
+        "scenario": {"control_mode": "import_limit"},
+        "control": {"fast_cycle_s": 1.0},
+        "export_limit": {
+            "limit_w": 0.0, "priority": 5,
+            "connection_point_active_power_channel": "grid.W",
+            "unit_active_power_channel": "pv.W",
+            "unit_active_power_setpoint_channel": "pv.WSet",
+        },
+        "connection_point_active_power": {
+            "export_limit_w": 0.0, "import_limit_w": 50000.0, "priority": 10,
+            "gains": {"kp": 0.4, "ki": 0.08, "kd": 0.0, "tt": 5.0},
+            "connection_point_active_power_channel": "grid.W",
+            "unit_active_power_channel": "pv.W",
+            "unit_active_power_setpoint_channel": "pv.WSet",
+        },
+        "safety": {
+            "max_comms_age_s": 2.0,
+            "unit_active_power_setpoint_channels": ["pv.WSet"],
+        },
+        "allocation": {"channels": [{
+            "setpoint_channel": "pv.WSet", "p_min_w": 0.0, "p_max_w": 100000.0,
+            "default_w": 100000.0, "ramp_rate_w_per_s": 5000.0, "deadband_w": 200.0,
+        }]},
+        # Headroom cap of 10 kW above production: at zero output the cap is 10 kW,
+        # well below the 30 kW the import-limit regulator needs to post.
+        "setpoint_headroom": {"priority": headroom_priority, "headroom_w": 10000.0},
+    }
+
+
+def test_import_limit_headroom_priority_is_bumped_below_regulator():
+    """A headroom priority that would outrank the import-limit regulator (<= 10)
+    is bumped to regulation_priority + 1, so the regulator's floor still wins."""
+    site = _import_limit_site_with_headroom(headroom_priority=5)
+    fast = next(t for t in build_tasks(site) if t.name == "fast")
+    headroom = next(c for c in fast.controllers if isinstance(c, SetpointHeadroomLimiter))
+    assert headroom._priority == 11  # 10 (regulation) + 1, not the misconfigured 5
+
+
+def test_import_limit_restarts_zero_output_unit_despite_headroom(fake_driver_cls):
+    """End-to-end: a unit parked at 0 W under import-limit + headroom must climb.
+
+    Without the headroom priority bump, the 10 kW headroom cap (at 0 output)
+    would outrank and discard the regulator's 30 kW floor, locking the unit near
+    zero. With the bump (applied by build_tasks), the regulator wins and the
+    setpoint restarts upward."""
+    channels = pv_channels()
+    driver = fake_driver_cls(channels)
+    site = _import_limit_site_with_headroom(headroom_priority=5)  # would be the bug
+    tasks = build_tasks(site)
+    allocator, board = build_allocation(site)
+    state = SystemState(channels)
+    sched = Scheduler(tasks, state, driver, allocator=allocator, board=board)
+
+    # Importing 80 kW with the unit at 0 W; limit is 50 kW → regulator floor 30 kW.
+    driver.measurements = {"grid.W": 80000.0, "pv.W": 0.0, COMMS_AGE_CHANNEL: 0.1}
+    sched.step(now=0.0)
+    # The unit restarts past the 10 kW headroom cap straight to the 30 kW floor.
+    assert driver.written["pv.WSet"] == 30000.0
+    assert state.get(SAFE_MODE_CHANNEL) == 0.0  # not a safety trip — normal regulation
+
+    # Still importing over the limit and still at 0 output → keeps climbing,
+    # ramp-limited to +5 kW/cycle (the gradient stays the binding constraint).
+    sched.step(now=1.0)
+    assert driver.written["pv.WSet"] == 35000.0
 
 
 def test_direct_state_set_is_overwritten_by_allocator(fake_driver_cls):
