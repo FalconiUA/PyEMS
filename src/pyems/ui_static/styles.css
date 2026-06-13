@@ -43,6 +43,20 @@ main { max-width: 1200px; margin: 0 auto; padding: 18px; }
 }
 .tab.active { background: var(--accent); border-color: var(--accent); }
 .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 14px; }
+/* Secondary nav inside a view (e.g. Scenario): pill tabs that swap .subview groups. */
+.subtabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.subtab {
+  background: var(--soft);
+  color: #41506a;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.subtab.active { background: var(--accent); color: white; border-color: var(--accent-dark); }
+.subview { display: none; }
+.subview.active { display: block; }
 button {
   border: 1px solid var(--line);
   background: white;

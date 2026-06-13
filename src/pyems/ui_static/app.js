@@ -1040,6 +1040,16 @@ function showView(name) {
   }
 }
 
+// Secondary in-view navigation: a .subtab swaps which .subview group is shown
+// within the same view. Fields stay in the DOM (just hidden), so save/read in
+// app.js still finds every scenario.*/allocation.*/setpoint_headroom.* input.
+function showSubtab(button) {
+  const name = button.dataset.subtab;
+  const view = button.closest(".view") || document;
+  view.querySelectorAll(".subtab").forEach((b) => b.classList.toggle("active", b.dataset.subtab === name));
+  view.querySelectorAll(".subview").forEach((s) => s.classList.toggle("active", s.dataset.subtab === name));
+}
+
 document.addEventListener("input", (event) => {
   // live decode while typing a channel name in the profile register editor
   if (event.target.matches('[data-field="channel"]')) {
@@ -1061,6 +1071,7 @@ document.addEventListener("change", async (event) => {
 document.addEventListener("click", async (event) => {
   const target = event.target;
   if (target.matches(".tab")) showView(target.dataset.view);
+  if (target.matches(".subtab")) showSubtab(target);
   if (target.id === "reloadBtn") loadConfig().catch(handleError);
   if (target.id === "saveBtn" || target.id === "saveSiteBtn") saveConfig().catch(handleError);
   if (target.id === "testReadBtn") testRead().catch(handleError);
