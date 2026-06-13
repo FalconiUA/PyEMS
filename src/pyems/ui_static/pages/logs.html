@@ -1,9 +1,35 @@
-<div class="toolbar">
-  <button id="refreshErrorLogBtn">Refresh</button>
-  <button class="danger" id="clearErrorLogBtn">Clear</button>
+<div class="panel">
+  <h2>EMS log</h2>
+  <p class="hint">What the running control loop logged — safety trips, bus up/down,
+    write failures and their cause. Read from the rotating log file the EMS
+    writes (<code>logging.file</code> in site.yaml); no SSH/journalctl needed.</p>
+  <div class="toolbar">
+    <label>Level
+      <select id="emsLogLevel">
+        <option value="">All</option>
+        <option value="DEBUG">Debug</option>
+        <option value="INFO" selected>Info</option>
+        <option value="WARNING">Warning</option>
+        <option value="ERROR">Error</option>
+      </select>
+    </label>
+    <button id="refreshEmsLogBtn">Refresh</button>
+    <label class="checkbox"><input type="checkbox" id="emsLogAuto"> Auto-refresh (2 s)</label>
+  </div>
+  <p class="hint" id="emsLogEmpty">No EMS log yet.</p>
+  <table>
+    <thead><tr><th>Time</th><th>Level</th><th>Logger</th><th>Message</th></tr></thead>
+    <tbody id="emsLogRows"></tbody>
+  </table>
 </div>
 <div class="panel">
-  <h2>Error log</h2>
+  <h2>UI error log</h2>
+  <p class="hint">Errors from the configuration UI itself (failed API calls,
+    browser-side errors) — separate from the EMS control-loop log above.</p>
+  <div class="toolbar">
+    <button id="refreshErrorLogBtn">Refresh</button>
+    <button class="danger" id="clearErrorLogBtn">Clear</button>
+  </div>
   <p class="hint" id="errorLogEmpty">No errors logged.</p>
   <table>
     <thead><tr><th>Time</th><th>Source</th><th>Level</th><th>Message</th></tr></thead>

@@ -1,0 +1,39 @@
+# PyEMS web UI systemd unit (read-only status + generation console + log viewer).
+#
+# The UI is a SEPARATE process from the control loop (`pyems`): it reads the
+# live telemetry snapshot and the EMS log file off disk and writes the operator
+# command file — it never touches the Modbus bus, so it cannot stall control.
+#
+# Install (paths assume the repo is cloned to /home/pi/PyEMS — adjust both here
+# and in DEPLOY.md if yours differs):
+#   sudo cp deploy/pyems-ui.service /etc/systemd/system/pyems-ui.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pyems-ui
+#
+# Then browse to http://<pi>:8765/ — the Logs tab shows the EMS control-loop log
+# (safety trips, bus up/down, write failures), so routine diagnosis needs no SSH.
+#
+# SECURITY: the UI has NO authentication. It binds 127.0.0.1 below, so reach it
+# over an SSH tunnel:  ssh -L 8765:127.0.0.1:8765 pi@<pi>
+# Only change to `--host 0.0.0.0` on a trusted, isolated LAN — that exposes
+# config edits and generation start/stop to anyone who can reach the port.
+
+[Unit]
+Description=PyEMS web UI (status, generation control, log viewer)
+After=network-online.target pyems.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/PyEMS
+# Read-only console by default: it does NOT start/stop the systemd-managed EMS
+# (that stays under systemctl). It shows status, controls generation via the
+# command file, and serves the EMS log. Bind localhost — see SECURITY above.
+ExecStart=/home/pi/PyEMS/.venv/bin/pyems-ui --host 127.0.0.1 --port 8765
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -58,6 +58,12 @@ allocation:
 telemetry:
   live_json: logs/live_state.json
 
+# Rotating log file the EMS writes (in addition to stderr/journal); the web UI
+# reads it on the Logs page so faults can be diagnosed without journalctl/SSH.
+# Set file to null to disable. Relative paths resolve against the repo root.
+logging:
+  file: logs/pyems.log
+
 devices:
   # Per device you may set `timeout_s` and `retries` (both protocols) to bound
   # the worst-case poll time — a hung device costs ~(retries+1)*timeout_s per

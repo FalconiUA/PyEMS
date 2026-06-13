@@ -742,6 +742,30 @@ def build_publisher(
     return publisher
 
 
+def log_file_path(site_path: str | Path = DEFAULT_SITE) -> Path | None:
+    """Resolve the rotating-log file path for setup_logging, from the site's
+    optional `logging:` section.
+
+    Defaults to `logs/pyems.log` (relative paths resolve against the repo root,
+    as in build_publisher) so the EMS and the read-only UI agree on the file even
+    for a site config that predates this section. Set `logging.file` to null/""
+    to disable file logging (stderr/journal only). Read here, before build_ems,
+    so the handler is installed before the bus is touched; an unreadable site
+    file falls back to None (stderr only) — build_ems will surface the real error.
+    """
+    try:
+        site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8")) or {}
+    except OSError:
+        return None
+    spec = (site.get("logging") or {}).get("file", "logs/pyems.log")
+    if not spec:
+        return None
+    path = Path(spec)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
 def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     logger.info("Building EMS from %s", Path(site_path).resolve())
     site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8"))
@@ -866,7 +890,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    setup_logging(args.log_level)
+    setup_logging(args.log_level, log_file=log_file_path(args.site))
     scheduler = build_ems(args.site)
 
     # systemd stops services with SIGTERM: request a clean shutdown (finish the

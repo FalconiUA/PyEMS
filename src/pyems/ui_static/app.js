@@ -8,6 +8,8 @@ let profileRequirements = [];
 let availableChannels = [];
 let liveRows = [];
 let errorLog = [];
+let emsLog = [];
+let emsLogTimer = null;
 let currentProfile = null;
 let liveTimer = null;
 const $ = (id) => document.getElementById(id);
@@ -435,6 +437,25 @@ function renderLogs() {
       <td class="nowrap">${esc(entry.logged_at)}</td>
       <td>${esc(entry.source)}</td>
       <td><span class="tag bad">${esc(entry.level || "error")}</span></td>
+      <td class="log-message">${esc(entry.message)}</td>
+    </tr>
+  `).join("");
+}
+function emsLogTagClass(level) {
+  if (level === "ERROR" || level === "CRITICAL") return "bad";
+  if (level === "WARNING") return "warn";
+  return "ok";
+}
+function renderEmsLog() {
+  const rows = $("emsLogRows");
+  if (!rows) return;
+  const empty = $("emsLogEmpty");
+  if (empty) empty.hidden = emsLog.length > 0;
+  rows.innerHTML = emsLog.map((entry) => `
+    <tr>
+      <td class="nowrap">${esc(entry.time)}</td>
+      <td><span class="tag ${emsLogTagClass(entry.level)}">${esc(entry.level)}</span></td>
+      <td class="nowrap">${esc(entry.logger)}</td>
       <td class="log-message">${esc(entry.message)}</td>
     </tr>
   `).join("");
@@ -1151,6 +1172,21 @@ async function loadErrorLog() {
   renderLogs();
   return data;
 }
+async function loadEmsLog() {
+  const level = $("emsLogLevel") ? $("emsLogLevel").value : "";
+  const data = await api(`/api/ems-log?level=${encodeURIComponent(level)}&limit=500`);
+  emsLog = data.entries || [];
+  renderEmsLog();
+  const empty = $("emsLogEmpty");
+  if (empty && !data.ok) empty.textContent = data.error || "No EMS log available.";
+  else if (empty) empty.textContent = "No EMS log yet.";
+  return data;
+}
+function toggleEmsLogAuto() {
+  const on = $("emsLogAuto") && $("emsLogAuto").checked;
+  if (emsLogTimer) { clearInterval(emsLogTimer); emsLogTimer = null; }
+  if (on) emsLogTimer = setInterval(() => loadEmsLog().catch(() => {}), 2000);
+}
 async function loadConfig() {
   setStatus("Loading configuration...");
   const data = await api("/api/config");
@@ -1419,6 +1455,15 @@ function showView(name) {
     clearInterval(overviewTimer);
     overviewTimer = null;
   }
+  // The Logs view refreshes the EMS log on entry and, if Auto-refresh is on,
+  // every 2 s while it is the active view — same active-only polling as Overview.
+  if (name === "logs") {
+    loadEmsLog().catch(handleError);
+    toggleEmsLogAuto();
+  } else if (emsLogTimer) {
+    clearInterval(emsLogTimer);
+    emsLogTimer = null;
+  }
 }
 
 // Secondary in-view navigation: a .subtab swaps which .subview group is shown
@@ -1464,6 +1509,7 @@ document.addEventListener("change", async (event) => {
     renderSimulationConfig();
   }
   if (id === "scenario.pid_tuning") renderSiteYaml();
+  if (id === "emsLogLevel") loadEmsLog().catch(handleError);
   if (event.target.id === "profileDeviceSelect") loadSelectedProfile().catch(handleError);
   if (event.target.id === "siteFileSelect") switchSiteFile(event.target.value).catch(handleError);
 });
@@ -1480,6 +1526,8 @@ document.addEventListener("click", async (event) => {
   if (target.id === "saveProfileBtn") saveProfile().catch(handleError);
   if (target.id === "refreshErrorLogBtn") loadErrorLog().catch(handleError);
   if (target.id === "clearErrorLogBtn") clearErrorLog().catch(handleError);
+  if (target.id === "refreshEmsLogBtn") loadEmsLog().catch(handleError);
+  if (target.id === "emsLogAuto") toggleEmsLogAuto();
   if (target.id === "simStartBtn") startSim().catch((error) => { handleError(error); refreshSim().catch(() => {}); });
   if (target.id === "simStopBtn") stopSim().catch(handleError);
   if (target.id === "simOpenBtn" && simStatus) window.open(simPanelUrl(), "_blank");

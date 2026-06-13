@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import mimetypes
+import re
 import subprocess
 import sys
 import threading
@@ -50,13 +51,14 @@ from pyems.ems import (
     _hard_switch_config,
     _validate_hard_switch_channels,
     build_device_drivers,
+    log_file_path,
     required_channels,
     validate_bindings,
     validate_safety_allocation,
     validate_setpoint_keepalive,
     validate_write_age_guard,
 )
-from pyems.logging import setup_logging
+from pyems.logging import resolve_level, setup_logging
 
 
 DEFAULT_SITE_TEMPLATE = DEFAULT_SITE.parent / "default_site.yaml"
@@ -336,6 +338,12 @@ def validate_site_for_ui(site: dict[str, Any]) -> list[Channel]:
         raise ValueError("telemetry must be a mapping")
     if "live_json" in telemetry and not isinstance(telemetry["live_json"], str):
         raise ValueError("telemetry.live_json must be text")
+
+    logging_cfg = site.get("logging") or {}
+    if not isinstance(logging_cfg, dict):
+        raise ValueError("logging must be a mapping")
+    if logging_cfg.get("file") is not None and not isinstance(logging_cfg["file"], str):
+        raise ValueError("logging.file must be text")
 
     recording = site.get("recording") or {}
     if not isinstance(recording, dict):
@@ -762,6 +770,104 @@ def telemetry_fresh(fls: dict[str, Any]) -> bool:
     age_s = fls.get("age_s")
     cycle_s = fls.get("cycle_s") or 1.0
     return isinstance(age_s, (int, float)) and age_s <= max(5.0, 3.0 * cycle_s)
+
+
+# EMS log lines look like (see pyems.logging.config._LOG_FORMAT):
+#   "2026-06-13 17:37:28 WARNING pyems.controllers.safety: SAFETY TRIP: ..."
+# A line that does NOT match this shape is a continuation (e.g. a traceback) and
+# is appended to the previous entry's message, so a stack trace stays readable.
+_LOG_LINE_RE = re.compile(
+    r"^(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) "
+    r"(?P<level>[A-Z]+)\s+"
+    r"(?P<logger>\S[^:]*): "
+    r"(?P<message>.*)$"
+)
+# Read at most this many bytes from the END of the log — bounded memory on a Pi
+# regardless of how large the rotating file grew between reads.
+_LOG_TAIL_BYTES = 1_000_000
+_LOG_MAX_LIMIT = 5000
+
+
+def ems_log_path(site: dict[str, Any]) -> Path | None:
+    """Resolve the EMS rotating-log file from the site's `logging:` section.
+
+    Same default and resolution as `ems.log_file_path` (logs/pyems.log, relative
+    paths against the repo root), so the UI reads exactly the file the EMS writes.
+    Returns None when file logging is disabled (logging.file set to null/empty)."""
+    spec = (site.get("logging") or {}).get("file", "logs/pyems.log")
+    if not spec:
+        return None
+    path = Path(spec)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
+def _parse_log_lines(text: str) -> list[dict[str, Any]]:
+    """Parse formatted log text into entries; group continuation lines.
+
+    Each entry carries `levelno` (numeric, for filtering) derived from the level
+    name. A continuation line (traceback, wrapped message) is appended to the
+    previous entry; a leading orphan continuation (after a tail cut) is dropped.
+    """
+    entries: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        m = _LOG_LINE_RE.match(line)
+        if m:
+            level = m.group("level")
+            levelno = logging.getLevelName(level)
+            entries.append(
+                {
+                    "time": m.group("time"),
+                    "level": level,
+                    "levelno": levelno if isinstance(levelno, int) else 0,
+                    "logger": m.group("logger"),
+                    "message": m.group("message"),
+                }
+            )
+        elif entries:
+            entries[-1]["message"] += "\n" + line
+    return entries
+
+
+def read_ems_log(
+    site: dict[str, Any], *, level: str | None = None, limit: int = 500
+) -> dict[str, Any]:
+    """Read the tail of the EMS log file, parsed and filtered (read-only).
+
+    The Logs page's primary source: it reflects what the running control loop
+    logged, so an operator can see WHY a safety trip fired (which watchdog, which
+    device) without journalctl/SSH. Returns a clean error (not an exception) when
+    file logging is disabled or no log exists yet, like `fast_loop_state`.
+    """
+    path = ems_log_path(site)
+    if path is None:
+        return {"ok": False, "error": "file logging disabled (logging.file)", "entries": []}
+    if not path.exists():
+        return {
+            "ok": False,
+            "error": "pyems service not running or no log file yet",
+            "path": str(path),
+            "entries": [],
+        }
+    try:
+        min_levelno = resolve_level(level) if level else None
+        limit = max(1, min(int(limit), _LOG_MAX_LIMIT))
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > _LOG_TAIL_BYTES:
+                fh.seek(size - _LOG_TAIL_BYTES)
+                fh.readline()  # drop the partial first line after a tail cut
+            raw = fh.read()
+        entries = _parse_log_lines(raw.decode("utf-8", errors="replace"))
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": f"could not read log: {exc}", "path": str(path), "entries": []}
+    if min_levelno is not None:
+        entries = [e for e in entries if e["levelno"] >= min_levelno]
+    # Newest first, capped — same shape/order as the UI error log.
+    entries = entries[-limit:]
+    entries.reverse()
+    return {"ok": True, "path": str(path), "entries": entries}
 
 
 def command_file_path(site: dict[str, Any]) -> Path | None:
@@ -1240,6 +1346,14 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(profile_payload(load_site(app.site_path), device_id))
                 elif path == "/api/error-log":
                     self._send_json({"ok": True, "entries": app.error_log()})
+                elif path == "/api/ems-log":
+                    self._send_json(
+                        read_ems_log(
+                            load_site(app.site_path),
+                            level=query.get("level", [None])[0] or None,
+                            limit=int(query.get("limit", ["500"])[0] or 500),
+                        )
+                    )
                 elif path == "/api/live":
                     self._send_json(app.read_live())
                 elif path == "/api/fast-loop-state":

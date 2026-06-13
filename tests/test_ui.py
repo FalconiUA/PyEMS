@@ -163,6 +163,76 @@ def test_fast_loop_state_reports_snapshot_age(tmp_path):
     assert result["age_s"] >= 119.0  # a two-minute-old snapshot reads as stale
 
 
+def test_ems_log_path_defaults_and_override():
+    assert ui.ems_log_path({}).name == "pyems.log"
+    assert ui.ems_log_path({}).is_absolute()
+    assert ui.ems_log_path({"logging": {"file": "/var/log/ems.log"}}) == \
+        __import__("pathlib").Path("/var/log/ems.log")
+    # explicit null/empty disables file logging
+    assert ui.ems_log_path({"logging": {"file": None}}) is None
+    assert ui.ems_log_path({"logging": {"file": ""}}) is None
+
+
+def test_read_ems_log_parses_levels_logger_and_filters(tmp_path):
+    log = tmp_path / "pyems.log"
+    log.write_text(
+        "2026-06-13 10:00:00 INFO    pyems.ems: Scenario: export_limit\n"
+        "2026-06-13 10:00:01 WARNING pyems.controllers.safety: SAFETY TRIP: comms age 9.0s > 5.0s limit\n"
+        "2026-06-13 10:00:02 ERROR   pyems.drivers.cached: Modbus WRITE failed\n",
+        encoding="utf-8",
+    )
+    site = {"logging": {"file": str(log)}}
+
+    full = ui.read_ems_log(site)
+    assert full["ok"] is True
+    # newest first
+    assert full["entries"][0]["level"] == "ERROR"
+    assert full["entries"][0]["logger"] == "pyems.drivers.cached"
+    assert full["entries"][-1]["message"] == "Scenario: export_limit"
+    trip = next(e for e in full["entries"] if e["level"] == "WARNING")
+    assert "SAFETY TRIP" in trip["message"]
+
+    warn = ui.read_ems_log(site, level="WARNING")
+    levels = {e["level"] for e in warn["entries"]}
+    assert levels == {"WARNING", "ERROR"}  # INFO filtered out
+
+
+def test_read_ems_log_groups_traceback_continuation(tmp_path):
+    log = tmp_path / "pyems.log"
+    log.write_text(
+        "2026-06-13 10:00:02 ERROR   pyems.scheduler: unhandled error in control cycle\n"
+        "Traceback (most recent call last):\n"
+        '  File "ems.py", line 1, in <module>\n'
+        "ValueError: boom\n",
+        encoding="utf-8",
+    )
+    result = ui.read_ems_log({"logging": {"file": str(log)}})
+
+    assert len(result["entries"]) == 1
+    msg = result["entries"][0]["message"]
+    assert "unhandled error in control cycle" in msg
+    assert "Traceback (most recent call last):" in msg
+    assert "ValueError: boom" in msg
+
+
+def test_read_ems_log_missing_and_disabled_give_clean_errors(tmp_path):
+    missing = ui.read_ems_log({"logging": {"file": str(tmp_path / "none.log")}})
+    assert missing["ok"] is False and missing["entries"] == []
+
+    disabled = ui.read_ems_log({"logging": {"file": None}})
+    assert disabled["ok"] is False and "disabled" in disabled["error"]
+
+
+def test_logs_page_polls_ems_log_only_when_active():
+    """The EMS log must auto-refresh only while the Logs view is active — the
+    same active-only polling discipline as Overview."""
+    app_js = (ui.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    assert "/api/ems-log" in app_js
+    show = app_js[app_js.index("function showView") :]
+    body = show[: show.index("\n}\n")]
+    assert 'name === "logs"' in body
+
+
 def test_overview_page_is_first_and_default_view():
     """The Overview tab must be the first/default view (acceptance criterion),
     served from its own static page that exists on disk."""

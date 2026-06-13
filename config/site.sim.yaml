@@ -54,6 +54,8 @@ allocation:
     ramp_down_w_per_s: 50000
 telemetry:
   live_json: logs/live_state.json
+logging:
+  file: logs/pyems.sim.log
 devices:
 - id: grid
   profile: meters/example_grid_meter.yaml

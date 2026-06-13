@@ -61,7 +61,44 @@ sudo systemctl restart pyems    # e.g. after editing site.yaml
 Per-cycle DEBUG detail: uncomment the `Environment=PYEMS_LOG_LEVEL=DEBUG`
 line in the unit, then `daemon-reload` + `restart`.
 
-## 5. Update
+## 5. Web UI (status, generation control, log viewer)
+
+The EMS ships a local web UI as a *separate* process (`pyems-ui`). It reads the
+live telemetry snapshot and the EMS log off disk and writes the operator command
+file — it never touches the Modbus bus, so it cannot stall the control loop.
+
+```bash
+sudo cp deploy/pyems-ui.service /etc/systemd/system/pyems-ui.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now pyems-ui
+```
+
+The UI binds `127.0.0.1:8765` and has **no authentication**, so reach it over an
+SSH tunnel from your laptop:
+
+```bash
+ssh -L 8765:127.0.0.1:8765 pi@<pi>   # then open http://localhost:8765/
+```
+
+Only switch the unit to `--host 0.0.0.0` on a trusted, isolated LAN — that
+exposes config edits and generation start/stop to anyone who can reach the port.
+
+What you get without SSH/journalctl:
+
+- **Overview** — live power flows, per-device comms status, and *why* safe-mode
+  is (not) green right now.
+- **Logs** — the EMS control-loop log (safety trips, bus up/down, write
+  failures), filterable by level. This is the rotating file at `logging.file`
+  in site.yaml (default `logs/pyems.log`); `journalctl -u pyems` remains the
+  fallback for the full system journal.
+- **Operation** — start/stop generation (soft curtail) and the hard inverter
+  switch, when configured.
+
+The systemd-managed EMS is still started/stopped with `systemctl` (the UI does
+not manage it). Config edited in the UI is read at EMS startup, so apply changes
+with `sudo systemctl restart pyems`.
+
+## 6. Update
 
 ```bash
 cd /home/pi/PyEMS

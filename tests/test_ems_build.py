@@ -5,7 +5,7 @@ import pyems.drivers.modbus_device as md
 from pyems.drivers.modbus_device import DEFAULT_SERIAL
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.grid_export_limit import GridExportLimitController
-from pyems.ems import build_device_drivers, build_ems, build_tasks
+from pyems.ems import ROOT, build_device_drivers, build_ems, build_tasks, log_file_path
 from pyems.scheduler import Scheduler
 
 
@@ -37,6 +37,24 @@ class FakeTcpClient:
 
     def write_registers(self, address, values, slave):
         pass
+
+
+def test_log_file_path_defaults_overrides_and_disables(tmp_path):
+    default_site = tmp_path / "no_logging.yaml"
+    default_site.write_text("devices: []\n", encoding="utf-8")
+    # no logging section -> default, resolved against the repo root
+    assert log_file_path(default_site) == ROOT / "logs" / "pyems.log"
+
+    custom = tmp_path / "custom.yaml"
+    custom.write_text("logging:\n  file: /var/log/ems.log\n", encoding="utf-8")
+    assert str(log_file_path(custom)) == "/var/log/ems.log"
+
+    disabled = tmp_path / "off.yaml"
+    disabled.write_text("logging:\n  file: null\n", encoding="utf-8")
+    assert log_file_path(disabled) is None
+
+    # an unreadable site file must not crash setup_logging — fall back to None
+    assert log_file_path(tmp_path / "missing.yaml") is None
 
 
 def test_build_ems_wires_scheduler(monkeypatch):
