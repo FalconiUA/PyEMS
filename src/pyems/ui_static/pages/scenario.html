@@ -79,6 +79,10 @@
       <h2>Export-spike protection</h2>
       <p class="lead">Caps how far the applied setpoint may sit above actual production, so power does not spike when the resource returns.</p>
       <div class="fields">
+        <label>Enable headroom limiter
+          <input id="setpoint_headroom.enabled" type="checkbox">
+          <span class="hint">When enabled, the allocator refuses stale setpoints far above measured unit output.</span>
+        </label>
         <label>Setpoint headroom floor, W
           <input id="setpoint_headroom.headroom_w" type="number" step="100" min="1" required>
           <span class="hint">The setpoint may sit at most this much above actual production — prevents export spikes when the resource returns.</span>
@@ -86,6 +90,10 @@
         <label>Setpoint headroom, % of output
           <input id="setpoint_headroom.headroom_pct" type="number" step="1" min="0">
           <span class="hint">Dynamic part: percent of current production, applied when larger than the floor. 0 = floor only.</span>
+        </label>
+        <label>Headroom priority
+          <input id="setpoint_headroom.priority" type="number" step="1" min="1">
+          <span class="hint">Lower number wins. In import-limit mode this should sit below regulation priority, usually 11 when regulation is 10.</span>
         </label>
       </div>
     </div>

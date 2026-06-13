@@ -320,7 +320,11 @@ function sourcePanel(target, defaults) {
       body.speed = parseFloat(document.getElementById(`${target}-speed`).value || "1");
       body.loop = document.getElementById(`${target}-loop`).checked;
     }
-    api("/api/source", body).then(poll);
+    api("/api/source", body).then(() => {
+      history = [];
+      lastT = -Infinity;
+      return poll();
+    });
   };
 }
 

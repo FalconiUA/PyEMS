@@ -97,7 +97,7 @@ button:disabled { opacity: .55; cursor: wait; }
 .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 label { display: grid; gap: 5px; color: #41506a; font-size: 12px; font-weight: 700; }
 .hint { color: var(--muted); font-size: 12px; font-weight: 500; }
-input, select {
+input, select, textarea {
   width: 100%;
   min-height: 36px;
   border: 1px solid var(--line);
@@ -108,6 +108,7 @@ input, select {
   font: inherit;
   font-weight: 600;
 }
+textarea { resize: vertical; min-height: 80px; }
 input[readonly] { background: #f2f5f8; color: #425067; }
 table {
   width: 100%;
@@ -139,12 +140,29 @@ td input, td select { min-height: 32px; }
 .empty-state { color: var(--muted); margin: 8px 0 12px; }
 .log-message { white-space: pre-wrap; overflow-wrap: anywhere; }
 .divider { height: 1px; background: var(--line); margin: 14px 0; }
+.inline-check {
+  display: inline-flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+.inline-check input, label input[type="checkbox"] {
+  width: auto;
+  min-height: 0;
+}
+.split-tables {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
 @media (max-width: 940px) {
   header { align-items: flex-start; flex-direction: column; }
   .panel { grid-column: 1 / -1; }
   .fields { grid-template-columns: 1fr; }
   .summary { grid-template-columns: 1fr 1fr; }
   table { display: block; overflow-x: auto; }
+  .split-tables { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) { .summary { grid-template-columns: 1fr; } }
 

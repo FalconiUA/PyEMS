@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import mimetypes
 import subprocess
@@ -46,10 +47,16 @@ from pyems.ems import (
     IMPORT_LIMIT_MODE,
     PROFILES,
     ROOT,
+    _hard_switch_config,
+    _validate_hard_switch_channels,
     build_device_drivers,
     required_channels,
     validate_bindings,
+    validate_safety_allocation,
+    validate_setpoint_keepalive,
+    validate_write_age_guard,
 )
+from pyems.logging import setup_logging
 
 
 DEFAULT_SITE_TEMPLATE = DEFAULT_SITE.parent / "default_site.yaml"
@@ -58,6 +65,8 @@ STATIC_ROOT = Path(__file__).with_name("ui_static")
 AUTO_PID_GAINS = {"kp": 0.4, "ki": 0.08, "kd": 0.0, "tt": 5.0}
 VERY_HIGH_IMPORT_LIMIT_W = 1_000_000_000.0
 MAX_ERROR_LOG_ENTRIES = 100
+
+logger = logging.getLogger(__name__)
 
 
 def _deep_merge(default: Any, value: Any) -> Any:
@@ -152,6 +161,13 @@ def apply_scenario(site: dict[str, Any]) -> dict[str, Any]:
     headroom.setdefault("headroom_pct", 0)
     headroom["unit_active_power_channel"] = unit_active_power_channel
     headroom["unit_active_power_setpoint_channel"] = unit_active_power_setpoint_channel
+
+    compliance = site.get("setpoint_compliance")
+    if compliance is not None:
+        compliance.setdefault("tolerance_w", 2000.0)
+        compliance.setdefault("max_violation_s", 30.0)
+        compliance["unit_active_power_channel"] = unit_active_power_channel
+        compliance["unit_active_power_setpoint_channel"] = unit_active_power_setpoint_channel
     return site
 
 
@@ -262,9 +278,30 @@ def validate_site_for_ui(site: dict[str, Any]) -> list[Channel]:
     control = _require_mapping(site, "control", "site")
     for key in ("fast_cycle_s", "poll_interval_s"):
         _require_number(control, key, "control")
+    for key in ("setpoint_rewrite_s", "command_max_age_s", "generation_gate_priority"):
+        if key in control:
+            _require_number(control, key, "control")
+    if "command_json" in control and not isinstance(control["command_json"], str):
+        raise ValueError("control.command_json must be text")
 
     safety = _require_mapping(site, "safety", "site")
     _require_number(safety, "max_comms_age_s", "safety")
+    for key in (
+        "safe_active_power_w",
+        "max_write_age_s",
+        "device_comms_watchdog_s",
+        "max_measurement_frozen_s",
+    ):
+        if key in safety:
+            _require_number(safety, key, "safety")
+    device_comms = safety.get("device_comms_max_age_s") or {}
+    if not isinstance(device_comms, dict):
+        raise ValueError("safety.device_comms_max_age_s must be a mapping")
+    for device_id, _ in device_comms.items():
+        _require_number(device_comms, device_id, "safety.device_comms_max_age_s")
+    frozen = safety.get("frozen_measurement_channels") or []
+    if not isinstance(frozen, list):
+        raise ValueError("safety.frozen_measurement_channels must be a list")
     setpoint_channels = _require_list(safety, "unit_active_power_setpoint_channels", "safety")
     if not setpoint_channels:
         raise ValueError("safety.unit_active_power_setpoint_channels must not be empty")
@@ -283,6 +320,43 @@ def validate_site_for_ui(site: dict[str, Any]) -> list[Channel]:
     if headroom.get("enabled", True) is not False:
         _require_number(headroom, "headroom_w", "setpoint_headroom")
         _require_number(headroom, "headroom_pct", "setpoint_headroom")
+        if "priority" in headroom:
+            _require_number(headroom, "priority", "setpoint_headroom")
+
+    compliance = site.get("setpoint_compliance")
+    if compliance is not None:
+        if not isinstance(compliance, dict):
+            raise ValueError("setpoint_compliance must be a mapping")
+        for key in ("tolerance_w", "max_violation_s"):
+            if key in compliance:
+                _require_number(compliance, key, "setpoint_compliance")
+
+    telemetry = site.get("telemetry") or {}
+    if not isinstance(telemetry, dict):
+        raise ValueError("telemetry must be a mapping")
+    if "live_json" in telemetry and not isinstance(telemetry["live_json"], str):
+        raise ValueError("telemetry.live_json must be text")
+
+    recording = site.get("recording") or {}
+    if not isinstance(recording, dict):
+        raise ValueError("recording must be a mapping")
+    if "cycle_csv" in recording and not isinstance(recording["cycle_csv"], str):
+        raise ValueError("recording.cycle_csv must be text")
+    if "channels" in recording and not isinstance(recording["channels"], list):
+        raise ValueError("recording.channels must be a list")
+
+    simulation = site.get("simulation") or {}
+    if not isinstance(simulation, dict):
+        raise ValueError("simulation must be a mapping")
+    for key in ("tick_s", "meter_noise_w"):
+        if key in simulation:
+            _require_number(simulation, key, "simulation")
+    for group_key in ("unit", "load"):
+        group = simulation.get(group_key) or {}
+        if not isinstance(group, dict):
+            raise ValueError(f"simulation.{group_key} must be a mapping")
+        for key in group:
+            _require_number(group, key, f"simulation.{group_key}")
 
     devices = _require_list(site, "devices", "site")
     if not devices:
@@ -299,9 +373,20 @@ def validate_site_for_ui(site: dict[str, Any]) -> list[Channel]:
         _require_number(device, "slave_id", f"devices[{idx}]")
         if "port" in device:
             _require_number(device, "port", f"devices[{idx}]")
+        for key in ("timeout_s", "retries"):
+            if key in device:
+                _require_number(device, key, f"devices[{idx}]")
 
     channels = _device_channels_for_site(site)
     validate_bindings(site, [channel.name for channel in channels])
+    validate_safety_allocation(site)
+    validate_setpoint_keepalive(site)
+    validate_write_age_guard(site)
+    hard_cfg = _hard_switch_config(site)
+    if hard_cfg:
+        if not (site.get("control") or {}).get("command_json"):
+            raise ValueError("hard_switch requires control.command_json")
+        _validate_hard_switch_channels(hard_cfg, channels)
     return channels
 
 
@@ -783,6 +868,7 @@ class EmsManager:
                 "an EMS is already running (fresh telemetry); the UI will not "
                 "start a second control loop"
             )
+        logger.info("Operator command: START EMS (%s)", self.site_path)
         with self._lock:
             if not self._managed_alive():
                 cmd = [sys.executable, "-m", "pyems.ems", "--site", str(self.site_path)]
@@ -832,6 +918,7 @@ class EmsManager:
                 "the EMS was started outside this UI; stop it where it was "
                 "started (Ctrl-C in its terminal, or systemctl stop pyems)"
             )
+        logger.info("Operator command: STOP EMS (%s)", self.site_path)
         self.stop_managed()
         return self.status()
 
@@ -887,6 +974,7 @@ class SimManager:
     def start(self, wait_s: float = 10.0) -> dict[str, Any]:
         if not self.sim_site_path.exists():
             raise ValueError(f"simulator site file not found: {self.sim_site_path}")
+        logger.info("Operator command: START simulator (%s)", self.sim_site_path)
         with self._lock:
             if not self._managed_alive() and not self.reachable():
                 self._proc = subprocess.Popen(
@@ -933,6 +1021,7 @@ class SimManager:
                 "the simulator was started outside pyems-ui; stop it where it "
                 "was started (Ctrl-C in its terminal)"
             )
+        logger.info("Operator command: STOP simulator (%s)", self.sim_site_path)
         self.stop_managed()
         return self.status()
 
@@ -1092,6 +1181,17 @@ def _static_path(request_path: str) -> Path:
     return path
 
 
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """HTTPServer that keeps browser disconnects out of the operator log."""
+
+    def handle_error(self, request, client_address) -> None:
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)):
+            logger.debug("UI client disconnected: %s", client_address)
+            return
+        super().handle_error(request, client_address)
+
+
 def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -1230,12 +1330,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--log-level", default=None, help="log level for a managed EMS")
     args = parser.parse_args(argv)
+    setup_logging(args.log_level)
 
     manage_ems = args.manage_ems or args.autostart_ems
     sim = SimManager(args.sim_site, panel_host=args.host, panel_port=args.sim_port)
     ems = EmsManager(args.site, process_control=manage_ems, log_level=args.log_level)
     app = UIApp(args.site, sim=sim, ems=ems)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(app))
+    server = QuietThreadingHTTPServer((args.host, args.port), make_handler(app))
     host, port = server.server_address[:2]
     print(f"PyEMS UI running at http://{host}:{port}")
 

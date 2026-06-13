@@ -5,6 +5,7 @@ let siteChoices = [];
 let simSitePath = "";
 let profiles = [];
 let profileRequirements = [];
+let availableChannels = [];
 let liveRows = [];
 let errorLog = [];
 let currentProfile = null;
@@ -48,6 +49,26 @@ function setValue(id, value) {
   const el = $(id);
   if (el) el.value = value ?? "";
 }
+function setChecked(id, value) {
+  const el = $(id);
+  if (el) el.checked = !!value;
+}
+function optionalNum(id) {
+  const el = $(id);
+  if (!el || String(el.value ?? "").trim() === "") return undefined;
+  return parseNum(el.value);
+}
+function assignOptionalNumber(target, key, id) {
+  const value = optionalNum(id);
+  if (value === undefined) delete target[key];
+  else target[key] = value;
+}
+function textToList(value) {
+  return String(value ?? "").split(/[\n,]+/).map((item) => item.trim()).filter(Boolean);
+}
+function listToText(value) {
+  return Array.isArray(value) ? value.join("\n") : "";
+}
 function scenarioCfg() {
   site.scenario ||= {};
   return site.scenario;
@@ -62,6 +83,15 @@ function allocationCfg() {
 function headroomCfg() {
   site.setpoint_headroom ||= {};
   return site.setpoint_headroom;
+}
+function complianceCfg() {
+  return site.setpoint_compliance || {};
+}
+function hardSwitchCfg() {
+  site.hard_switch ||= { start_writes: [], stop_writes: [] };
+  site.hard_switch.start_writes ||= [];
+  site.hard_switch.stop_writes ||= [];
+  return site.hard_switch;
 }
 function deviceOptions(selected, filter = null) {
   return site.devices
@@ -93,8 +123,14 @@ function syncScenarioForm() {
   }
   if ($("allocation.deadband_w")) alloc.deadband_w = parseNum($("allocation.deadband_w").value);
   const headroom = headroomCfg();
+  if ($("setpoint_headroom.enabled")) headroom.enabled = $("setpoint_headroom.enabled").checked;
   if ($("setpoint_headroom.headroom_w")) headroom.headroom_w = parseNum($("setpoint_headroom.headroom_w").value);
   if ($("setpoint_headroom.headroom_pct")) headroom.headroom_pct = parseNum($("setpoint_headroom.headroom_pct").value);
+  if ($("setpoint_headroom.priority")) {
+    const priority = optionalNum("setpoint_headroom.priority");
+    if (priority === undefined) delete headroom.priority;
+    else headroom.priority = priority;
+  }
 }
 
 async function loadPages() {
@@ -128,6 +164,7 @@ function applyConfigPayload(data) {
   simSitePath = data.sim_site_path || simSitePath;
   profiles = data.profiles;
   profileRequirements = data.profile_requirements;
+  availableChannels = data.available_channels || [];
   liveRows = data.live_rows;
   fieldLabels = data.field_labels || fieldLabels;
   renderSiteFile();
@@ -158,8 +195,10 @@ function renderScenario() {
   setValue("allocation.ramp_down_w_per_s", alloc.ramp_down_w_per_s ?? "");
   setValue("allocation.deadband_w", alloc.deadband_w);
   const headroom = headroomCfg();
+  setChecked("setpoint_headroom.enabled", headroom.enabled !== false);
   setValue("setpoint_headroom.headroom_w", headroom.headroom_w ?? Math.round((alloc.p_max_w || 100000) * 0.1));
   setValue("setpoint_headroom.headroom_pct", headroom.headroom_pct ?? 0);
+  setValue("setpoint_headroom.priority", headroom.priority ?? "");
   $("limitLabel").firstChild.textContent = scen.control_mode === "import_limit" ? "Import limit at connection point, W" : "Export limit at connection point, W";
   const cp = scen.connection_point_device_id || "grid";
   const unit = scen.unit_device_id || "pv";
@@ -173,12 +212,92 @@ function renderScenario() {
   renderRequirementRows(profileRequirements, "requirementRows");
 }
 
+function renderAvailableChannelList() {
+  const list = $("availableChannelList");
+  if (!list) return;
+  list.innerHTML = (availableChannels || [])
+    .map((channel) => `<option value="${esc(channel.name)}">${esc(channel.unit || "")}${channel.writable ? " write" : " read"}</option>`)
+    .join("");
+}
+
+function renderDeviceCommsRows() {
+  const rows = $("deviceCommsRows");
+  if (!rows) return;
+  const limits = (site.safety && site.safety.device_comms_max_age_s) || {};
+  rows.innerHTML = site.devices.map((device) => `
+    <tr data-device-comms-id="${esc(device.id)}">
+      <td><strong>${esc(device.id)}</strong></td>
+      <td>${esc(device.profile)}</td>
+      <td><input class="device-comms-limit" type="number" step="0.1" min="0" value="${limits[device.id] ?? ""}" placeholder="global"></td>
+    </tr>
+  `).join("");
+}
+
+function renderHardSwitchRows(kind, rows) {
+  const target = kind === "start" ? $("hardSwitchStartRows") : $("hardSwitchStopRows");
+  if (!target) return;
+  target.innerHTML = (rows || []).map((item, idx) => `
+    <tr data-hard-switch-kind="${kind}" data-hard-switch-index="${idx}">
+      <td><input data-field="channel" list="availableChannelList" value="${esc(item.channel ?? "")}" placeholder="${esc(unitDeviceId())}.RunStop"></td>
+      <td><input data-field="value" type="number" step="1" value="${item.value ?? 0}"></td>
+      <td><button type="button" data-remove-hard-switch="${kind}" data-index="${idx}">Remove</button></td>
+    </tr>
+  `).join("");
+}
+
+function renderHardSwitch() {
+  const enabled = !!site.hard_switch;
+  setChecked("hard_switch.enabled", enabled);
+  const box = $("hardSwitchConfig");
+  if (box) box.hidden = !enabled;
+  const cfg = enabled ? hardSwitchCfg() : { start_writes: [], stop_writes: [] };
+  renderHardSwitchRows("start", cfg.start_writes);
+  renderHardSwitchRows("stop", cfg.stop_writes);
+}
+
+function renderSimulationConfig() {
+  const enabled = !!site.simulation;
+  const sim = site.simulation || {};
+  const unit = sim.unit || {};
+  const load = sim.load || {};
+  setChecked("simulation.enabled", enabled);
+  const box = $("simulationConfig");
+  if (box) box.hidden = !enabled;
+  setValue("simulation.tick_s", sim.tick_s ?? 0.2);
+  setValue("simulation.meter_noise_w", sim.meter_noise_w ?? 0);
+  setValue("simulation.unit.tau_s", unit.tau_s ?? 2);
+  setValue("simulation.unit.peak_w", unit.peak_w ?? unitEnvelopeMaxW());
+  setValue("simulation.unit.period_s", unit.period_s ?? 600);
+  setValue("simulation.unit.noise_w", unit.noise_w ?? 0);
+  setValue("simulation.load.base_w", load.base_w ?? 30000);
+  setValue("simulation.load.amplitude_w", load.amplitude_w ?? 10000);
+  setValue("simulation.load.period_s", load.period_s ?? 900);
+  setValue("simulation.load.noise_w", load.noise_w ?? 0);
+}
+
 function renderSiteYaml() {
   const scen = scenarioCfg();
   const gains = site.connection_point_active_power.gains || {};
+  renderAvailableChannelList();
   setValue("control.fast_cycle_s", site.control.fast_cycle_s);
   setValue("control.poll_interval_s", site.control.poll_interval_s);
+  setValue("control.setpoint_rewrite_s", site.control.setpoint_rewrite_s ?? "");
+  setValue("control.command_json", site.control.command_json ?? "");
+  setValue("control.command_max_age_s", site.control.command_max_age_s ?? "");
+  setValue("control.generation_gate_priority", site.control.generation_gate_priority ?? "");
+  setValue("safety.safe_active_power_w", site.safety.safe_active_power_w ?? "");
   setValue("safety.max_comms_age_s", site.safety.max_comms_age_s);
+  setValue("safety.max_write_age_s", site.safety.max_write_age_s ?? "");
+  setValue("safety.device_comms_watchdog_s", site.safety.device_comms_watchdog_s ?? "");
+  setValue("safety.max_measurement_frozen_s", site.safety.max_measurement_frozen_s ?? "");
+  setValue("safety.frozen_measurement_channels", listToText(site.safety.frozen_measurement_channels));
+  const compliance = complianceCfg();
+  setChecked("setpoint_compliance.enabled", !!site.setpoint_compliance);
+  setValue("setpoint_compliance.tolerance_w", compliance.tolerance_w ?? 2000);
+  setValue("setpoint_compliance.max_violation_s", compliance.max_violation_s ?? 30);
+  setValue("telemetry.live_json", (site.telemetry || {}).live_json ?? "");
+  setValue("recording.cycle_csv", (site.recording || {}).cycle_csv ?? "");
+  setValue("recording.channels", listToText((site.recording || {}).channels));
   setValue("scenario.pid_tuning", scen.pid_tuning || "auto");
   setValue("scenario.export_priority", scen.export_priority ?? 5);
   setValue("scenario.regulation_priority", scen.regulation_priority ?? 10);
@@ -195,9 +314,14 @@ function renderSiteYaml() {
       <td><input data-field="host" value="${esc(device.host)}" required></td>
       <td><input data-field="port" type="number" step="1" value="${device.port ?? ""}"></td>
       <td><input data-field="slave_id" type="number" step="1" min="0" value="${device.slave_id ?? 1}" required></td>
+      <td><input data-field="timeout_s" type="number" step="0.1" min="0" value="${device.timeout_s ?? ""}"></td>
+      <td><input data-field="retries" type="number" step="1" min="0" value="${device.retries ?? ""}"></td>
       <td><button type="button" data-remove-device="${idx}">Remove</button></td>
     </tr>
   `).join("");
+  renderDeviceCommsRows();
+  renderHardSwitch();
+  renderSimulationConfig();
 }
 
 function renderProfileSelector() {
@@ -826,8 +950,9 @@ function gatherDevices() {
     const data = { ...(site.devices[idx] || {}) };
     for (const input of row.querySelectorAll("[data-field]")) {
       const field = input.dataset.field;
-      if (field === "port") {
+      if (["port", "timeout_s", "retries"].includes(field)) {
         if (input.value !== "") data[field] = parseNum(input.value);
+        else delete data[field];
       } else if (field === "slave_id") {
         data[field] = parseNum(input.value);
       } else {
@@ -836,6 +961,24 @@ function gatherDevices() {
     }
     return data;
   });
+}
+
+function gatherDeviceCommsLimits() {
+  const limits = {};
+  for (const row of document.querySelectorAll("[data-device-comms-id]")) {
+    const input = row.querySelector(".device-comms-limit");
+    if (input && input.value !== "") limits[row.dataset.deviceCommsId] = parseNum(input.value);
+  }
+  return limits;
+}
+
+function gatherHardSwitchRows(kind) {
+  return [...document.querySelectorAll(`[data-hard-switch-kind="${kind}"]`)]
+    .map((row) => ({
+      channel: row.querySelector('[data-field="channel"]').value.trim(),
+      value: parseNum(row.querySelector('[data-field="value"]').value),
+    }))
+    .filter((row) => row.channel);
 }
 
 function gatherSite() {
@@ -855,11 +998,30 @@ function gatherSite() {
     fast_cycle_s: parseNum($("control.fast_cycle_s").value),
     poll_interval_s: parseNum($("control.poll_interval_s").value),
   };
+  assignOptionalNumber(next.control, "setpoint_rewrite_s", "control.setpoint_rewrite_s");
+  assignOptionalNumber(next.control, "command_max_age_s", "control.command_max_age_s");
+  assignOptionalNumber(next.control, "generation_gate_priority", "control.generation_gate_priority");
+  const commandJson = $("control.command_json").value.trim();
+  if (commandJson) next.control.command_json = commandJson;
+  else delete next.control.command_json;
   next.safety = {
     ...(site.safety || {}),
     max_comms_age_s: parseNum($("safety.max_comms_age_s").value),
     unit_active_power_setpoint_channels: [],
   };
+  assignOptionalNumber(next.safety, "safe_active_power_w", "safety.safe_active_power_w");
+  assignOptionalNumber(next.safety, "max_write_age_s", "safety.max_write_age_s");
+  assignOptionalNumber(next.safety, "device_comms_watchdog_s", "safety.device_comms_watchdog_s");
+  assignOptionalNumber(next.safety, "max_measurement_frozen_s", "safety.max_measurement_frozen_s");
+  const frozen = textToList($("safety.frozen_measurement_channels").value);
+  if (frozen.length) next.safety.frozen_measurement_channels = frozen;
+  else delete next.safety.frozen_measurement_channels;
+  const currentDeviceIds = new Set(next.devices.map((device) => device.id));
+  const deviceComms = Object.fromEntries(
+    Object.entries(gatherDeviceCommsLimits()).filter(([deviceId]) => currentDeviceIds.has(deviceId))
+  );
+  if (Object.keys(deviceComms).length) next.safety.device_comms_max_age_s = deviceComms;
+  else delete next.safety.device_comms_max_age_s;
   next.connection_point_active_power ||= {};
   next.connection_point_active_power.gains = {
     kp: parseNum($("pid.kp").value),
@@ -878,13 +1040,71 @@ function gatherSite() {
   };
   if ($("allocation.ramp_down_w_per_s").value !== "") {
     allocChannel.ramp_down_w_per_s = parseNum($("allocation.ramp_down_w_per_s").value);
+  } else {
+    delete allocChannel.ramp_down_w_per_s;
   }
   next.allocation = { channels: [allocChannel] };
   next.setpoint_headroom = {
     ...(site.setpoint_headroom || {}),
+    enabled: $("setpoint_headroom.enabled").checked,
     headroom_w: parseNum($("setpoint_headroom.headroom_w").value),
     headroom_pct: parseNum($("setpoint_headroom.headroom_pct").value),
   };
+  assignOptionalNumber(next.setpoint_headroom, "priority", "setpoint_headroom.priority");
+  if ($("setpoint_compliance.enabled").checked) {
+    next.setpoint_compliance = {
+      ...(site.setpoint_compliance || {}),
+      unit_active_power_channel: "",
+      unit_active_power_setpoint_channel: "",
+      tolerance_w: parseNum($("setpoint_compliance.tolerance_w").value),
+      max_violation_s: parseNum($("setpoint_compliance.max_violation_s").value),
+    };
+  } else {
+    delete next.setpoint_compliance;
+  }
+  next.telemetry = { ...(site.telemetry || {}) };
+  const liveJson = $("telemetry.live_json").value.trim();
+  if (liveJson) next.telemetry.live_json = liveJson;
+  else delete next.telemetry.live_json;
+  if (!Object.keys(next.telemetry).length) delete next.telemetry;
+
+  next.recording = { ...(site.recording || {}) };
+  const cycleCsv = $("recording.cycle_csv").value.trim();
+  if (cycleCsv) next.recording.cycle_csv = cycleCsv;
+  else delete next.recording.cycle_csv;
+  const recChannels = textToList($("recording.channels").value);
+  if (recChannels.length) next.recording.channels = recChannels;
+  else delete next.recording.channels;
+  if (!Object.keys(next.recording).length) delete next.recording;
+
+  if ($("hard_switch.enabled").checked) {
+    next.hard_switch = {
+      start_writes: gatherHardSwitchRows("start"),
+      stop_writes: gatherHardSwitchRows("stop"),
+    };
+  } else {
+    delete next.hard_switch;
+  }
+  if ($("simulation.enabled").checked) {
+    next.simulation = {
+      tick_s: parseNum($("simulation.tick_s").value),
+      meter_noise_w: parseNum($("simulation.meter_noise_w").value),
+      unit: {
+        tau_s: parseNum($("simulation.unit.tau_s").value),
+        peak_w: parseNum($("simulation.unit.peak_w").value),
+        period_s: parseNum($("simulation.unit.period_s").value),
+        noise_w: parseNum($("simulation.unit.noise_w").value),
+      },
+      load: {
+        base_w: parseNum($("simulation.load.base_w").value),
+        amplitude_w: parseNum($("simulation.load.amplitude_w").value),
+        period_s: parseNum($("simulation.load.period_s").value),
+        noise_w: parseNum($("simulation.load.noise_w").value),
+      },
+    };
+  } else {
+    delete next.simulation;
+  }
   return next;
 }
 
@@ -1225,6 +1445,24 @@ document.addEventListener("change", async (event) => {
     renderScenario();
     renderRealtime();
   }
+  if (id === "hard_switch.enabled") {
+    if (event.target.checked) hardSwitchCfg();
+    else delete site.hard_switch;
+    renderHardSwitch();
+  }
+  if (id === "simulation.enabled") {
+    if (event.target.checked) {
+      site.simulation ||= {
+        tick_s: 0.2,
+        meter_noise_w: 0,
+        unit: { tau_s: 2, peak_w: unitEnvelopeMaxW(), period_s: 600, noise_w: 0 },
+        load: { base_w: 30000, amplitude_w: 10000, period_s: 900, noise_w: 0 },
+      };
+    } else {
+      delete site.simulation;
+    }
+    renderSimulationConfig();
+  }
   if (id === "scenario.pid_tuning") renderSiteYaml();
   if (event.target.id === "profileDeviceSelect") loadSelectedProfile().catch(handleError);
   if (event.target.id === "siteFileSelect") switchSiteFile(event.target.value).catch(handleError);
@@ -1259,9 +1497,25 @@ document.addEventListener("click", async (event) => {
     currentProfile.profile.registers.push({ channel: profilePrefix(currentProfile.profile) + ".W", address: 0, type: "int32", scale: 1, unit: "W", access: "read" });
     renderProfile(currentProfile);
   }
+  if (target.id === "addHardStartBtn") {
+    const cfg = hardSwitchCfg();
+    cfg.start_writes.push({ channel: `${unitDeviceId()}.StartCmd`, value: 0 });
+    renderHardSwitch();
+  }
+  if (target.id === "addHardStopBtn") {
+    const cfg = hardSwitchCfg();
+    cfg.stop_writes.push({ channel: `${unitDeviceId()}.StopCmd`, value: 0 });
+    renderHardSwitch();
+  }
   if (target.dataset.removeDevice !== undefined) {
     site.devices.splice(Number(target.dataset.removeDevice), 1);
     renderAll();
+  }
+  if (target.dataset.removeHardSwitch !== undefined) {
+    const cfg = hardSwitchCfg();
+    const list = target.dataset.removeHardSwitch === "start" ? cfg.start_writes : cfg.stop_writes;
+    list.splice(Number(target.dataset.index), 1);
+    renderHardSwitch();
   }
   if (target.dataset.removeRegister !== undefined && currentProfile) {
     currentProfile.profile.registers.splice(Number(target.dataset.removeRegister), 1);
