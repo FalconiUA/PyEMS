@@ -110,12 +110,18 @@ def test_safety_allocation_consistent_site_passes():
 
 
 def test_safe_value_outside_device_envelope_raises():
-    # Safe value = export limit 200 kW, but the unit envelope tops at 100 kW:
+    # Explicit safety value 200 kW, but the unit envelope tops at 100 kW:
     # the priority-0 claim would intersect to empty and be rejected at trip time.
     site = make_site()
-    site["export_limit"]["limit_w"] = 200000.0
+    site["safety"]["safe_active_power_w"] = 200000.0
     with pytest.raises(ValueError, match="envelope"):
         validate_safety_allocation(site)
+
+
+def test_safe_value_defaults_to_zero_when_zero_is_in_envelope():
+    site = make_site()
+    site["export_limit"]["limit_w"] = 200000.0
+    validate_safety_allocation(site)  # safe fallback is 0 W, not export limit
 
 
 def test_guarded_channel_missing_from_allocation_raises():

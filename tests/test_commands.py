@@ -77,12 +77,25 @@ def test_true_from_previous_run_does_not_re_enable(tmp_path):
     assert allowed(state) == 0.0
 
 
-def test_stale_true_is_disabled(tmp_path):
+def test_true_stays_enabled_after_initial_fresh_acceptance(tmp_path):
     path = tmp_path / "commands.json"
     write_raw(path, enabled=True, issued_at=1010.0)
     reader = CommandFileReader(path, run_start_wall=1000.0, max_age_s=30)
     state = make_state()
-    reader.apply(state, now_wall=1100.0)  # age 90 s > 30 s
+    reader.apply(state, now_wall=1011.0)  # first read sees a fresh start
+    assert allowed(state) == 1.0
+
+    later = make_state()
+    reader.apply(later, now_wall=1100.0)  # age 90 s > 30 s, but already latched
+    assert allowed(later) == 1.0
+
+
+def test_stale_true_never_seen_fresh_is_disabled(tmp_path):
+    path = tmp_path / "commands.json"
+    write_raw(path, enabled=True, issued_at=1010.0)
+    reader = CommandFileReader(path, run_start_wall=1000.0, max_age_s=30)
+    state = make_state()
+    reader.apply(state, now_wall=1100.0)  # first read is stale
     assert allowed(state) == 0.0
 
 

@@ -24,6 +24,16 @@ def test_validate_site_for_ui_rejects_unknown_scenario_device():
         ui.validate_site_for_ui(site)
 
 
+def test_validate_site_for_ui_rejects_bad_write_age_tuning():
+    site = ui.load_site(ui.DEFAULT_SIM_SITE)
+    site["control"]["setpoint_rewrite_s"] = 10.0
+    site["control"]["poll_interval_s"] = 0.5
+    site["safety"]["max_write_age_s"] = 8.0
+
+    with pytest.raises(ValueError, match="max_write_age_s"):
+        ui.validate_site_for_ui(site)
+
+
 def test_channel_rows_marks_scenario_and_setpoint_roles():
     site = ui.load_site()
     channels = ui.validate_site_for_ui(site)

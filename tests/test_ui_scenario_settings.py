@@ -34,6 +34,23 @@ def test_apply_scenario_keeps_operator_headroom_values():
     assert site["setpoint_headroom"]["headroom_pct"] == 20
 
 
+def test_apply_scenario_binds_compliance_to_selected_unit():
+    site = ui.normalize_site({
+        "setpoint_compliance": {"tolerance_w": 1234, "max_violation_s": 12},
+        "scenario": {"unit_device_id": "inv7", "connection_point_device_id": "grid"},
+        "devices": [
+            {"id": "grid", "profile": "meters/example_grid_meter.yaml",
+             "host": "127.0.0.1", "slave_id": 1},
+            {"id": "inv7", "profile": "inverters/huawei_sun2000_100ktl_m1.yaml",
+             "host": "127.0.0.1", "slave_id": 1},
+        ],
+    })
+    compliance = site["setpoint_compliance"]
+    assert compliance["unit_active_power_channel"] == "inv7.W"
+    assert compliance["unit_active_power_setpoint_channel"] == "inv7.WSet"
+    assert compliance["tolerance_w"] == 1234
+
+
 def test_normalize_preserves_curtailment_gradient():
     site = ui.normalize_site({
         "allocation": {"channels": [{
@@ -60,3 +77,26 @@ def test_frontend_gather_site_preserves_hidden_operational_settings():
     assert "next.control = {\n    ...(site.control || {})," in gather
     assert "next.safety = {\n    ...(site.safety || {})," in gather
     assert "const allocChannel = {\n    ...(allocationCfg() || {})," in gather
+
+
+def test_frontend_exposes_advanced_protection_settings():
+    site_page = (ui.STATIC_ROOT / "pages" / "site-yaml.html").read_text(encoding="utf-8")
+    scenario_page = (ui.STATIC_ROOT / "pages" / "scenario.html").read_text(encoding="utf-8")
+
+    for field_id in [
+        "safety.safe_active_power_w",
+        "safety.max_write_age_s",
+        "safety.device_comms_watchdog_s",
+        "safety.max_measurement_frozen_s",
+        "safety.frozen_measurement_channels",
+        "control.setpoint_rewrite_s",
+        "control.command_json",
+        "control.command_max_age_s",
+        "setpoint_compliance.enabled",
+        "hard_switch.enabled",
+        "simulation.enabled",
+    ]:
+        assert f'id="{field_id}"' in site_page
+
+    assert 'id="setpoint_headroom.enabled"' in scenario_page
+    assert 'id="setpoint_headroom.priority"' in scenario_page

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from pyems.commands import write_command_file
+from pyems.commands import write_command_file, write_inverter_command
 from pyems.system_tags import SAFE_MODE_CHANNEL
 from pyems.ems import ROOT, build_ems
 from pyems.sim.harness import SimHarness, make_handler
@@ -101,6 +101,57 @@ def test_real_ems_controls_simulated_plant_and_trips_on_offline(tmp_path):
         assert sched._state.get(SAFE_MODE_CHANNEL) == 0.0, (
             "safety did not release after the simulated inverter recovered"
         )
+    finally:
+        if sched is not None:
+            sched._driver.disconnect()
+        harness.stop()
+
+
+def test_import_limit_recovers_after_hard_stop_and_restart(tmp_path):
+    """The all-in-one simulation must restart generation from a retained 0 W
+    setpoint after the hard inverter switch is used.
+
+    This is the UI path that can otherwise get stuck: generation was disabled
+    (allocator retained 0 W), the inverter was de-energized, then the operator
+    sends soft start + hard start while import is above the configured limit.
+    """
+    site = fast_sim_site(tmp_path)
+    site["scenario"]["control_mode"] = "import_limit"
+    site["scenario"]["active_power_limit_w"] = 10000
+    site["export_limit"]["limit_w"] = 0
+    site["connection_point_active_power"]["export_limit_w"] = 0
+    site["connection_point_active_power"]["import_limit_w"] = 10000
+    # Regression guard: the builder must not let headroom outrank the
+    # import-limit minimum, even if an older config still says priority 6.
+    site["setpoint_headroom"]["priority"] = 6
+    Path(site["_path"]).write_text(yaml.safe_dump(site, sort_keys=False), encoding="utf-8")
+
+    harness = SimHarness(site)
+    harness.start()
+    sched = None
+    try:
+        harness.set_source("pv", {"mode": "manual", "value_w": 100000.0})
+        harness.set_source("load", {"mode": "manual", "value_w": 30000.0})
+
+        sched = build_ems(site["_path"])
+
+        # Let the default fail-closed generation gate land 0 W once.
+        run_cycles(sched, seconds=1.0)
+        assert sched._state.get("pv.WSet") == 0.0
+
+        write_inverter_command(site["control"]["command_json"], action="stop")
+        run_cycles(sched, seconds=1.0)
+        assert harness.world.unit.enabled is False
+
+        write_command_file(site["control"]["command_json"], generation_enabled=True)
+        write_inverter_command(site["control"]["command_json"], action="start")
+        run_cycles(sched, seconds=5.0)
+
+        snap = harness.world.snapshot()
+        assert harness.world.unit.enabled is True
+        assert snap["unit_active_power_setpoint_w"] > 0.0
+        assert snap["unit_active_power_w"] > 1000.0
+        assert sched._state.get(SAFE_MODE_CHANNEL) == 0.0
     finally:
         if sched is not None:
             sched._driver.disconnect()

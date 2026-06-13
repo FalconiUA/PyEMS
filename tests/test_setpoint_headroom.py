@@ -163,6 +163,7 @@ def test_headroom_enabled_by_default_with_derived_values():
     site = minimal_site()  # NO setpoint_headroom section at all
     (limiter,) = headroom_controllers(site)
     assert limiter._headroom_w == 10000.0  # 10% of p_max_w
+    assert limiter._priority == 11  # after regulation, so constraints compose without blocking minima
     assert limiter._unit_active_power_ch == "pv.W"
     assert limiter._setpoint_ch == "pv.WSet"
 
@@ -179,6 +180,70 @@ def test_headroom_section_overrides_defaults():
     (limiter,) = headroom_controllers(site)
     assert limiter._headroom_w == 5000.0
     assert limiter._priority == 7
+
+
+def test_import_limit_restart_from_zero_is_not_blocked_by_headroom_priority():
+    """Regression for the simulator hard-stop path.
+
+    After a soft/hard stop the allocator may retain 0 W. In import-limit mode,
+    the import controller posts a minimum generation request to reduce grid
+    import. If headroom outranks that minimum while measured unit output is 0 W,
+    the minimum is rejected and the setpoint holds at 0 forever.
+    """
+    from pyems.ems import build_tasks
+
+    site = minimal_site()
+    site["scenario"]["control_mode"] = "import_limit"
+    site["export_limit"]["limit_w"] = 0.0
+    site["connection_point_active_power"]["export_limit_w"] = 0.0
+    site["connection_point_active_power"]["import_limit_w"] = 10000.0
+    site["setpoint_headroom"] = {"headroom_w": 5000.0, "priority": 6}
+
+    fast = next(t for t in build_tasks(site) if t.name == "fast")
+    (limiter,) = [c for c in fast.controllers if isinstance(c, SetpointHeadroomLimiter)]
+    assert limiter._priority == 11
+
+    board = RequestBoard(["pv.WSet"])
+    allocator = PowerAllocator(
+        [
+            SetpointChannelConfig(
+                "pv.WSet", 0.0, 100000.0, 100000.0,
+                ramp_rate_w_per_s=5000.0, ramp_down_w_per_s=50000.0,
+                deadband_w=0.0,
+            )
+        ],
+        board,
+        cycle_s=1.0,
+    )
+    state = SystemState(
+        [
+            Channel("grid.W", value=30000.0),
+            Channel("pv.W", value=0.0),
+            Channel("pv.WSet", min_val=0, max_val=100000, writable=True),
+        ]
+    )
+    state.apply_driver_value("grid.W", 30000.0)
+
+    # Previous disabled/gated cycle retained a 0 W setpoint.
+    board.tick(0.0)
+    board.post(
+        "pv.WSet",
+        ActivePowerRequest(
+            requester="generation_gate", priority=1,
+            min_w=0.0, max_w=0.0, target_w=0.0,
+        ),
+    )
+    allocator.resolve(state, 0.0)
+    assert state.get("pv.WSet") == 0.0
+    board.withdraw("pv.WSet", "generation_gate")
+
+    # Import-limit control now has to be able to wake the unit from 0 W.
+    board.tick(1.0)
+    for controller in fast.controllers:
+        controller.execute(state, board)
+    allocator.resolve(state, 1.0)
+
+    assert state.get("pv.WSet") == pytest.approx(5000.0)
 
 
 def test_headroom_default_needs_matching_allocation_channel():
