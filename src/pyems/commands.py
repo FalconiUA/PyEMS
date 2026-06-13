@@ -8,10 +8,13 @@ disabled.
 
 This is an OPERATIONAL interlock, not a safety-rated E-stop. The safety-rated
 layers remain the device comms watchdog, the inverter's own protections and the
-priority-0 `SafetyController`. Accordingly the channel is **fail-closed**:
+priority-0 `SafetyController`. Accordingly the channel is **fail-closed on
+startup/input uncertainty**, while a freshly accepted operator enable is latched
+for the current EMS run until a stop command or process restart:
 
   - missing / malformed / unreadable file              → generation disabled;
-  - command older than `max_age_s` (stale)             → generation disabled;
+  - a start command older than `max_age_s` before EMS first sees it
+                                                        → generation disabled;
   - `generation_enabled: true` issued at or before the current EMS run started
     (a leftover file from a previous run)               → generation disabled.
 
@@ -79,9 +82,15 @@ def update_command_file(path: str | Path, **fields: Any) -> dict[str, Any]:
 
 def write_command_file(path: str | Path, *, generation_enabled: bool) -> dict[str, Any]:
     """Set the soft generation gate (preserves any inverter_* keys)."""
-    return update_command_file(
+    doc = update_command_file(
         path, generation_enabled=bool(generation_enabled), issued_at=time.time()
     )
+    logger.info(
+        "Operator command written: SOFT %s generation -> %s",
+        "START" if generation_enabled else "STOP",
+        Path(path),
+    )
+    return doc
 
 
 def write_inverter_command(path: str | Path, *, action: str) -> dict[str, Any]:
@@ -92,9 +101,15 @@ def write_inverter_command(path: str | Path, *, action: str) -> dict[str, Any]:
     """
     if action not in ("start", "stop"):
         raise ValueError(f"inverter action must be 'start' or 'stop', got {action!r}")
-    return update_command_file(
+    doc = update_command_file(
         path, inverter_command=action, inverter_command_id=time.time()
     )
+    logger.info(
+        "Operator command written: inverter HARD %s -> %s",
+        action.upper(),
+        Path(path),
+    )
+    return doc
 
 
 def read_command_file(path: str | Path) -> dict[str, Any] | None:
@@ -129,6 +144,9 @@ class CommandFileReader:
         self._run_start_wall = float(run_start_wall)
         self._max_age_s = float(max_age_s)
         self._read_failed = False  # log a corrupt file once, not every cycle
+        self._last_generation_command_id: float | None = None
+        self._last_inverter_command_id: float | None = None
+        self._generation_allowed = False
 
     @property
     def path(self) -> Path:
@@ -166,14 +184,29 @@ class CommandFileReader:
 
         # ── soft generation gate ──────────────────────────────────────────────
         age_s = float("inf")
-        allowed = False
         issued_at = doc.get("issued_at")
         if isinstance(issued_at, (int, float)) and math.isfinite(issued_at):
             age_s = max(0.0, now_wall - float(issued_at))
             fresh = age_s <= self._max_age_s
             from_this_run = issued_at > self._run_start_wall
-            allowed = bool(doc.get("generation_enabled")) and fresh and from_this_run
-        state.apply_driver_value(GENERATION_ALLOWED_CHANNEL, 1.0 if allowed else 0.0)
+            if not from_this_run:
+                self._generation_allowed = False
+            elif issued_at != self._last_generation_command_id:
+                requested_enabled = bool(doc.get("generation_enabled"))
+                logger.info(
+                    "Operator command observed: SOFT %s generation (age %.1fs%s)",
+                    "START" if requested_enabled else "STOP",
+                    age_s,
+                    "" if fresh or not requested_enabled else ", stale start ignored",
+                )
+                if not requested_enabled or fresh:
+                    self._generation_allowed = requested_enabled
+                self._last_generation_command_id = float(issued_at)
+        else:
+            self._generation_allowed = False
+        state.apply_driver_value(
+            GENERATION_ALLOWED_CHANNEL, 1.0 if self._generation_allowed else 0.0
+        )
         state.apply_driver_value(COMMAND_AGE_CHANNEL, age_s)
 
         # ── hard inverter switch (latched action) ─────────────────────────────
@@ -193,6 +226,12 @@ class CommandFileReader:
             ):
                 fire_id = float(cmd_id)
                 fire_cmd = 1.0 if cmd == "start" else 0.0
+                if fire_id != self._last_inverter_command_id:
+                    logger.info(
+                        "Operator command accepted: inverter HARD %s",
+                        cmd.upper(),
+                    )
+                    self._last_inverter_command_id = fire_id
             state.apply_driver_value(INVERTER_COMMAND_ID_CHANNEL, fire_id)
             if INVERTER_COMMAND_CHANNEL in state:
                 state.apply_driver_value(INVERTER_COMMAND_CHANNEL, fire_cmd)

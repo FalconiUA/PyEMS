@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import mimetypes
+import sys
 import threading
 import time
 from collections import deque
@@ -309,6 +310,17 @@ def _json_safe(data: Any) -> Any:
     return data
 
 
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """HTTPServer that does not print a traceback when a browser tab closes."""
+
+    def handle_error(self, request, client_address) -> None:
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)):
+            logger.debug("sim panel client disconnected: %s", client_address)
+            return
+        super().handle_error(request, client_address)
+
+
 def make_handler(harness: SimHarness) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -392,7 +404,7 @@ def main(argv: list[str] | None = None) -> None:
     harness = SimHarness(site, site_path=args.site)
     harness.start()
 
-    server = ThreadingHTTPServer((args.ui_host, args.ui_port), make_handler(harness))
+    server = QuietThreadingHTTPServer((args.ui_host, args.ui_port), make_handler(harness))
     print(f"PyEMS simulator control panel at http://{args.ui_host}:{args.ui_port}")
     print(f"Run the EMS against it with:  pyems --site {args.site}")
     try:

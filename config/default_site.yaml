@@ -32,6 +32,7 @@ connection_point_active_power:
   unit_active_power_setpoint_channel: pv.WSet
 
 safety:
+  safe_active_power_w: 0.0
   max_comms_age_s: 2.0
   # Optional per-device read-freshness guard. Keys are device ids from
   # `devices`; values are seconds. Omit to use only the global comms age.

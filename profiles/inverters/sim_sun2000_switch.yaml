@@ -21,7 +21,7 @@ registers:
   unit: W
   access: read_write
   min_val: 0
-  max_val: 10000
+  max_val: 1000000
 - channel: pv.StartCmd
   address: 40197
   type: uint16

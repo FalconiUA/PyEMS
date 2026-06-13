@@ -386,6 +386,10 @@ class CachedDriver(Driver):
             flushed = time.monotonic()
             with self._lock:
                 self._last_write_ok = flushed  # a delivered command is a healthy write
+            logger.info(
+                "Modbus COMMAND write delivered: %s",
+                ", ".join(f"{tag}={value:g}" for tag, value in pending),
+            )
             if self._cmd_failed:
                 logger.warning("Modbus COMMAND write recovered")
                 self._cmd_failed = False

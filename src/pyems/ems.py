@@ -121,8 +121,18 @@ def _setpoint_headroom_config(site: dict) -> dict | None:
                 f"cannot be derived — set headroom_w explicitly"
             )
         headroom_w = 0.1 * float(alloc["p_max_w"])
+    regulation_priority = int(site["connection_point_active_power"].get("priority", 10))
+    priority = int(cfg.get("priority", regulation_priority + 1))
+    if control_mode(site) == IMPORT_LIMIT_MODE and priority <= regulation_priority:
+        adjusted = regulation_priority + 1
+        logger.warning(
+            "setpoint_headroom.priority=%d would outrank import-limit priority=%d; "
+            "using %d so the import-limit minimum can restart a zero-output unit",
+            priority, regulation_priority, adjusted,
+        )
+        priority = adjusted
     return {
-        "priority": cfg.get("priority", 6),
+        "priority": priority,
         "headroom_w": float(headroom_w),
         "headroom_pct": float(cfg.get("headroom_pct", 0.0)),
         "unit_active_power_channel": unit_ch,
@@ -332,17 +342,25 @@ def validate_binding_directions(site: dict, channels: list[Channel]) -> None:
 
 def _safe_active_power_w(site: dict, mode: str) -> float:
     """Fail-safe unit active power asserted on a safety trip (see safety.py)."""
-    if mode == IMPORT_LIMIT_MODE:
-        guarded_channel = site["safety"]["unit_active_power_setpoint_channels"][0]
-        return next(
-            (
-                ch["p_min_w"]
-                for ch in site["allocation"]["channels"]
-                if ch["setpoint_channel"] == guarded_channel
-            ),
-            0.0,
-        )
-    return site["export_limit"]["limit_w"]
+    configured = site["safety"].get("safe_active_power_w")
+    if configured is not None:
+        return float(configured)
+
+    guarded_channel = site["safety"]["unit_active_power_setpoint_channels"][0]
+    alloc = next(
+        (
+            ch
+            for ch in site["allocation"]["channels"]
+            if ch["setpoint_channel"] == guarded_channel
+        ),
+        None,
+    )
+    if alloc is None:
+        return 0.0
+
+    p_min_w = float(alloc["p_min_w"])
+    p_max_w = float(alloc["p_max_w"])
+    return 0.0 if p_min_w <= 0.0 <= p_max_w else p_min_w
 
 
 def validate_safety_allocation(site: dict) -> None:

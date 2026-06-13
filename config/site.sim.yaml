@@ -1,6 +1,6 @@
 scenario:
-  control_mode: import_limit
-  active_power_limit_w: 10000.0
+  control_mode: export_limit
+  active_power_limit_w: 100.0
   connection_point_device_id: grid
   unit_device_id: pv
   pid_tuning: auto
@@ -13,14 +13,14 @@ control:
   command_json: logs/commands.json
   command_max_age_s: 30
 export_limit:
-  limit_w: 0.0
+  limit_w: 100.0
   priority: 5
   connection_point_active_power_channel: grid.W
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
 connection_point_active_power:
-  export_limit_w: 0.0
-  import_limit_w: 10000.0
+  export_limit_w: 100.0
+  import_limit_w: 1000000000.0
   priority: 10
   gains:
     kp: 0.4
@@ -31,6 +31,7 @@ connection_point_active_power:
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
 safety:
+  safe_active_power_w: 0
   max_comms_age_s: 10
   unit_active_power_setpoint_channels:
   - pv.WSet
@@ -47,8 +48,8 @@ allocation:
   - setpoint_channel: pv.WSet
     p_min_w: 0
     p_max_w: 100000
-    default_w: 100000
-    ramp_rate_w_per_s: 5000
+    default_w: 0
+    ramp_rate_w_per_s: 1000
     deadband_w: 200
     ramp_down_w_per_s: 50000
 telemetry:
@@ -74,9 +75,9 @@ setpoint_compliance:
   tolerance_w: 2000
   max_violation_s: 30
 setpoint_headroom:
-  headroom_w: 5000
+  headroom_w: 1000
   headroom_pct: 15
-  priority: 6
+  priority: 11
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
 recording:
