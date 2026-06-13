@@ -3,83 +3,112 @@
   <button id="reloadBtn">Reload</button>
   <button id="testReadBtn">Test read</button>
 </div>
-<div class="grid">
-  <div class="panel full">
-    <h2>Scenario</h2>
-    <p class="lead">Choose one active-power mode. PyEMS derives controller channels, safety claim, and allocation from the selected devices.</p>
-    <div class="fields">
-      <label>Mode
-        <select id="scenario.control_mode">
-          <option value="export_limit">Export limit</option>
-          <option value="import_limit">Import limit</option>
-        </select>
-        <span class="hint">Export limit curtails generation. Import limit raises generation only when grid import is too high.</span>
-      </label>
-      <label id="limitLabel">Limit at connection point, W
-        <input id="scenario.active_power_limit_w" type="number" step="1" min="0" required>
-        <span class="hint">Positive magnitude in watts at the grid connection point.</span>
-      </label>
-      <label>Connection point meter
-        <select id="scenario.connection_point_device_id"></select>
-        <span class="hint">Device that measures P at the grid connection point; expected channel is device.W.</span>
-      </label>
-      <label>Controlled generating unit
-        <select id="scenario.unit_device_id"></select>
-        <span class="hint">Unit that has active power measurement device.W and writable setpoint device.WSet.</span>
-      </label>
+
+<nav class="subtabs" data-subtabs aria-label="Scenario sections">
+  <button class="subtab active" data-subtab="basics">Basics</button>
+  <button class="subtab" data-subtab="limits">Limits &amp; ramps</button>
+  <button class="subtab" data-subtab="protection">Spike protection</button>
+  <button class="subtab" data-subtab="reference">Generated config</button>
+</nav>
+
+<section class="subview active" data-subtab="basics">
+  <div class="grid">
+    <div class="panel full">
+      <h2>Scenario</h2>
+      <p class="lead">Choose one active-power mode. PyEMS derives controller channels, safety claim, and allocation from the selected devices.</p>
+      <div class="fields">
+        <label>Mode
+          <select id="scenario.control_mode">
+            <option value="export_limit">Export limit</option>
+            <option value="import_limit">Import limit</option>
+          </select>
+          <span class="hint">Export limit curtails generation. Import limit raises generation only when grid import is too high.</span>
+        </label>
+        <label id="limitLabel">Limit at connection point, W
+          <input id="scenario.active_power_limit_w" type="number" step="1" min="0" required>
+          <span class="hint">Positive magnitude in watts at the grid connection point.</span>
+        </label>
+        <label>Connection point meter
+          <select id="scenario.connection_point_device_id"></select>
+          <span class="hint">Device that measures P at the grid connection point; expected channel is device.W.</span>
+        </label>
+        <label>Controlled generating unit
+          <select id="scenario.unit_device_id"></select>
+          <span class="hint">Unit that has active power measurement device.W and writable setpoint device.WSet.</span>
+        </label>
+      </div>
     </div>
   </div>
+</section>
 
-  <div class="panel">
-    <h2>Unit envelope</h2>
-    <p class="lead">These values become the single allocation channel for the selected scenario.</p>
-    <div class="fields">
-      <label>Minimum active power, W
-        <input id="allocation.p_min_w" type="number" step="1" required>
-      </label>
-      <label>P_max, W
-        <input id="allocation.p_max_w" type="number" step="1" required>
-      </label>
-      <label>Default active power, W
-        <input id="allocation.default_w" type="number" step="1" required>
-        <span class="hint">Value used when no controller requests a setpoint.</span>
-      </label>
-      <label>Active power gradient (up), W/s
-        <input id="allocation.ramp_rate_w_per_s" type="number" step="1" min="0" required>
-        <span class="hint">Grid-code ramp for raising production.</span>
-      </label>
-      <label>Curtailment gradient (down), W/s
-        <input id="allocation.ramp_down_w_per_s" type="number" step="1" min="0">
-        <span class="hint">Fast ramp for reducing power (export-limit compliance). Empty = same as the up gradient.</span>
-      </label>
-      <label>Deadband, W
-        <input id="allocation.deadband_w" type="number" step="1" min="0" required>
-      </label>
-      <label>Setpoint headroom floor, W
-        <input id="setpoint_headroom.headroom_w" type="number" step="100" min="1" required>
-        <span class="hint">The setpoint may sit at most this much above actual production — prevents export spikes when the resource returns.</span>
-      </label>
-      <label>Setpoint headroom, % of output
-        <input id="setpoint_headroom.headroom_pct" type="number" step="1" min="0">
-        <span class="hint">Dynamic part: percent of current production, applied when larger than the floor. 0 = floor only.</span>
-      </label>
+<section class="subview" data-subtab="limits">
+  <div class="grid">
+    <div class="panel full">
+      <h2>Unit envelope</h2>
+      <p class="lead">These values become the single allocation channel for the selected scenario.</p>
+      <div class="fields">
+        <label>Minimum active power, W
+          <input id="allocation.p_min_w" type="number" step="1" required>
+        </label>
+        <label>P_max, W
+          <input id="allocation.p_max_w" type="number" step="1" required>
+        </label>
+        <label>Default active power, W
+          <input id="allocation.default_w" type="number" step="1" required>
+          <span class="hint">Value used when no controller requests a setpoint.</span>
+        </label>
+        <label>Deadband, W
+          <input id="allocation.deadband_w" type="number" step="1" min="0" required>
+        </label>
+        <label>Active power gradient (up), W/s
+          <input id="allocation.ramp_rate_w_per_s" type="number" step="1" min="0" required>
+          <span class="hint">Grid-code ramp for raising production.</span>
+        </label>
+        <label>Curtailment gradient (down), W/s
+          <input id="allocation.ramp_down_w_per_s" type="number" step="1" min="0">
+          <span class="hint">Fast ramp for reducing power (export-limit compliance). Empty = same as the up gradient.</span>
+        </label>
+      </div>
     </div>
   </div>
+</section>
 
-  <div class="panel">
-    <h2>Generated bindings</h2>
-    <p class="lead">These are generated from the selected devices and written to site.yaml on save.</p>
-    <table>
-      <tbody id="bindingRows"></tbody>
-    </table>
+<section class="subview" data-subtab="protection">
+  <div class="grid">
+    <div class="panel full">
+      <h2>Export-spike protection</h2>
+      <p class="lead">Caps how far the applied setpoint may sit above actual production, so power does not spike when the resource returns.</p>
+      <div class="fields">
+        <label>Setpoint headroom floor, W
+          <input id="setpoint_headroom.headroom_w" type="number" step="100" min="1" required>
+          <span class="hint">The setpoint may sit at most this much above actual production — prevents export spikes when the resource returns.</span>
+        </label>
+        <label>Setpoint headroom, % of output
+          <input id="setpoint_headroom.headroom_pct" type="number" step="1" min="0">
+          <span class="hint">Dynamic part: percent of current production, applied when larger than the floor. 0 = floor only.</span>
+        </label>
+      </div>
+    </div>
   </div>
+</section>
 
-  <div class="panel full">
-    <h2>Required device registers</h2>
-    <p class="lead">Each selected device profile must expose these fields. Open Device profiles to edit addresses, scales, access, and units.</p>
-    <table>
-      <thead><tr><th>Device</th><th>Profile</th><th>Required field</th><th>Expected tag</th><th>Status</th></tr></thead>
-      <tbody id="requirementRows"></tbody>
-    </table>
+<section class="subview" data-subtab="reference">
+  <div class="grid">
+    <div class="panel full">
+      <h2>Generated bindings</h2>
+      <p class="lead">These are generated from the selected devices and written to site.yaml on save.</p>
+      <table>
+        <tbody id="bindingRows"></tbody>
+      </table>
+    </div>
+
+    <div class="panel full">
+      <h2>Required device registers</h2>
+      <p class="lead">Each selected device profile must expose these fields. Open Device profiles to edit addresses, scales, access, and units.</p>
+      <table>
+        <thead><tr><th>Device</th><th>Profile</th><th>Required field</th><th>Expected tag</th><th>Status</th></tr></thead>
+        <tbody id="requirementRows"></tbody>
+      </table>
+    </div>
   </div>
-</div>
+</section>
