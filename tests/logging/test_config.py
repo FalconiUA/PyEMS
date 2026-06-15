@@ -70,3 +70,37 @@ def test_setup_logging_without_file_has_no_file_handler():
         assert not any(
             isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers
         )
+
+
+@pytest.fixture
+def restore_pymodbus_level():
+    pm = logging.getLogger("pymodbus")
+    saved = pm.level
+    try:
+        yield pm
+    finally:
+        pm.setLevel(saved)
+
+
+def test_setup_logging_caps_pymodbus_logger(restore_pymodbus_level):
+    # pymodbus logs every failed transaction at ERROR; default cap is CRITICAL so
+    # a sustained bus outage cannot flood the journal / rotate real history away.
+    restore_pymodbus_level.setLevel(logging.NOTSET)
+    with unconfigured_root():
+        setup_logging("INFO")
+    assert restore_pymodbus_level.level == logging.CRITICAL
+
+
+def test_setup_logging_pymodbus_level_env_override(monkeypatch, restore_pymodbus_level):
+    monkeypatch.setenv("PYEMS_PYMODBUS_LOG_LEVEL", "WARNING")
+    with unconfigured_root():
+        setup_logging("INFO")
+    assert restore_pymodbus_level.level == logging.WARNING
+
+
+def test_setup_logging_caps_pymodbus_even_when_root_preconfigured(restore_pymodbus_level):
+    # The cap must apply even on re-entry (root already has handlers under pytest),
+    # because the per-transaction spam is the worst long-run noise.
+    restore_pymodbus_level.setLevel(logging.NOTSET)
+    setup_logging("INFO")  # root already configured by pytest -> early return path
+    assert restore_pymodbus_level.level == logging.CRITICAL

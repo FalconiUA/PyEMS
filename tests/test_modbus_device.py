@@ -1,4 +1,5 @@
 """Tests for the profile-driven Modbus driver (src/drivers/modbus_device.py)."""
+import logging
 from dataclasses import replace
 from pathlib import Path
 
@@ -292,6 +293,33 @@ def test_write_error_response_raises():
     st.set("pv1.WSet", 5000.0)
     with pytest.raises(ModbusWriteError, match="pv1.WSet"):
         drv.write_setpoints(st)
+
+
+class _FailingConnectClient(FakeModbusClient):
+    def connect(self):
+        self.connect_calls += 1
+        return False  # endpoint down
+
+
+def test_failed_reconnect_logs_at_debug_not_info(caplog):
+    """CompositeDriver re-calls connect() every poll while a device is down, so a
+    FAILED connect must not log at INFO (that floods the log during an outage)."""
+    prof = DeviceProfile.load(HUAWEI)
+    drv = ModbusDeviceDriver(prof, client=_FailingConnectClient({}), slave_id=1, prefix="pv1")
+    with caplog.at_level(logging.INFO, logger="pyems.drivers.modbus_device"):
+        drv.connect()
+    assert not any(r.levelno >= logging.INFO for r in caplog.records)
+    with caplog.at_level(logging.DEBUG, logger="pyems.drivers.modbus_device"):
+        drv.connect()
+    assert any("Connect FAILED" in r.message for r in caplog.records)
+
+
+def test_successful_connect_logs_at_info(caplog):
+    prof = DeviceProfile.load(HUAWEI)
+    drv = ModbusDeviceDriver(prof, client=FakeModbusClient({}), slave_id=1, prefix="pv1")
+    with caplog.at_level(logging.INFO, logger="pyems.drivers.modbus_device"):
+        drv.connect()
+    assert any("Connected" in r.message for r in caplog.records)
 
 
 def test_shared_client_keeps_per_driver_slave_id():

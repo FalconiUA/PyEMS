@@ -61,10 +61,16 @@ def setup_logging(
     uses the same formatter as stderr so the UI can parse it back. A file we
     cannot open (read-only mount, bad path) must not stop the EMS — it logs a
     warning to stderr and carries on.
+
+    The noisy `pymodbus` library logger is capped (default CRITICAL, override
+    with PYEMS_PYMODBUS_LOG_LEVEL) — see _tame_pymodbus_logger.
     """
     resolved = resolve_level(
         level if level is not None else os.environ.get("PYEMS_LOG_LEVEL", "INFO")
     )
+    # Always enforce the pymodbus cap, even if the root logger was pre-configured
+    # (e.g. under pytest) — its per-transaction spam is the worst long-run noise.
+    _tame_pymodbus_logger()
     root = logging.getLogger()
     if root.handlers:  # already configured (e.g. tests / re-entry); leave it
         return
@@ -91,3 +97,20 @@ def setup_logging(
             # Stderr/journal logging already works; the file is a convenience for
             # the UI, never a hard dependency of the control loop.
             root.warning("Could not open log file %r; logging to stderr only", file_spec)
+
+
+def _tame_pymodbus_logger() -> None:
+    """Cap the pymodbus library logger (default CRITICAL).
+
+    pymodbus logs EVERY failed transaction at ERROR ("Connection refused;
+    Repeating...."). During a sustained bus outage that is ~8 lines/s — it floods
+    the journal and rotates the real EMS history out of the size-bounded file log
+    exactly when it is needed. Our own layers (CompositeDriver / CachedDriver /
+    ModbusDeviceDriver) already report bus-down/up transitions WITH device
+    context, so this per-transaction noise is redundant. WARNING/ERROR do not
+    silence it (the spam IS at ERROR), so the default is CRITICAL; set
+    PYEMS_PYMODBUS_LOG_LEVEL=WARNING (or DEBUG) to see pymodbus detail when
+    debugging the bus itself.
+    """
+    spec = os.environ.get("PYEMS_PYMODBUS_LOG_LEVEL", "CRITICAL")
+    logging.getLogger("pymodbus").setLevel(resolve_level(spec))

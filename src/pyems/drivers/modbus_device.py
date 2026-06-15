@@ -393,11 +393,21 @@ class ModbusDeviceDriver(Driver):
 
     def connect(self) -> None:
         ok = self._client.connect()
-        logger.info(
-            "Connecting %s (%s, slave %d, prefix %r): %s",
-            self._profile.model, self._profile.protocol, self._slave, self._prefix,
-            "ok" if ok else "FAILED",
-        )
+        # A successful connect is a one-shot INFO; a FAILED connect is DEBUG, not
+        # INFO — CompositeDriver re-calls connect() every poll while a device is
+        # down, so logging each failure at INFO floods the log during an outage.
+        # The bus-down transition is already reported (with device context) by
+        # CompositeDriver/CachedDriver.
+        if ok:
+            logger.info(
+                "Connected %s (%s, slave %d, prefix %r)",
+                self._profile.model, self._profile.protocol, self._slave, self._prefix,
+            )
+        else:
+            logger.debug(
+                "Connect FAILED %s (%s, slave %d, prefix %r)",
+                self._profile.model, self._profile.protocol, self._slave, self._prefix,
+            )
 
     def disconnect(self) -> None:
         self._client.close()

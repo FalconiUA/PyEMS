@@ -61,6 +61,12 @@ sudo systemctl restart pyems    # e.g. after editing site.yaml
 Per-cycle DEBUG detail: uncomment the `Environment=PYEMS_LOG_LEVEL=DEBUG`
 line in the unit, then `daemon-reload` + `restart`.
 
+The noisy `pymodbus` library log is capped at CRITICAL by default (it logs every
+failed transaction at ERROR, which would flood the log during a bus outage and
+rotate the real history away — the EMS reports bus-down/up itself, with device
+context). To see pymodbus wire detail while debugging the bus, set
+`Environment=PYEMS_PYMODBUS_LOG_LEVEL=DEBUG` (or `WARNING`) and restart.
+
 ## 5. Web UI (status, generation control, log viewer)
 
 The EMS ships a local web UI as a *separate* process (`pyems-ui`). It reads the
