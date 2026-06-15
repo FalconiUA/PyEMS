@@ -1,0 +1,57 @@
+<div class="toolbar">
+  <button id="refreshNetworkBtn">Refresh</button>
+  <button class="primary" id="applyNetworkBtn">Apply &amp; reconnect</button>
+  <span id="networkStateText" class="hint">Checking network…</span>
+</div>
+
+<div class="grid">
+  <div class="panel full">
+    <h2>Pi network address</h2>
+    <p class="lead">
+      This is the Pi's <strong>own</strong> address on the LAN — where you reach
+      this console, and the source address it uses to talk to devices. It is
+      <strong>not</strong> a Modbus device address (those live under Device
+      profiles / Site YAML). For the EMS to reach a device directly, the Pi and
+      the device must share one subnet.
+    </p>
+    <div class="fields">
+      <label>Mode
+        <select id="net.method">
+          <option value="manual">Static IP</option>
+          <option value="auto">DHCP (automatic)</option>
+        </select>
+        <span class="hint">An EMS appliance wants a fixed address — use Static.</span>
+      </label>
+      <label>IPv4 address
+        <input id="net.address" type="text" inputmode="decimal" placeholder="192.168.0.11">
+        <span class="hint">The address you will type in the browser, e.g. 192.168.0.11.</span>
+      </label>
+      <label>Prefix length (mask)
+        <input id="net.prefix" type="number" min="1" max="32" step="1" placeholder="24">
+        <span class="hint">/24 = 255.255.255.0 (the usual home/industrial LAN).</span>
+      </label>
+      <label>Gateway
+        <input id="net.gateway" type="text" inputmode="decimal" placeholder="192.168.0.1">
+        <span class="hint">Your router. Needed for internet/time; not for local Modbus.</span>
+      </label>
+      <label>DNS servers
+        <input id="net.dns" type="text" placeholder="192.168.0.1">
+        <span class="hint">Comma- or space-separated. Optional.</span>
+      </label>
+    </div>
+    <p class="hint" id="networkSubnetHint"></p>
+    <div class="status warn" id="networkReconnectWarning">
+      Changing the address drops the connection you are using right now. After
+      <strong>Apply</strong>, reopen this console at the new address — the page
+      below will show the link.
+    </div>
+    <p class="hint" id="networkApplyResult"></p>
+  </div>
+
+  <div class="panel full">
+    <h2>Current</h2>
+    <table>
+      <tbody id="networkCurrentRows"></tbody>
+    </table>
+  </div>
+</div>

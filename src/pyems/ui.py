@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import logging
 import math
 import mimetypes
+import re
 import subprocess
 import sys
 import threading
@@ -805,17 +807,23 @@ def generation_state(site: dict[str, Any]) -> dict[str, Any]:
 
 
 class EmsManager:
-    """Start/stop the EMS control loop (`pyems`) as a child of the configuration UI.
+    """RUN/STOP the EMS control loop (`pyems`) as a SEPARATE, supervised process.
 
-    Symmetric to SimManager. The EMS is a SEPARATE process — the UI never runs
-    the control loop in-process; it only spawns/terminates it and reports whether
-    a control loop is publishing telemetry (which also detects an EMS started by
-    systemd or by hand outside the UI).
+    Two supervision modes, both keeping the control loop out-of-process (the UI
+    never runs control logic in-process; it only commands lifecycle and reports
+    whether a loop is publishing telemetry):
 
-    `process_control` gates spawning/terminating: in plain production the UI is
-    a read-only status + generation console (`process_control=False`), and only
-    a managed/dev launch (`--manage-ems`) may start or stop the process. Either
-    way the UI never starts a SECOND EMS: start refuses while telemetry is fresh.
+    - **systemd mode** (`systemd_unit` set, production): the industrial-controller
+      model. The EMS runs as its own systemd unit (≈ a PLC CPU under firmware
+      supervision: own watchdog, auto-restart on crash). The UI is the HMI — its
+      RUN/STOP buttons issue `systemctl start/stop UNIT`, exactly as an HMI
+      commands a separately-supervised runtime. The EMS survives a UI restart.
+    - **child mode** (`systemd_unit` None, local/dev): the UI forks/terminates
+      `python -m pyems.ems` itself. Used by `pyems-dev`.
+
+    `process_control` gates RUN/STOP either way: with it off the UI is a read-only
+    status + generation console (`--manage-ems`/`--ems-unit` turn it on). The UI
+    never starts a SECOND EMS: start refuses while telemetry is fresh.
     """
 
     def __init__(
@@ -823,17 +831,58 @@ class EmsManager:
         site_path: str | Path,
         process_control: bool = False,
         log_level: str | None = None,
+        systemd_unit: str | None = None,
     ) -> None:
         self.site_path = Path(site_path)
         self.process_control = process_control
         self._log_level = log_level
+        self.systemd_unit = systemd_unit
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
 
     def _site(self) -> dict[str, Any]:
         return load_site(self.site_path)
 
+    def _unit_active(self) -> bool:
+        """Is the supervised EMS unit active? (read-only; needs no privilege).
+
+        Degrades to False if systemctl is unavailable (no systemd / not Linux),
+        so status() — which the UI polls every few seconds — never throws.
+        """
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-active", "--quiet", self.systemd_unit],
+                capture_output=True,
+            )
+        except OSError:
+            return False
+        return result.returncode == 0
+
+    def _systemctl(self, verb: str) -> None:
+        """Issue a RUN/STOP to the supervisor. Relies on a polkit rule granting
+        this user start/stop/restart on the unit (see deploy/pyems-polkit.rules):
+        no sudo, no password."""
+        try:
+            result = subprocess.run(
+                ["systemctl", verb, self.systemd_unit],
+                capture_output=True, text=True,
+            )
+        except OSError as exc:
+            raise ValueError(
+                f"cannot run systemctl ({exc}); the EMS unit is supervised by "
+                f"systemd, which is not available here"
+            ) from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise ValueError(
+                f"systemctl {verb} {self.systemd_unit} failed (code "
+                f"{result.returncode}): {detail or 'no output'} — check the polkit "
+                f"rule is installed and the unit name is correct"
+            )
+
     def _managed_alive(self) -> bool:
+        if self.systemd_unit:
+            return self._unit_active()
         return self._proc is not None and self._proc.poll() is None
 
     def running(self) -> bool:
@@ -845,15 +894,22 @@ class EmsManager:
             managed = self._managed_alive()
         fls = fast_loop_state(self._site())
         running = telemetry_fresh(fls)
+        command = (
+            f"systemctl start {self.systemd_unit}"
+            if self.systemd_unit
+            else f"pyems --site {self.site_path}"
+        )
         return {
             "ok": True,
             "managed": managed,
             "running": running,
             "external": running and not managed,
             "process_control": self.process_control,
+            "supervisor": "systemd" if self.systemd_unit else "child",
+            "unit": self.systemd_unit,
             "site": str(self.site_path),
             "age_s": fls.get("age_s"),
-            "command": f"pyems --site {self.site_path}",
+            "command": command,
         }
 
     def start(self, wait_s: float = 20.0) -> dict[str, Any]:
@@ -861,40 +917,60 @@ class EmsManager:
             raise ValueError(
                 "EMS process control is disabled in this UI; start the EMS where "
                 "it is supervised (e.g. systemctl start pyems), or run the UI "
-                "with --manage-ems"
+                "with --manage-ems / --ems-unit"
             )
         if self.running():
             raise ValueError(
                 "an EMS is already running (fresh telemetry); the UI will not "
                 "start a second control loop"
             )
-        logger.info("Operator command: START EMS (%s)", self.site_path)
-        with self._lock:
-            if not self._managed_alive():
-                cmd = [sys.executable, "-m", "pyems.ems", "--site", str(self.site_path)]
-                if self._log_level:
-                    cmd += ["--log-level", self._log_level]
-                self._proc = subprocess.Popen(cmd)
+        logger.info("Operator command: RUN EMS (%s)", self.site_path)
+        if self.systemd_unit:
+            # Hand the RUN to the supervisor; systemd owns the process lifecycle,
+            # exactly as an HMI commands a separately-supervised PLC runtime.
+            self._systemctl("start")
+        else:
+            with self._lock:
+                if not self._managed_alive():
+                    cmd = [sys.executable, "-m", "pyems.ems", "--site", str(self.site_path)]
+                    if self._log_level:
+                        cmd += ["--log-level", self._log_level]
+                    self._proc = subprocess.Popen(cmd)
         deadline = time.monotonic() + wait_s
         while time.monotonic() < deadline:
             if self.running():
                 return self.status()
-            with self._lock:
-                if self._proc is not None and self._proc.poll() is not None:
-                    code = self._proc.returncode
-                    self._proc = None
+            if self.systemd_unit:
+                if not self._unit_active():
                     raise ValueError(
-                        f"EMS exited immediately (code {code}) — likely a bad "
-                        f"{self.site_path}, a bus/connect error, or telemetry "
-                        f"disabled; see the pyems-ui console for its log"
+                        f"EMS unit '{self.systemd_unit}' is not active after start "
+                        f"— likely a bad {self.site_path} or a bus/connect error; "
+                        f"see: journalctl -u {self.systemd_unit} -e"
                     )
+            else:
+                with self._lock:
+                    if self._proc is not None and self._proc.poll() is not None:
+                        code = self._proc.returncode
+                        self._proc = None
+                        raise ValueError(
+                            f"EMS exited immediately (code {code}) — likely a bad "
+                            f"{self.site_path}, a bus/connect error, or telemetry "
+                            f"disabled; see the pyems-ui console for its log"
+                        )
             time.sleep(0.2)
-        # Process is alive but no fresh telemetry yet (e.g. telemetry section
-        # absent). Report status rather than killing a possibly-healthy loop.
+        # Alive but no fresh telemetry yet (e.g. telemetry section absent). Report
+        # status rather than tearing down a possibly-healthy loop.
         return self.status()
 
     def stop_managed(self) -> None:
-        """Terminate the child if we own one; never raises (shutdown path)."""
+        """Terminate a child we own; never raises (UI-shutdown path).
+
+        In systemd mode there is no child to reap — the EMS is supervised
+        separately and MUST outlive a UI restart, so this is a deliberate no-op.
+        RUN/STOP is an explicit operator action (start/stop), never UI teardown.
+        """
+        if self.systemd_unit:
+            return
         with self._lock:
             proc, self._proc = self._proc, None
         if proc is not None and proc.poll() is None:
@@ -911,6 +987,12 @@ class EmsManager:
                 "EMS process control is disabled in this UI; stop the EMS where "
                 "it is supervised (e.g. systemctl stop pyems)"
             )
+        logger.info("Operator command: STOP EMS (%s)", self.site_path)
+        if self.systemd_unit:
+            # systemd owns the runtime; a clean operator stop is honored
+            # (Restart=on-failure resurrects only a crash, never a STOP).
+            self._systemctl("stop")
+            return self.status()
         with self._lock:
             external = not self._managed_alive()
         if external and self.running():
@@ -918,7 +1000,6 @@ class EmsManager:
                 "the EMS was started outside this UI; stop it where it was "
                 "started (Ctrl-C in its terminal, or systemctl stop pyems)"
             )
-        logger.info("Operator command: STOP EMS (%s)", self.site_path)
         self.stop_managed()
         return self.status()
 
@@ -1026,16 +1107,304 @@ class SimManager:
         return self.status()
 
 
+class _NmcliUnavailable(Exception):
+    """systemctl-style sentinel: NetworkManager's nmcli is not on this host
+    (e.g. running the UI on a dev laptop, or a non-NetworkManager OS)."""
+
+
+# ── Pure nmcli parsing / validation (no I/O, unit-tested in test_network.py) ──
+
+def parse_nmcli_connections(terse_output: str) -> list[dict[str, str]]:
+    """Parse `nmcli -t -f NAME,DEVICE,TYPE,STATE connection show --active`.
+
+    Terse mode is colon-separated; connection NAMEs on a Pi ("Wired connection 1",
+    "preconfigured") carry no literal colon, so a simple split is enough.
+    """
+    rows: list[dict[str, str]] = []
+    for line in terse_output.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split(":")
+        if len(parts) >= 4:
+            rows.append(
+                {"name": parts[0], "device": parts[1], "type": parts[2], "state": parts[3]}
+            )
+    return rows
+
+
+def pick_primary_connection(connections: list[dict[str, str]]) -> dict[str, str] | None:
+    """The connection whose IP the UI edits: wired ethernet first (the device
+    network), then wi-fi. Field-installed EMS units are wired to the inverter."""
+    rank = {"ethernet": 0, "802-3-ethernet": 0, "wifi": 1, "802-11-wireless": 1}
+    if not connections:
+        return None
+    return sorted(connections, key=lambda c: rank.get(c.get("type", ""), 9))[0]
+
+
+def parse_nmcli_ipv4(terse_output: str) -> dict[str, Any]:
+    """Parse `nmcli -t -f ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns
+    connection show <name>` into {method, address, prefix, gateway, dns}."""
+    fields: dict[str, str] = {}
+    for line in terse_output.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip()] = value
+    address, prefix = "", None
+    addresses = fields.get("ipv4.addresses", "")
+    if addresses:
+        first = addresses.split(",")[0].strip()
+        if "/" in first:
+            addr_part, prefix_part = first.split("/", 1)
+            address = addr_part
+            prefix = int(prefix_part) if prefix_part.isdigit() else None
+        else:
+            address = first
+    return {
+        "method": fields.get("ipv4.method", ""),
+        "address": address,
+        "prefix": prefix,
+        "gateway": fields.get("ipv4.gateway", "") or "",
+        "dns": fields.get("ipv4.dns", "") or "",
+    }
+
+
+def validate_network_request(req: dict[str, Any]) -> dict[str, Any]:
+    """Validate an IP-change request from the UI; raise ValueError on bad input.
+
+    Returns a normalized spec: {method:'auto'} for DHCP, or
+    {method:'manual', address, prefix, gateway, dns:[...]} for a static IP.
+    """
+    method = req.get("method")
+    if method not in ("manual", "auto"):
+        raise ValueError("method must be 'manual' (static) or 'auto' (DHCP)")
+    if method == "auto":
+        return {"method": "auto"}
+    address = str(req.get("address", "")).strip()
+    try:
+        ipaddress.IPv4Address(address)
+    except ValueError:
+        raise ValueError(f"invalid IPv4 address: {address!r}")
+    try:
+        prefix = int(req.get("prefix"))
+    except (TypeError, ValueError):
+        raise ValueError("prefix length must be a whole number 1..32")
+    if not 1 <= prefix <= 32:
+        raise ValueError("prefix length must be between 1 and 32")
+    gateway = str(req.get("gateway", "")).strip()
+    if gateway:
+        try:
+            ipaddress.IPv4Address(gateway)
+        except ValueError:
+            raise ValueError(f"invalid gateway address: {gateway!r}")
+    dns_list = [d for d in re.split(r"[,\s]+", str(req.get("dns", "")).strip()) if d]
+    for dns in dns_list:
+        try:
+            ipaddress.IPv4Address(dns)
+        except ValueError:
+            raise ValueError(f"invalid DNS address: {dns!r}")
+    return {
+        "method": "manual",
+        "address": address,
+        "prefix": prefix,
+        "gateway": gateway,
+        "dns": dns_list,
+    }
+
+
+def subnet_mismatch_hosts(
+    address: str, prefix: int | None, device_hosts: list[str]
+) -> list[str]:
+    """Device IPs that fall OUTSIDE the Pi's subnet — they would be unreachable
+    over Modbus TCP without a router. Hostnames (non-IP) are skipped."""
+    if not address or prefix is None:
+        return []
+    try:
+        network = ipaddress.ip_network(f"{address}/{prefix}", strict=False)
+    except ValueError:
+        return []
+    outside = []
+    for host in device_hosts:
+        try:
+            if ipaddress.IPv4Address(host) not in network:
+                outside.append(host)
+        except ValueError:
+            continue  # a DNS name, not an IP — can't subnet-check
+    return outside
+
+
+class NetworkController:
+    """Read and change the Pi's own static IP via NetworkManager (`nmcli`).
+
+    This is the appliance's OS-level address — distinct from the Modbus device
+    IPs in site.yaml. The UI's RUN/STOP pattern again: the change needs a polkit
+    grant (deploy/pyems-polkit.rules) for NetworkManager; no sudo, no password.
+    `con up` is deferred ~1 s so the HTTP response reaches the browser before the
+    address (and thus the connection it came in on) changes.
+    """
+
+    DEFAULT_ADDRESS = "192.168.0.11"
+    DEFAULT_PREFIX = 24
+
+    def __init__(self, site_path: str | Path, ui_port: int = 8765) -> None:
+        self.site_path = Path(site_path)
+        self.ui_port = ui_port
+        self._lock = threading.Lock()
+
+    def _nmcli(self, args: list[str]) -> tuple[int, str, str]:
+        try:
+            result = subprocess.run(["nmcli", *args], capture_output=True, text=True)
+        except OSError as exc:
+            raise _NmcliUnavailable(str(exc)) from exc
+        return result.returncode, result.stdout, result.stderr
+
+    def _nmcli_check(self, args: list[str]) -> None:
+        rc, out, err = self._nmcli(args)
+        if rc != 0:
+            raise ValueError(
+                f"nmcli {' '.join(args)} failed (code {rc}): "
+                f"{(err or out).strip() or 'no output'} — check the polkit rule "
+                f"grants NetworkManager control to this user"
+            )
+
+    def _device_hosts(self) -> list[str]:
+        try:
+            site = load_site(self.site_path)
+        except Exception:
+            return []
+        return [str(d.get("host", "")) for d in site.get("devices", []) if d.get("host")]
+
+    def _primary(self) -> dict[str, str] | None:
+        _, out, _ = self._nmcli(
+            ["-t", "-f", "NAME,DEVICE,TYPE,STATE", "connection", "show", "--active"]
+        )
+        return pick_primary_connection(parse_nmcli_connections(out))
+
+    def _suggested(self) -> dict[str, Any]:
+        network = ipaddress.ip_network(
+            f"{self.DEFAULT_ADDRESS}/{self.DEFAULT_PREFIX}", strict=False
+        )
+        gateway = str(network.network_address + 1)
+        return {
+            "address": self.DEFAULT_ADDRESS,
+            "prefix": self.DEFAULT_PREFIX,
+            "gateway": gateway,
+            "dns": gateway,
+        }
+
+    def status(self) -> dict[str, Any]:
+        suggested = self._suggested()
+        try:
+            primary = self._primary()
+        except _NmcliUnavailable as exc:
+            return {
+                "ok": True,
+                "available": False,
+                "reason": f"NetworkManager/nmcli not available here ({exc})",
+                "suggested": suggested,
+                "device_hosts": self._device_hosts(),
+            }
+        if primary is None:
+            return {
+                "ok": True,
+                "available": True,
+                "connection": None,
+                "reason": "no active NetworkManager connection",
+                "suggested": suggested,
+                "device_hosts": self._device_hosts(),
+            }
+        _, ipv4_out, _ = self._nmcli(
+            [
+                "-t", "-f", "ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns",
+                "connection", "show", primary["name"],
+            ]
+        )
+        ipv4 = parse_nmcli_ipv4(ipv4_out)
+        device_hosts = self._device_hosts()
+        return {
+            "ok": True,
+            "available": True,
+            "connection": primary["name"],
+            "device": primary.get("device", ""),
+            "method": ipv4["method"],
+            "address": ipv4["address"],
+            "prefix": ipv4["prefix"],
+            "gateway": ipv4["gateway"],
+            "dns": ipv4["dns"],
+            "device_hosts": device_hosts,
+            "device_subnet_warning": subnet_mismatch_hosts(
+                ipv4["address"], ipv4["prefix"], device_hosts
+            ),
+            "suggested": suggested,
+        }
+
+    def _bring_up_later(self, name: str) -> None:
+        """Re-activate the connection after a short delay (so the HTTP reply for
+        the apply call flushes first). Errors are logged, never raised here."""
+        def worker() -> None:
+            try:
+                self._nmcli_check(["connection", "up", name])
+            except Exception as exc:  # the response is already gone; just log
+                logger.warning("nmcli connection up %s failed: %s", name, exc)
+
+        threading.Timer(1.0, worker).start()
+
+    def apply(self, req: dict[str, Any]) -> dict[str, Any]:
+        spec = validate_network_request(req)
+        with self._lock:
+            try:
+                primary = self._primary()
+            except _NmcliUnavailable as exc:
+                raise ValueError(
+                    f"cannot change the Pi IP ({exc}); set it in the OS — this "
+                    f"host has no NetworkManager"
+                )
+            if primary is None:
+                raise ValueError("no active NetworkManager connection to modify")
+            name = primary["name"]
+            if spec["method"] == "auto":
+                self._nmcli_check(
+                    ["connection", "modify", name, "ipv4.method", "auto",
+                     "ipv4.addresses", "", "ipv4.gateway", ""]
+                )
+                new_url, reconnect, mism = None, False, []
+            else:
+                self._nmcli_check(
+                    ["connection", "modify", name,
+                     "ipv4.method", "manual",
+                     "ipv4.addresses", f"{spec['address']}/{spec['prefix']}",
+                     "ipv4.gateway", spec["gateway"],
+                     "ipv4.dns", ",".join(spec["dns"])]
+                )
+                new_url = f"http://{spec['address']}:{self.ui_port}"
+                reconnect = True
+                mism = subnet_mismatch_hosts(
+                    spec["address"], spec["prefix"], self._device_hosts()
+                )
+            logger.info("Operator command: set Pi network %s on '%s'", spec, name)
+            self._bring_up_later(name)
+        return {
+            "ok": True,
+            "applied": spec,
+            "connection": name,
+            "new_url": new_url,
+            "reconnect": reconnect,
+            "device_subnet_warning": mism,
+        }
+
+
 class UIApp:
     def __init__(
         self,
         site_path: str | Path,
         sim: SimManager | None = None,
         ems: EmsManager | None = None,
+        network: NetworkController | None = None,
     ) -> None:
         self.site_path = Path(site_path)
         self.sim = sim or SimManager()
         self.ems = ems or EmsManager(self.site_path)
+        self.network = network or NetworkController(self.site_path)
         # The UI can edit either the hardware site or the simulation site.
         # They are SEPARATE configs on purpose (real device addresses vs
         # localhost simulators) — but editing one while testing against the
@@ -1093,6 +1462,7 @@ class UIApp:
         self.close()  # the live session is bound to the previous file's devices
         self.site_path = target
         self.ems.site_path = target  # EMS status/command channel follows the file
+        self.network.site_path = target  # device-subnet check follows the file too
         return {"ok": True, "site_path": str(target)}
 
     def close(self) -> None:
@@ -1248,6 +1618,8 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(app.sim.status())
                 elif path == "/api/ems/status":
                     self._send_json(app.ems.status())
+                elif path == "/api/network":
+                    self._send_json(app.network.status())
                 elif path == "/api/generation":
                     self._send_json(app.generation_status())
                 else:
@@ -1285,6 +1657,8 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(app.ems.start())
                 elif path == "/api/ems/stop":
                     self._send_json(app.ems.stop())
+                elif path == "/api/network":
+                    self._send_json(app.network.apply(payload))
                 elif path == "/api/generation/start":
                     self._send_json(app.set_generation(True))
                 elif path == "/api/generation/stop":
@@ -1320,6 +1694,14 @@ def main(argv: list[str] | None = None) -> None:
              "(off by default: the UI is a read-only status + generation console)",
     )
     parser.add_argument(
+        "--ems-unit", default=None, metavar="UNIT",
+        help="supervise the EMS as this systemd unit (e.g. 'pyems'): the UI's "
+             "RUN/STOP issue 'systemctl start/stop UNIT' instead of forking a "
+             "child, so the control loop is a separate, OS-supervised process "
+             "that survives a UI restart (implies --manage-ems; needs the polkit "
+             "rule from deploy/pyems-polkit.rules). This is the production model.",
+    )
+    parser.add_argument(
         "--autostart-ems", action="store_true",
         help="start the EMS control loop on launch (implies --manage-ems); "
              "generation stays disabled until enabled from the UI",
@@ -1332,10 +1714,14 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     setup_logging(args.log_level)
 
-    manage_ems = args.manage_ems or args.autostart_ems
+    manage_ems = args.manage_ems or args.autostart_ems or bool(args.ems_unit)
     sim = SimManager(args.sim_site, panel_host=args.host, panel_port=args.sim_port)
-    ems = EmsManager(args.site, process_control=manage_ems, log_level=args.log_level)
-    app = UIApp(args.site, sim=sim, ems=ems)
+    ems = EmsManager(
+        args.site, process_control=manage_ems, log_level=args.log_level,
+        systemd_unit=args.ems_unit,
+    )
+    network = NetworkController(args.site, ui_port=args.port)
+    app = UIApp(args.site, sim=sim, ems=ems, network=network)
     server = QuietThreadingHTTPServer((args.host, args.port), make_handler(app))
     host, port = server.server_address[:2]
     print(f"PyEMS UI running at http://{host}:{port}")

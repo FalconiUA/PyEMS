@@ -1,10 +1,17 @@
-# PyEMS systemd unit.
+# PyEMS systemd unit — the EMS control loop (the "runtime", ≈ a PLC CPU).
+#
+# This is the SUPERVISED RUNTIME, separate from the UI/HMI (pyems-ui.service).
+# In the production model you do NOT enable this on boot; the operator presses
+# RUN in the UI, which issues `systemctl start pyems` (see pyems-polkit.rules).
+# A crash self-heals (Restart=on-failure); a clean operator STOP stays stopped.
 #
 # Install (paths assume the repo is cloned to /home/pi/PyEMS — adjust both
 # here and in DEPLOY.md if yours differs):
 #   sudo cp deploy/pyems.service /etc/systemd/system/pyems.service
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now pyems
+#   # do NOT `enable` — RUN/STOP is driven from the UI. Smoke-test once with:
+#   #   sudo systemctl start pyems   (then watch the log below)
+#   # For retentive RUN across reboots once commissioned: sudo systemctl enable pyems
 #
 # Logs:    journalctl -u pyems -f
 # Status:  systemctl status pyems

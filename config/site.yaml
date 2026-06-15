@@ -45,13 +45,11 @@ telemetry:
 devices:
 - id: grid
   profile: meters/grid_meter_huawei_smartlogger3000.yaml
-  host: 192.168.1.200
-  port: 11
+  host: 192.168.0.200
   slave_id: 1
 - id: pv
   profile: inverters/huawei_sun2000_100ktl_m1.yaml
-  host: 192.168.1.100
-  port: 0
+  host: 192.168.0.100
   slave_id: 1
 setpoint_compliance:
   unit_active_power_channel: pv.W

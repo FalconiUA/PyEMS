@@ -1,0 +1,34 @@
+// PyEMS polkit rule — let the HMI (running as the service user) do two things
+// without a password, and nothing else:
+//   1. RUN/STOP the EMS runtime  → systemctl start/stop/restart pyems.service
+//   2. set the Pi's own IP        → NetworkManager modify + (de)activate
+//
+// This is what makes the UI's RUN/STOP buttons and the Network page work the
+// industrial way: the HMI asks the system supervisor over D-Bus, polkit consults
+// this rule, and systemd / NetworkManager (not the UI) own the change.
+//
+// install.sh writes this with the real service user substituted for "pi".
+// Install path (Raspberry Pi OS Bookworm / polkit >= 0.106):
+//   sudo cp deploy/pyems-polkit.rules /etc/polkit-1/rules.d/49-pyems.rules
+//   # (no daemon-reload needed; polkit picks up rules.d changes live)
+
+polkit.addRule(function(action, subject) {
+    if (subject.user != "pi") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    // 1. RUN/STOP — only pyems.service.
+    if (action.id == "org.freedesktop.systemd1.manage-units") {
+        if (action.lookup("unit") == "pyems.service") {
+            var verb = action.lookup("verb");
+            if (verb == "start" || verb == "stop" || verb == "restart") {
+                return polkit.Result.YES;
+            }
+        }
+    }
+    // 2. Change the Pi's own IP via NetworkManager.
+    if (action.id == "org.freedesktop.NetworkManager.settings.modify.system" ||
+        action.id == "org.freedesktop.NetworkManager.network-control") {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

@@ -1400,6 +1400,129 @@ async function stopInverter() {
   setStatus("Hard stop sent — the inverter is commanded off.", "ok");
 }
 
+// ── Network: the Pi's own IP (NetworkManager), distinct from device IPs ──────
+let networkStatus = null;
+function ipv4ToInt(text) {
+  const parts = String(text).trim().split(".");
+  if (parts.length !== 4) return null;
+  let value = 0;
+  for (const octet of parts) {
+    const n = Number(octet);
+    if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+    value = value * 256 + n;
+  }
+  return value >>> 0;
+}
+function hostsOutsideSubnet(address, prefix, hosts) {
+  const base = ipv4ToInt(address);
+  const pfx = Number(prefix);
+  if (base === null || !(pfx >= 1 && pfx <= 32)) return null;
+  const mask = pfx === 0 ? 0 : (0xffffffff << (32 - pfx)) >>> 0;
+  const net = (base & mask) >>> 0;
+  return (hosts || []).filter((h) => {
+    const hi = ipv4ToInt(h);
+    return hi !== null && ((hi & mask) >>> 0) !== net;
+  });
+}
+function renderNetworkModeFields() {
+  const manual = ($("net.method")?.value || "manual") === "manual";
+  for (const id of ["net.address", "net.prefix", "net.gateway", "net.dns"]) {
+    const el = $(id);
+    if (el) el.disabled = !manual;
+  }
+}
+function fillNetworkForm(ns) {
+  const sug = ns.suggested || {};
+  const useCurrent = ns.method === "manual" && ns.address;
+  if ($("net.method")) $("net.method").value = ns.method === "auto" ? "auto" : "manual";
+  if ($("net.address")) $("net.address").value = useCurrent ? ns.address : (sug.address || "");
+  if ($("net.prefix")) $("net.prefix").value = useCurrent ? (ns.prefix ?? sug.prefix ?? 24) : (sug.prefix ?? 24);
+  if ($("net.gateway")) $("net.gateway").value = useCurrent ? ns.gateway : (ns.gateway || sug.gateway || "");
+  if ($("net.dns")) $("net.dns").value = useCurrent ? ns.dns : (ns.dns || sug.dns || "");
+  renderNetworkModeFields();
+}
+function renderNetworkSubnetHint() {
+  const hint = $("networkSubnetHint");
+  if (!hint || !networkStatus) return;
+  const hosts = networkStatus.device_hosts || [];
+  if (!hosts.length || ($("net.method")?.value || "manual") !== "manual") {
+    hint.textContent = "";
+    return;
+  }
+  const outside = hostsOutsideSubnet($("net.address")?.value, $("net.prefix")?.value, hosts);
+  if (outside === null) {
+    hint.textContent = "";
+  } else if (outside.length) {
+    hint.className = "hint";
+    hint.innerHTML = `<strong style="color:var(--danger)">⚠ ${esc(outside.join(", "))}</strong> would be outside this subnet — unreachable over Modbus TCP without a router. Align the device IPs (Site YAML) to the Pi's subnet.`;
+  } else {
+    hint.className = "hint ok";
+    hint.textContent = `All ${hosts.length} device IP(s) are in this subnet — reachable over Modbus TCP.`;
+  }
+}
+function renderNetwork() {
+  const text = $("networkStateText");
+  if (!text || !networkStatus) return;
+  const ns = networkStatus;
+  if (!ns.available) {
+    text.textContent = ns.reason || "NetworkManager not available on this host.";
+    text.className = "hint warn";
+  } else if (!ns.connection) {
+    text.textContent = ns.reason || "No active network connection.";
+    text.className = "hint warn";
+  } else {
+    const mode = ns.method === "manual" ? "static" : "DHCP";
+    const addr = ns.address ? ` ${ns.address}/${ns.prefix ?? ""}` : "";
+    text.textContent = `"${ns.connection}" on ${ns.device || "?"} — ${mode}${addr}`;
+    text.className = "hint ok";
+  }
+  const rows = [
+    ["Connection", ns.connection || "—"],
+    ["Interface", ns.device || "—"],
+    ["Mode", ns.method === "manual" ? "Static" : ns.method === "auto" ? "DHCP" : "—"],
+    ["Address", ns.address ? `${ns.address}/${ns.prefix ?? ""}` : "—"],
+    ["Gateway", ns.gateway || "—"],
+    ["DNS", ns.dns || "—"],
+  ];
+  if (ns.device_hosts && ns.device_hosts.length) rows.push(["Device IPs (site.yaml)", ns.device_hosts.join(", ")]);
+  const body = $("networkCurrentRows");
+  if (body) body.innerHTML = rows.map(([k, v]) => `<tr><th class="nowrap">${esc(k)}</th><td>${esc(String(v))}</td></tr>`).join("");
+  renderNetworkSubnetHint();
+}
+async function refreshNetwork() {
+  networkStatus = await api("/api/network");
+  fillNetworkForm(networkStatus);
+  renderNetwork();
+}
+async function applyNetwork() {
+  const method = $("net.method").value;
+  const payload = method === "auto" ? { method: "auto" } : {
+    method: "manual",
+    address: $("net.address").value.trim(),
+    prefix: Number($("net.prefix").value),
+    gateway: $("net.gateway").value.trim(),
+    dns: $("net.dns").value.trim(),
+  };
+  setStatus("Applying network settings…");
+  $("applyNetworkBtn").disabled = true;
+  try {
+    const data = await api("/api/network", { method: "POST", body: JSON.stringify(payload) });
+    const result = $("networkApplyResult");
+    if (data.reconnect && data.new_url) {
+      const warn = (data.device_subnet_warning || []).length
+        ? ` Note: device IP(s) ${data.device_subnet_warning.join(", ")} are now outside the Pi subnet.`
+        : "";
+      if (result) result.innerHTML = `Applied. Reopen the console at <a href="${esc(data.new_url)}">${esc(data.new_url)}</a> — this page stops responding in ~1 s.${esc(warn)}`;
+      setStatus(`Network applied — reconnect at ${data.new_url}`, "ok");
+    } else {
+      if (result) result.textContent = "Applied (DHCP). The router assigns the address; find it there, then reopen the console.";
+      setStatus("Network applied (DHCP).", "ok");
+    }
+  } finally {
+    $("applyNetworkBtn").disabled = false;
+  }
+}
+
 function showView(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === name));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === name));
@@ -1419,6 +1542,7 @@ function showView(name) {
     clearInterval(overviewTimer);
     overviewTimer = null;
   }
+  if (name === "network") refreshNetwork().catch(handleError);
 }
 
 // Secondary in-view navigation: a .subtab swaps which .subview group is shown
@@ -1436,6 +1560,10 @@ document.addEventListener("input", (event) => {
   if (event.target.matches('[data-field="channel"]')) {
     const cell = event.target.closest("tr")?.querySelector("[data-decode]");
     if (cell) cell.textContent = fieldLabel(event.target.value) || "— not in vocabulary —";
+  }
+  // live subnet check while typing the Pi's new address/mask
+  if (event.target.id === "net.address" || event.target.id === "net.prefix") {
+    renderNetworkSubnetHint();
   }
 });
 document.addEventListener("change", async (event) => {
@@ -1464,6 +1592,7 @@ document.addEventListener("change", async (event) => {
     renderSimulationConfig();
   }
   if (id === "scenario.pid_tuning") renderSiteYaml();
+  if (id === "net.method") { renderNetworkModeFields(); renderNetworkSubnetHint(); }
   if (event.target.id === "profileDeviceSelect") loadSelectedProfile().catch(handleError);
   if (event.target.id === "siteFileSelect") switchSiteFile(event.target.value).catch(handleError);
 });
@@ -1480,6 +1609,8 @@ document.addEventListener("click", async (event) => {
   if (target.id === "saveProfileBtn") saveProfile().catch(handleError);
   if (target.id === "refreshErrorLogBtn") loadErrorLog().catch(handleError);
   if (target.id === "clearErrorLogBtn") clearErrorLog().catch(handleError);
+  if (target.id === "refreshNetworkBtn") refreshNetwork().catch(handleError);
+  if (target.id === "applyNetworkBtn") applyNetwork().catch(handleError);
   if (target.id === "simStartBtn") startSim().catch((error) => { handleError(error); refreshSim().catch(() => {}); });
   if (target.id === "simStopBtn") stopSim().catch(handleError);
   if (target.id === "simOpenBtn" && simStatus) window.open(simPanelUrl(), "_blank");

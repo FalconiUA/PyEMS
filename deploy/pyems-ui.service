@@ -1,0 +1,38 @@
+# PyEMS UI / HMI systemd unit — the operator console (configuration + RUN/STOP).
+#
+# This is the ALWAYS-ON service (it starts on boot, like a SCADA panel). The EMS
+# control loop is a SEPARATE supervised unit (pyems.service); this UI does not run
+# control logic — it edits config and issues RUN/STOP to that unit over systemd
+# (see deploy/pyems-polkit.rules for the privilege grant).
+#
+# install.sh generates this with the real user/paths; the values below assume the
+# repo is at /home/pi/PyEMS and the user is `pi` — adjust if yours differ.
+#   sudo cp deploy/pyems-ui.service /etc/systemd/system/pyems-ui.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pyems-ui
+#
+# Open:    http://<pi-ip>:8765
+# Logs:    journalctl -u pyems-ui -f
+
+[Unit]
+Description=PyEMS UI / HMI (configuration + RUN/STOP console)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/PyEMS
+# --host 0.0.0.0 so the console is reachable from a laptop browser on the LAN
+# (headless Pi). --ems-unit pyems makes the UI's RUN/STOP buttons drive the
+# separately-supervised control loop via `systemctl start/stop pyems`.
+ExecStart=/home/pi/PyEMS/.venv/bin/pyems-ui --host 0.0.0.0 --ems-unit pyems
+
+# The HMI must come back by itself; it never controls hardware directly, so a
+# restart is always safe.
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+# Files that MUST stay LF — they run on Linux (Raspberry Pi). A CRLF here breaks
+# the shebang / systemd / polkit parsing regardless of the checkout platform.
+*.sh            text eol=lf
+*.service       text eol=lf
+*.rules         text eol=lf
+install.sh      text eol=lf

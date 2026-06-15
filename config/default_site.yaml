@@ -63,11 +63,14 @@ devices:
   # the worst-case poll time — a hung device costs ~(retries+1)*timeout_s per
   # poll. Left unset here (pymodbus defaults ~3 s x 4); production sites should
   # set them explicitly (see config/site.yaml for the arithmetic).
+  # Device IPs (Modbus TCP targets) must share the Pi's subnet to be reachable
+  # directly — the Pi defaults to 192.168.0.11/24, so these are 192.168.0.x.
+  # `port` is omitted → the profile's default_port (502, standard Modbus TCP).
   - id: grid
     profile: meters/example_grid_meter.yaml
-    host: 192.168.1.200
+    host: 192.168.0.200
     slave_id: 1
   - id: pv
     profile: inverters/huawei_sun2000_100ktl_m1.yaml
-    host: 192.168.1.100
+    host: 192.168.0.100
     slave_id: 1
