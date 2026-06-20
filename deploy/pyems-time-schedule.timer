@@ -1,0 +1,13 @@
+# A one-minute watchdog for the configured daily NTP time. The helper itself
+# exits immediately except during that exact minute, so no EMS/UI process is
+# involved in scheduling.
+[Unit]
+Description=PyEMS controller time synchronization schedule
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Unit=pyems-time-sync.service
+
+[Install]
+WantedBy=timers.target

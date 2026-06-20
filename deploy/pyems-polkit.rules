@@ -1,7 +1,8 @@
 // PyEMS polkit rule — let the HMI (running as the service user) do two things
 // without a password, and nothing else:
-//   1. RUN/STOP the EMS runtime  → systemctl start/stop/restart pyems.service
-//   2. set the Pi's own IP        → NetworkManager modify + (de)activate
+//   1. RUN/STOP the EMS runtime   → systemctl start/stop/restart pyems.service
+//   2. apply/sync controller time → fixed PyEMS time helper units only
+//   3. set the Pi's own IP        → NetworkManager modify + (de)activate
 //
 // This is what makes the UI's RUN/STOP buttons and the Network page work the
 // industrial way: the HMI asks the system supervisor over D-Bus, polkit consults
@@ -16,9 +17,12 @@ polkit.addRule(function(action, subject) {
     if (subject.user != "pi") {
         return polkit.Result.NOT_HANDLED;
     }
-    // 1. RUN/STOP — only pyems.service.
+    // 1. RUN/STOP and fixed controller-time operations — never arbitrary units.
     if (action.id == "org.freedesktop.systemd1.manage-units") {
-        if (action.lookup("unit") == "pyems.service") {
+        var unit = action.lookup("unit");
+        if (unit == "pyems.service" ||
+            unit == "pyems-time-apply.service" ||
+            unit == "pyems-time-sync-now.service") {
             var verb = action.lookup("verb");
             if (verb == "start" || verb == "stop" || verb == "restart") {
                 return polkit.Result.YES;

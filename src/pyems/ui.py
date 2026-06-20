@@ -63,6 +63,16 @@ from pyems.ems import (
     validate_write_age_guard,
 )
 from pyems.logging import setup_logging
+from pyems.time_sync import (
+    DEFAULT_TIME_STATE_PATH,
+    controller_clock,
+    load_time_settings,
+    ntp_probe,
+    validate_manual_time,
+    validate_ntp_server,
+    validate_sync_time,
+    write_time_settings,
+)
 
 
 DEFAULT_SITE_TEMPLATE = DEFAULT_SITE.parent / "default_site.yaml"
@@ -1772,6 +1782,148 @@ class NetworkController:
         }
 
 
+class TimeController:
+    """Manage the Pi's OS clock independently from the EMS control process.
+
+    The UI process stores only settings.  Fixed, root-owned systemd units run
+    ``pyems-time-helper`` to set the clock or perform a scheduled NTP query.
+    This keeps the authority narrow: UI input can never become an arbitrary
+    root command, and stopping ``pyems.service`` never stops timekeeping.
+    """
+
+    APPLY_UNIT = "pyems-time-apply.service"
+    SYNC_NOW_UNIT = "pyems-time-sync-now.service"
+
+    def __init__(
+        self,
+        state_path: str | Path = DEFAULT_TIME_STATE_PATH,
+        apply_unit: str = APPLY_UNIT,
+        sync_now_unit: str = SYNC_NOW_UNIT,
+    ) -> None:
+        self.state_path = Path(state_path)
+        self.apply_unit = apply_unit
+        self.sync_now_unit = sync_now_unit
+        self._lock = threading.Lock()
+
+    def clock(self) -> dict[str, Any]:
+        return controller_clock()
+
+    @staticmethod
+    def _timedatectl_properties(output: str) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for line in output.splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+        return values
+
+    def _systemctl_start_wait(self, unit: str) -> None:
+        try:
+            result = subprocess.run(
+                ["systemctl", "start", "--wait", unit],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except OSError as exc:
+            raise ValueError(
+                f"cannot apply time settings: systemd is unavailable ({exc})"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError(
+                f"time operation did not finish within 20 s; check journalctl -u {unit} -e"
+            ) from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip() or "no output"
+            raise ValueError(
+                f"{unit} failed: {detail} — check journalctl -u {unit} -e"
+            )
+
+    def status(self) -> dict[str, Any]:
+        result: dict[str, Any] = self.clock()
+        try:
+            settings = load_time_settings(self.state_path)
+            settings_error = None
+        except ValueError as exc:
+            settings = {"mode": "manual"}
+            settings_error = str(exc)
+        result["settings"] = settings
+        if settings_error:
+            result["settings_error"] = settings_error
+        try:
+            timedatectl = subprocess.run(
+                [
+                    "timedatectl", "show",
+                    "--property=Timezone",
+                    "--property=NTP",
+                    "--property=NTPSynchronized",
+                    "--property=CanNTP",
+                    "--property=LocalRTC",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            result.update(
+                {
+                    "available": False,
+                    "reason": f"system time service is unavailable here ({exc})",
+                }
+            )
+            return result
+        if timedatectl.returncode != 0:
+            detail = (timedatectl.stderr or timedatectl.stdout).strip() or "no output"
+            result.update({"available": False, "reason": f"timedatectl: {detail}"})
+            return result
+        props = self._timedatectl_properties(timedatectl.stdout)
+        result.update(
+            {
+                "available": True,
+                "timezone": props.get("Timezone") or result["timezone"],
+                "automatic_ntp": props.get("NTP") == "yes",
+                "ntp_synchronized": props.get("NTPSynchronized") == "yes",
+                "can_ntp": props.get("CanNTP") == "yes",
+                "rtc_local": props.get("LocalRTC") == "yes",
+            }
+        )
+        return result
+
+    def configure_ntp(self, request: dict[str, Any]) -> dict[str, Any]:
+        settings = {
+            "mode": "ntp",
+            "server": validate_ntp_server(request.get("server")),
+            "sync_at": validate_sync_time(request.get("sync_at")),
+        }
+        with self._lock:
+            write_time_settings(settings, self.state_path)
+            self._systemctl_start_wait(self.apply_unit)
+        return {"ok": True, "settings": settings}
+
+    def set_manual_time(self, request: dict[str, Any]) -> dict[str, Any]:
+        value = validate_manual_time(request.get("time"))
+        settings = {
+            "mode": "manual",
+            "manual_time": value.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with self._lock:
+            write_time_settings(settings, self.state_path)
+            self._systemctl_start_wait(self.apply_unit)
+        return {"ok": True, "settings": settings}
+
+    def test_ntp(self, request: dict[str, Any]) -> dict[str, Any]:
+        return ntp_probe(validate_ntp_server(request.get("server")))
+
+    def synchronize_now(self) -> dict[str, Any]:
+        settings = load_time_settings(self.state_path)
+        if settings.get("mode") != "ntp":
+            raise ValueError("configure an NTP server before synchronizing")
+        with self._lock:
+            self._systemctl_start_wait(self.sync_now_unit)
+        return {"ok": True, "settings": settings}
+
+
 class UIApp:
     def __init__(
         self,
@@ -1779,11 +1931,13 @@ class UIApp:
         sim: SimManager | None = None,
         ems: EmsManager | None = None,
         network: NetworkController | None = None,
+        time_controller: TimeController | None = None,
     ) -> None:
         self.site_path = Path(site_path)
         self.sim = sim or SimManager()
         self.ems = ems or EmsManager(self.site_path)
         self.network = network or NetworkController(self.site_path)
+        self.time = time_controller or TimeController()
         # The UI can edit either the hardware site or the simulation site.
         # They are SEPARATE configs on purpose (real device addresses vs
         # localhost simulators) — but editing one while testing against the
@@ -1999,6 +2153,10 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(app.ems.status())
                 elif path == "/api/network":
                     self._send_json(app.network.status())
+                elif path == "/api/time":
+                    self._send_json(app.time.status())
+                elif path == "/api/time/clock":
+                    self._send_json(app.time.clock())
                 elif path == "/api/generation":
                     self._send_json(app.generation_status())
                 else:
@@ -2044,6 +2202,14 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(app.ems.stop())
                 elif path == "/api/network":
                     self._send_json(app.network.apply(payload))
+                elif path == "/api/time/ntp":
+                    self._send_json(app.time.configure_ntp(payload))
+                elif path == "/api/time/manual":
+                    self._send_json(app.time.set_manual_time(payload))
+                elif path == "/api/time/test-ntp":
+                    self._send_json(app.time.test_ntp(payload))
+                elif path == "/api/time/sync":
+                    self._send_json(app.time.synchronize_now())
                 elif path == "/api/generation/start":
                     self._send_json(app.set_generation(True))
                 elif path == "/api/generation/stop":

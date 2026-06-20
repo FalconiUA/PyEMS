@@ -1,0 +1,79 @@
+<div class="toolbar">
+  <button id="refreshTimeBtn">Refresh</button>
+  <span id="timeStateText" class="hint">Checking controller clock…</span>
+</div>
+
+<div class="grid">
+  <section class="panel full">
+    <h2>Controller clock</h2>
+    <p class="lead">
+      This is the Raspberry Pi operating-system clock. It keeps running even
+      when the EMS control loop is stopped; it is not taken from telemetry.
+    </p>
+    <div class="fields">
+      <label>
+        <span class="lbl">Current controller time</span>
+        <strong id="timeCurrent">—</strong>
+      </label>
+      <label>
+        <span class="lbl">Time zone</span>
+        <strong id="timeTimezone">—</strong>
+      </label>
+      <label>
+        <span class="lbl">System time service</span>
+        <strong id="timeNtpState">—</strong>
+      </label>
+      <label>
+        <span class="lbl">Synchronization state</span>
+        <strong id="timeSyncState">—</strong>
+      </label>
+    </div>
+    <p class="hint" id="timeServiceHint"></p>
+  </section>
+
+  <section class="panel full">
+    <h2>Time source</h2>
+    <p class="lead">Choose manual time or a daily synchronization with one NTP server.</p>
+    <div class="fields">
+      <label>
+        <span class="lbl">Mode <span class="info" data-tip="Manual sets the controller clock once and disables scheduled NTP. NTP queries the chosen server at the chosen local time every day.">i</span></span>
+        <select id="time.mode">
+          <option value="ntp">NTP (daily scheduled)</option>
+          <option value="manual">Manual time</option>
+        </select>
+      </label>
+    </div>
+
+    <div id="timeNtpPanel">
+      <div class="fields">
+        <label>
+          <span class="lbl">NTP server <span class="info" data-tip="Host name or IP address only; NTP uses UDP port 123. For example: time.google.com or 192.168.1.1.">i</span></span>
+          <input id="time.server" type="text" placeholder="time.google.com" autocomplete="off">
+        </label>
+        <label>
+          <span class="lbl">Daily sync time <span class="info" data-tip="Local controller time. The independent system timer checks this once per minute, whether or not EMS is running.">i</span></span>
+          <input id="time.sync_at" type="time" step="60">
+        </label>
+      </div>
+      <div class="toolbar">
+        <button id="testNtpBtn">Test NTP connection</button>
+        <button class="primary" id="saveNtpBtn">Save NTP schedule</button>
+        <button id="syncTimeNowBtn">Synchronize now</button>
+      </div>
+      <p class="hint" id="ntpTestResult"></p>
+    </div>
+
+    <div id="timeManualPanel" hidden>
+      <div class="fields">
+        <label>
+          <span class="lbl">Set controller time <span class="info" data-tip="Uses the Raspberry Pi's configured time zone. Saving a manual time disables the daily NTP schedule.">i</span></span>
+          <input id="time.manual" type="datetime-local" step="1">
+        </label>
+      </div>
+      <div class="toolbar">
+        <button class="primary" id="setManualTimeBtn">Set manual time</button>
+      </div>
+    </div>
+    <p class="hint">Changing time does not require restarting the Raspberry Pi, the EMS runtime, or this web interface.</p>
+  </section>
+</div>

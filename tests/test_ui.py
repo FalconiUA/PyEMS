@@ -182,6 +182,17 @@ def test_overview_does_not_poll_live_api():
     assert "/api/live" not in body
 
 
+def test_time_page_uses_the_os_clock_endpoint_not_ems_telemetry():
+    index = (ui.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    page = (ui.STATIC_ROOT / "pages" / "time.html").read_text(encoding="utf-8")
+    app_js = (ui.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'data-view="time"' in index
+    assert 'id="timeCurrent"' in page
+    assert "/api/time/clock" in app_js
+    assert 'api("/api/time")' in app_js
+
+
 # ── Modbus connection diagnostics ────────────────────────────────────────────
 HUAWEI_PROFILE = "inverters/huawei_sun2000_100ktl_m1.yaml"
 GRID_PROFILE = "meters/example_grid_meter.yaml"

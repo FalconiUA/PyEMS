@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pyems-ui",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "pyems.ui", "--site", "config/site.sim.yaml", "--port", "8770"],
+      "port": 8770,
+      "autoPort": false
+    }
+  ]
+}

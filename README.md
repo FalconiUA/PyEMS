@@ -18,8 +18,9 @@ bash install.sh
 ```
 
 `install.sh` checks the Python version, creates a virtualenv, installs PyEMS,
-sets up the two systemd services and the polkit rule, and starts the HMI. When
-it finishes it prints a URL like `http://192.168.1.50:8765`.
+sets up the HMI/EMS services, the independent controller-clock scheduler and
+the polkit rule, then starts the HMI. When it finishes it prints a URL like
+`http://192.168.1.50:8765`.
 
 **Everything else is done from the browser** — open that URL, configure the
 site (devices, profiles, limits, safety), press **RUN**, then enable generation.
@@ -34,6 +35,11 @@ Two separate, OS-supervised processes, exactly like an HMI driving a PLC:
 | **UI / HMI**       | configuration + RUN/STOP console  | `pyems-ui.service` | running |
 
 - The **HMI is always on** and reachable on the LAN. It runs no control logic.
+- The **controller clock** is an operating-system responsibility, not EMS
+  telemetry. The **Time** tab can set it manually or synchronize with one NTP
+  server daily at a selected local time. Its systemd timer continues to run
+  while the EMS runtime is stopped; changing time does not restart the Pi, EMS,
+  or HMI.
 - The **EMS runtime** is a separate supervised process. The HMI's **RUN/STOP**
   buttons issue `systemctl start/stop pyems` (granted by a narrow polkit rule —
   see [`deploy/pyems-polkit.rules`](deploy/pyems-polkit.rules)); systemd, not

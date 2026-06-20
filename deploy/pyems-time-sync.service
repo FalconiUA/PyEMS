@@ -1,0 +1,11 @@
+# PyEMS controller-clock helper — called every minute by pyems-time-schedule.
+# It contacts NTP only when the time in /var/lib/pyems/time-settings.json matches.
+[Unit]
+Description=PyEMS scheduled controller time synchronization
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/pi/PyEMS/.venv/bin/pyems-time-helper --sync-if-due

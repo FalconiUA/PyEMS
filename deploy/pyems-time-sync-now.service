@@ -1,0 +1,11 @@
+# PyEMS controller-clock helper — one immediate NTP synchronization from the UI.
+# install.sh generates this with the real checkout and service-user paths.
+[Unit]
+Description=PyEMS synchronize controller time now
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/pi/PyEMS/.venv/bin/pyems-time-helper --sync-now

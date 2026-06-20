@@ -25,8 +25,9 @@ bash install.sh
 
 `install.sh` is idempotent and does the rest: checks Python >= 3.10, installs
 `python3-venv` and `polkit`, creates the virtualenv, `pip install -e .`,
-generates the two systemd units and the polkit rule **with your real user and
-paths**, enables the HMI on boot, and prints the console URL.
+generates the HMI/EMS units, the independent controller-clock schedule and the
+polkit rule **with your real user and paths**, enables the HMI and time
+scheduler on boot, and prints the console URL.
 
 The editable install is required, not optional: `profiles/` and `config/` are
 resolved relative to the repo checkout (see `ROOT` in `src/pyems/ems.py`), and
@@ -45,6 +46,10 @@ LAN. In the UI:
    mismatch fails at startup by design — the UI surfaces it (and
    `journalctl -u pyems -e` has the detail).
 3. Enable **generation** (it always starts disabled, fail-closed).
+4. Open **Time** to set the Pi clock manually, or specify an NTP server and a
+   daily local synchronization time. Use **Test NTP connection** before saving;
+   **Synchronize now** is available for commissioning. This works with EMS
+   stopped and needs no Pi, EMS, or HMI restart.
 
 There is no separate "edit site.yaml over SSH" step; the UI writes it.
 
@@ -57,9 +62,15 @@ polkit `subject.user` to match yours, then:
 ```bash
 sudo cp deploy/pyems.service     /etc/systemd/system/pyems.service
 sudo cp deploy/pyems-ui.service  /etc/systemd/system/pyems-ui.service
+sudo cp deploy/pyems-time-apply.service /etc/systemd/system/
+sudo cp deploy/pyems-time-sync-now.service /etc/systemd/system/
+sudo cp deploy/pyems-time-sync.service /etc/systemd/system/
+sudo cp deploy/pyems-time-schedule.timer /etc/systemd/system/
 sudo cp deploy/pyems-polkit.rules /etc/polkit-1/rules.d/49-pyems.rules
+sudo install -d -o pi -g pi -m 0750 /var/lib/pyems
 sudo systemctl daemon-reload
 sudo systemctl enable --now pyems-ui     # HMI on boot; do NOT enable pyems
+sudo systemctl enable --now pyems-time-schedule.timer
 ```
 
 ## 4. Operate

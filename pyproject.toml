@@ -18,6 +18,7 @@ dev = ["pytest>=8.0"]
 [project.scripts]
 pyems = "pyems.ems:main"
 pyems-ui = "pyems.ui:main"
+pyems-time-helper = "pyems.time_service:main"
 pyems-dev = "pyems.ui:main_dev"
 pyems-sim = "pyems.sim.harness:main"
 pyems-tags = "pyems.tag_registry:main"

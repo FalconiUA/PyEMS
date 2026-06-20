@@ -11,6 +11,9 @@ let errorLog = [];
 let currentProfile = null;
 let liveTimer = null;
 let diagnostics = null;
+let timeStatus = null;
+let controllerClock = null;
+let timeClockTimer = null;
 const $ = (id) => document.getElementById(id);
 
 function esc(value) {
@@ -190,6 +193,7 @@ function renderAll() {
   renderProfileSelector();
   renderRealtime();
   renderLogs();
+  renderTime();
 }
 
 function renderScenario() {
@@ -701,7 +705,9 @@ function renderStatusBar() {
   const modeLabel = scen.control_mode === "import_limit" ? "Import limit" : "Export limit";
   const items = [
     ["Site", siteFileName(sitePath) + (editingSimSite() ? " (simulation)" : "")],
-    ["Controller time", live ? lastSnapshot.read_at || "—" : "—"],
+    // This is the Pi OS clock, not the timestamp frozen inside the last EMS
+    // telemetry snapshot. It must continue advancing while the EMS is stopped.
+    ["Controller time", controllerClock ? controllerClock.local_time || "—" : "—"],
     ["Last telemetry", live ? `${formatSeconds(lastSnapshot.age_s)} ago` : "—"],
     ["Control mode", modeLabel],
     ["Configured limit", formatPower(Number(scen.active_power_limit_w ?? 0))],
@@ -1079,8 +1085,12 @@ function renderOverview() {
 }
 
 async function refreshOverview() {
-  const data = await api("/api/fast-loop-state");
+  const [data, clock] = await Promise.all([
+    api("/api/fast-loop-state"),
+    api("/api/time/clock"),
+  ]);
   lastSnapshot = data;
+  controllerClock = clock;
   pushOverviewHistory();
   renderOverview();
   refreshEmsControl().catch(() => {});
@@ -1670,6 +1680,102 @@ async function applyNetwork() {
   }
 }
 
+// ── Time: the Pi OS clock, independent from EMS telemetry/lifecycle ─────────
+function renderTimeMode() {
+  const mode = $("time.mode")?.value || "ntp";
+  const ntp = $("timeNtpPanel");
+  const manual = $("timeManualPanel");
+  if (ntp) ntp.hidden = mode !== "ntp";
+  if (manual) manual.hidden = mode !== "manual";
+}
+function renderTimeClock(clock = controllerClock) {
+  if (!clock) return;
+  controllerClock = clock;
+  const current = $("timeCurrent");
+  const timezone = $("timeTimezone");
+  if (current) current.textContent = clock.local_time || "—";
+  if (timezone) timezone.textContent = clock.timezone || "—";
+}
+function renderTime() {
+  if (!timeStatus) return;
+  renderTimeClock(timeStatus);
+  const settings = timeStatus.settings || { mode: "manual" };
+  if ($("time.mode")) $("time.mode").value = settings.mode === "ntp" ? "ntp" : "manual";
+  if ($("time.server")) $("time.server").value = settings.server || "";
+  if ($("time.sync_at")) $("time.sync_at").value = settings.sync_at || "03:00";
+  if ($("time.manual")) $("time.manual").value = (settings.manual_time || timeStatus.local_datetime || "").replace(" ", "T").slice(0, 19);
+  renderTimeMode();
+
+  const text = $("timeStateText");
+  const ntpState = $("timeNtpState");
+  const syncState = $("timeSyncState");
+  const hint = $("timeServiceHint");
+  if (!timeStatus.available) {
+    if (text) { text.textContent = timeStatus.reason || "System time service is unavailable."; text.className = "hint warn"; }
+    if (ntpState) ntpState.textContent = "Unavailable";
+    if (syncState) syncState.textContent = "—";
+  } else {
+    if (text) { text.textContent = "System clock is available independently from EMS."; text.className = "hint ok"; }
+    if (ntpState) ntpState.textContent = timeStatus.automatic_ntp ? "OS automatic NTP active" : "PyEMS scheduled/manual mode";
+    if (syncState) syncState.textContent = timeStatus.ntp_synchronized ? "System NTP synchronized" : "Scheduled/manual";
+  }
+  if (hint) {
+    if (timeStatus.settings_error) hint.textContent = timeStatus.settings_error;
+    else if (settings.mode === "ntp") hint.textContent = `NTP: ${settings.server} — daily at ${settings.sync_at} (controller local time).`;
+    else hint.textContent = "Manual time mode — scheduled NTP is disabled.";
+  }
+}
+async function refreshTime() {
+  timeStatus = await api("/api/time");
+  renderTime();
+  return timeStatus;
+}
+async function refreshTimeClock() {
+  const clock = await api("/api/time/clock");
+  renderTimeClock(clock);
+  renderOverview();
+  return clock;
+}
+async function saveNtpSettings() {
+  setStatus("Saving NTP schedule…");
+  const data = await api("/api/time/ntp", {
+    method: "POST",
+    body: JSON.stringify({
+      server: $("time.server").value.trim(),
+      sync_at: $("time.sync_at").value,
+    }),
+  });
+  await refreshTime();
+  setStatus(`NTP schedule saved: ${data.settings.server} at ${data.settings.sync_at} every day.`, "ok");
+}
+async function testNtpConnection() {
+  const result = $("ntpTestResult");
+  if (result) result.textContent = "Testing NTP connection…";
+  const data = await api("/api/time/test-ntp", {
+    method: "POST",
+    body: JSON.stringify({ server: $("time.server").value.trim() }),
+  });
+  if (result) {
+    result.className = "hint ok";
+    result.textContent = `Connected to ${data.server} (${data.peer}), stratum ${data.stratum}; round trip ${data.round_trip_ms} ms, offset ${data.offset_ms >= 0 ? "+" : ""}${data.offset_ms} ms.`;
+  }
+  setStatus("NTP connection test succeeded.", "ok");
+}
+async function synchronizeTimeNow() {
+  setStatus("Synchronizing controller time with NTP…");
+  await api("/api/time/sync", { method: "POST", body: "{}" });
+  await Promise.all([refreshTime(), refreshTimeClock()]);
+  setStatus("Controller time synchronized. EMS and web interface were not restarted.", "ok");
+}
+async function setManualTime() {
+  const value = $("time.manual").value;
+  if (!value) throw new Error("Choose the manual controller time first.");
+  setStatus("Setting controller time…");
+  await api("/api/time/manual", { method: "POST", body: JSON.stringify({ time: value }) });
+  await Promise.all([refreshTime(), refreshTimeClock()]);
+  setStatus("Controller time set manually. Scheduled NTP is disabled.", "ok");
+}
+
 function showView(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === name));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === name));
@@ -1690,6 +1796,14 @@ function showView(name) {
     overviewTimer = null;
   }
   if (name === "network" && !networkStatus) refreshNetwork().catch(handleError);
+  if (name === "time") {
+    if (!timeStatus) refreshTime().catch(handleError);
+    refreshTimeClock().catch(handleError);
+    if (!timeClockTimer) timeClockTimer = setInterval(() => refreshTimeClock().catch(() => {}), 1000);
+  } else if (timeClockTimer) {
+    clearInterval(timeClockTimer);
+    timeClockTimer = null;
+  }
 }
 
 // Secondary in-view navigation: a .subtab swaps which .subview group is shown
@@ -1740,6 +1854,7 @@ document.addEventListener("change", async (event) => {
   }
   if (id === "scenario.pid_tuning") renderSiteYaml();
   if (id === "net.method") { renderNetworkModeFields(); renderNetworkSubnetHint(); }
+  if (id === "time.mode") renderTimeMode();
   if (event.target.id === "profileDeviceSelect") loadSelectedProfile().catch(handleError);
   if (event.target.id === "siteFileSelect") switchSiteFile(event.target.value).catch(handleError);
 });
@@ -1770,6 +1885,11 @@ document.addEventListener("click", async (event) => {
   if (target.id === "clearErrorLogBtn") clearErrorLog().catch(handleError);
   if (target.id === "refreshNetworkBtn") refreshNetwork().catch(handleError);
   if (target.id === "applyNetworkBtn") applyNetwork().catch(handleError);
+  if (target.id === "refreshTimeBtn") refreshTime().catch(handleError);
+  if (target.id === "saveNtpBtn") saveNtpSettings().catch(handleError);
+  if (target.id === "testNtpBtn") testNtpConnection().catch(handleError);
+  if (target.id === "syncTimeNowBtn") synchronizeTimeNow().catch(handleError);
+  if (target.id === "setManualTimeBtn") setManualTime().catch(handleError);
   if (target.id === "simStartBtn") startSim().catch((error) => { handleError(error); refreshSim().catch(() => {}); });
   if (target.id === "simStopBtn") stopSim().catch(handleError);
   if (target.id === "simOpenBtn" && simStatus) window.open(simPanelUrl(), "_blank");
