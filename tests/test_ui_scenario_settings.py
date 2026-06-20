@@ -80,8 +80,12 @@ def test_frontend_gather_site_preserves_hidden_operational_settings():
 
 
 def test_frontend_exposes_advanced_protection_settings():
-    site_page = (ui.STATIC_ROOT / "pages" / "site-yaml.html").read_text(encoding="utf-8")
-    scenario_page = (ui.STATIC_ROOT / "pages" / "scenario.html").read_text(encoding="utf-8")
+    # Settings live across the functional Setup/Control pages (the former single
+    # "Site YAML" page was dissolved); every field must still be exposed somewhere.
+    pages_dir = ui.STATIC_ROOT / "pages"
+    all_pages = "".join(
+        path.read_text(encoding="utf-8") for path in sorted(pages_dir.glob("*.html"))
+    )
 
     for field_id in [
         "safety.safe_active_power_w",
@@ -95,8 +99,7 @@ def test_frontend_exposes_advanced_protection_settings():
         "setpoint_compliance.enabled",
         "hard_switch.enabled",
         "simulation.enabled",
+        "setpoint_headroom.enabled",
+        "setpoint_headroom.priority",
     ]:
-        assert f'id="{field_id}"' in site_page
-
-    assert 'id="setpoint_headroom.enabled"' in scenario_page
-    assert 'id="setpoint_headroom.priority"' in scenario_page
+        assert f'id="{field_id}"' in all_pages

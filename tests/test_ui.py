@@ -164,11 +164,11 @@ def test_fast_loop_state_reports_snapshot_age(tmp_path):
 
 
 def test_overview_page_is_first_and_default_view():
-    """The Overview tab must be the first/default view (acceptance criterion),
+    """The Overview item must be the first/default view (acceptance criterion),
     served from its own static page that exists on disk."""
     index = (ui.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
-    first_tab = index[index.index('class="tab') :]
-    assert 'data-view="overview"' in first_tab[: first_tab.index("</button>")]
+    first_item = index[index.index('class="nav-item') :]
+    assert 'data-view="overview"' in first_item[: first_item.index("</button>")]
     assert (ui.STATIC_ROOT / "pages" / "overview.html").exists()
 
 

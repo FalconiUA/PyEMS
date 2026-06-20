@@ -1,0 +1,30 @@
+<datalist id="availableChannelList"></datalist>
+
+<div class="grid">
+  <div class="panel full">
+    <div class="toolbar">
+      <h2>Site devices</h2>
+      <button id="addDeviceBtn">Add device</button>
+      <button id="testReadBtn">Test read</button>
+    </div>
+    <p class="lead">Device endpoints and Modbus timing. Register maps (addresses, scales) are edited on the Device profiles page.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>id</th><th>profile</th><th>host / serial port</th><th>TCP port</th>
+          <th>Modbus id</th><th>timeout, s</th><th>retries</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="deviceRows"></tbody>
+    </table>
+  </div>
+
+  <div class="panel full">
+    <h2>Per-device communication limits</h2>
+    <p class="lead">Optional read-freshness limit per device. An empty cell falls back to the global communication timeout (Safety page).</p>
+    <table>
+      <thead><tr><th>device</th><th>profile</th><th>max age, s</th></tr></thead>
+      <tbody id="deviceCommsRows"></tbody>
+    </table>
+  </div>
+</div>

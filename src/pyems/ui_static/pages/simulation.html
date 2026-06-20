@@ -19,4 +19,58 @@
     <code id="simEmsCmd">pyems --site config/site.sim.yaml</code>
   </p>
 </div>
+<div class="panel full">
+  <h2>Simulation model</h2>
+  <p class="lead">Synthetic plant defaults used by pyems-sim when this file is the simulation site.</p>
+  <label class="inline-check">
+    <input id="simulation.enabled" type="checkbox">
+    Enable simulation section in this site file
+    <span class="info" data-tip="Adds a synthetic plant (unit + load) so the EMS can be tested without hardware.">i</span>
+  </label>
+  <div id="simulationConfig">
+    <div class="fields">
+      <label>
+        <span class="lbl">Simulation tick, s <span class="info" data-tip="Time step of the synthetic plant model.">i</span></span>
+        <input id="simulation.tick_s" type="number" step="0.1" min="0">
+      </label>
+      <label>
+        <span class="lbl">Meter noise, W <span class="info" data-tip="Random noise added to simulated meter readings, to mimic a real sensor.">i</span></span>
+        <input id="simulation.meter_noise_w" type="number" step="1" min="0">
+      </label>
+      <label>
+        <span class="lbl">Unit response time τ, s <span class="info" data-tip="First-order lag: how slowly simulated unit output follows its setpoint.">i</span></span>
+        <input id="simulation.unit.tau_s" type="number" step="0.1" min="0">
+      </label>
+      <label>
+        <span class="lbl">Unit peak available power, W <span class="info" data-tip="Peak of the synthetic available-power curve (e.g. midday PV).">i</span></span>
+        <input id="simulation.unit.peak_w" type="number" step="1" min="0">
+      </label>
+      <label>
+        <span class="lbl">Unit curve period, s <span class="info" data-tip="Period of the synthetic availability curve.">i</span></span>
+        <input id="simulation.unit.period_s" type="number" step="1" min="1">
+      </label>
+      <label>
+        <span class="lbl">Unit noise, W <span class="info" data-tip="Random noise on simulated unit output.">i</span></span>
+        <input id="simulation.unit.noise_w" type="number" step="1" min="0">
+      </label>
+      <label>
+        <span class="lbl">Load base, W <span class="info" data-tip="Average site consumption in the synthetic load profile.">i</span></span>
+        <input id="simulation.load.base_w" type="number" step="1" min="0">
+      </label>
+      <label>
+        <span class="lbl">Load amplitude, W <span class="info" data-tip="Swing of the synthetic load above and below the base.">i</span></span>
+        <input id="simulation.load.amplitude_w" type="number" step="1" min="0">
+      </label>
+      <label>
+        <span class="lbl">Load curve period, s <span class="info" data-tip="Period of the synthetic load profile.">i</span></span>
+        <input id="simulation.load.period_s" type="number" step="1" min="1">
+      </label>
+      <label>
+        <span class="lbl">Load noise, W <span class="info" data-tip="Random noise on simulated load.">i</span></span>
+        <input id="simulation.load.noise_w" type="number" step="1" min="0">
+      </label>
+    </div>
+  </div>
+</div>
+
 <iframe id="simFrame" class="sim-frame" title="Simulator control panel" hidden></iframe>

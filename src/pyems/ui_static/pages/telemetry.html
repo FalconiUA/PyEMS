@@ -1,0 +1,20 @@
+<div class="grid">
+  <div class="panel full">
+    <h2>Telemetry and recording</h2>
+    <p class="lead">Where the running EMS publishes live state and per-cycle history.</p>
+    <div class="fields">
+      <label>
+        <span class="lbl">Live snapshot file <span class="info" data-tip="JSON file the running EMS rewrites each cycle; Overview and Realtime read it (no extra bus polling).">i</span></span>
+        <input id="telemetry.live_json" placeholder="logs/live_state.json">
+      </label>
+      <label>
+        <span class="lbl">Cycle log (CSV) <span class="info" data-tip="Per-cycle CSV recording path. Empty disables cycle recording.">i</span></span>
+        <input id="recording.cycle_csv" placeholder="logs/sim_cycles.csv">
+      </label>
+      <label>
+        <span class="lbl">Recorded tags <span class="info" data-tip="Tags to record, one per line or comma-separated. Empty records the default controller-bound tag set.">i</span></span>
+        <textarea id="recording.channels" rows="3" placeholder="Leave empty to record controller-bound tags"></textarea>
+      </label>
+    </div>
+  </div>
+</div>

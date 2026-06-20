@@ -1869,7 +1869,7 @@ async function setManualTime() {
 }
 
 function showView(name) {
-  document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === name));
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === name));
   if (name === "simulation") {
     refreshSim().catch(handleError);
@@ -1964,10 +1964,10 @@ document.addEventListener("click", async (event) => {
     return;
   }
   document.querySelectorAll(".info.open").forEach((el) => el.classList.remove("open"));
-  if (target.matches(".tab")) showView(target.dataset.view);
+  if (target.matches(".nav-item")) showView(target.dataset.view);
   if (target.matches(".subtab")) showSubtab(target);
   if (target.id === "reloadBtn") loadConfig().catch(handleError);
-  if (target.id === "saveBtn" || target.id === "saveSiteBtn") saveConfig().catch(handleError);
+  if (target.id === "saveBtn") saveConfig().catch(handleError);
   if (target.id === "testReadBtn") testRead().catch(handleError);
   if (target.id === "runDiagnosticsBtn") runDiagnostics().catch(handleError);
   if (target.id === "startFastLoopBtn") startFastLoop().catch(handleError);

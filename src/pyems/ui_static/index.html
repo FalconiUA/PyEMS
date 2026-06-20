@@ -12,32 +12,60 @@
     <label class="sitefile">Editing config
       <select id="siteFileSelect" title="Which site file the UI edits. The EMS and the simulator each read their own file at startup."></select>
     </label>
-    <nav class="tabs" aria-label="Views">
-      <button class="tab active" data-view="overview">Overview</button>
-      <button class="tab" data-view="scenario">Scenario</button>
-      <button class="tab" data-view="siteYaml">Site YAML</button>
-      <button class="tab" data-view="profiles">Device profiles</button>
-      <button class="tab" data-view="network">Network</button>
-      <button class="tab" data-view="time">Time</button>
-      <button class="tab" data-view="diagnostics">Diagnostics</button>
-      <button class="tab" data-view="realtime">Realtime</button>
-      <button class="tab" data-view="simulation">Simulation</button>
-      <button class="tab" data-view="logs">Logs</button>
-    </nav>
   </header>
-  <main>
-    <div id="status" class="status">Loading interface...</div>
-    <section id="overview" class="view active" data-page="/static/pages/overview.html"></section>
-    <section id="scenario" class="view" data-page="/static/pages/scenario.html"></section>
-    <section id="siteYaml" class="view" data-page="/static/pages/site-yaml.html"></section>
-    <section id="profiles" class="view" data-page="/static/pages/profiles.html"></section>
-    <section id="network" class="view" data-page="/static/pages/network.html"></section>
-    <section id="time" class="view" data-page="/static/pages/time.html"></section>
-    <section id="diagnostics" class="view" data-page="/static/pages/diagnostics.html"></section>
-    <section id="realtime" class="view" data-page="/static/pages/realtime.html"></section>
-    <section id="simulation" class="view" data-page="/static/pages/simulation.html"></section>
-    <section id="logs" class="view" data-page="/static/pages/logs.html"></section>
-  </main>
+  <div class="app-shell">
+    <aside class="sidenav" aria-label="Sections">
+      <nav class="nav-tree">
+        <div class="nav-group">
+          <div class="nav-group-title">Monitor</div>
+          <button class="nav-item active" data-view="overview">Overview</button>
+          <button class="nav-item" data-view="realtime">Realtime</button>
+          <button class="nav-item" data-view="logs">Logs</button>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">Control</div>
+          <button class="nav-item" data-view="scenario">Scenario</button>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">Setup</div>
+          <button class="nav-item" data-view="devices">Devices</button>
+          <button class="nav-item" data-view="profiles">Device profiles</button>
+          <button class="nav-item" data-view="timing">Control timing</button>
+          <button class="nav-item" data-view="safety">Safety</button>
+          <button class="nav-item" data-view="hardware">Hardware switch</button>
+          <button class="nav-item" data-view="network">Network</button>
+          <button class="nav-item" data-view="time">Time</button>
+          <button class="nav-item" data-view="telemetry">Telemetry &amp; recording</button>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">Tools</div>
+          <button class="nav-item" data-view="diagnostics">Diagnostics</button>
+          <button class="nav-item" data-view="simulation">Simulation</button>
+        </div>
+      </nav>
+      <div class="nav-actions">
+        <button class="primary" id="saveBtn">Save site.yaml</button>
+        <button id="reloadBtn">Reload</button>
+      </div>
+    </aside>
+    <main>
+      <div id="status" class="status">Loading interface...</div>
+      <section id="overview" class="view active" data-page="/static/pages/overview.html"></section>
+      <section id="scenario" class="view" data-page="/static/pages/scenario.html"></section>
+      <section id="devices" class="view" data-page="/static/pages/devices.html"></section>
+      <section id="profiles" class="view" data-page="/static/pages/profiles.html"></section>
+      <section id="timing" class="view" data-page="/static/pages/control-timing.html"></section>
+      <section id="safety" class="view" data-page="/static/pages/safety.html"></section>
+      <section id="hardware" class="view" data-page="/static/pages/hardware-switch.html"></section>
+      <section id="network" class="view" data-page="/static/pages/network.html"></section>
+      <section id="time" class="view" data-page="/static/pages/time.html"></section>
+      <section id="telemetry" class="view" data-page="/static/pages/telemetry.html"></section>
+      <section id="realtime" class="view" data-page="/static/pages/realtime.html"></section>
+      <section id="simulation" class="view" data-page="/static/pages/simulation.html"></section>
+      <section id="diagnostics" class="view" data-page="/static/pages/diagnostics.html"></section>
+      <section id="logs" class="view" data-page="/static/pages/logs.html"></section>
+    </main>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>

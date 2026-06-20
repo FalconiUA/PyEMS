@@ -1,13 +1,8 @@
-<div class="toolbar">
-  <button class="primary" id="saveBtn">Save site.yaml</button>
-  <button id="reloadBtn">Reload</button>
-  <button id="testReadBtn">Test read</button>
-</div>
-
 <nav class="subtabs" data-subtabs aria-label="Scenario sections">
   <button class="subtab active" data-subtab="basics">Basics</button>
   <button class="subtab" data-subtab="limits">Limits &amp; ramps</button>
   <button class="subtab" data-subtab="protection">Spike protection</button>
+  <button class="subtab" data-subtab="advanced">Advanced</button>
   <button class="subtab" data-subtab="reference">Generated config</button>
 </nav>
 
@@ -98,6 +93,58 @@
         <label>
           <span class="lbl">Headroom priority <span class="info" data-tip="Allocator priority of this limiter (lower wins). In import-limit mode keep it just below regulation — usually 11 when regulation is 10.">i</span></span>
           <input id="setpoint_headroom.priority" type="number" step="1" min="1">
+        </label>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="subview" data-subtab="advanced">
+  <div class="grid">
+    <div class="panel">
+      <h2>Allocation priorities</h2>
+      <p class="lead">When several controllers request the same setpoint, the allocator keeps the lower priority number. 0 is reserved for safety.</p>
+      <div class="fields">
+        <label>
+          <span class="lbl">Export-limit priority <span class="info" data-tip="Priority of the export cap (lower wins). Default 5 — above regulation, below safety.">i</span></span>
+          <input id="scenario.export_priority" type="number" step="1" min="1" required>
+        </label>
+        <label>
+          <span class="lbl">Regulation priority <span class="info" data-tip="Priority of target-power regulation (lower wins). Default 10 — below the export cap.">i</span></span>
+          <input id="scenario.regulation_priority" type="number" step="1" min="1" required>
+        </label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>PID regulator</h2>
+      <p class="lead">Tuning of the connection-point active-power regulator.</p>
+      <div class="fields">
+        <label>
+          <span class="lbl">Tuning mode <span class="info" data-tip="Auto fills conservative PID gains and locks them. Manual lets you edit the gains below.">i</span></span>
+          <select id="scenario.pid_tuning">
+            <option value="auto">Auto</option>
+            <option value="manual">Manual</option>
+          </select>
+        </label>
+      </div>
+      <div class="divider"></div>
+      <div class="fields" id="pidFields">
+        <label>
+          <span class="lbl">Proportional gain kp <span class="info" data-tip="Immediate correction proportional to the connection-point active-power error.">i</span></span>
+          <input id="pid.kp" type="number" step="0.01" required>
+        </label>
+        <label>
+          <span class="lbl">Integral gain ki <span class="info" data-tip="Slow correction that removes steady-state error.">i</span></span>
+          <input id="pid.ki" type="number" step="0.01" required>
+        </label>
+        <label>
+          <span class="lbl">Derivative gain kd <span class="info" data-tip="Damping term. Usually 0 for noisy power measurements.">i</span></span>
+          <input id="pid.kd" type="number" step="0.01" required>
+        </label>
+        <label>
+          <span class="lbl">Anti-windup tracking time tt, s <span class="info" data-tip="How fast the integrator backs off when the allocator clamps the output (ramp or deadband), to prevent wind-up.">i</span></span>
+          <input id="pid.tt" type="number" step="0.1" min="0" required>
         </label>
       </div>
     </div>

@@ -1,0 +1,35 @@
+<div class="grid">
+  <div class="panel full">
+    <h2>Hard inverter switch</h2>
+    <p class="lead">Remote start/stop command registers. A hard stop de-energizes the inverter (not just a curtail to 0 W); restart is slow. These must be command registers in the selected device profile.</p>
+    <label class="inline-check">
+      <input id="hard_switch.enabled" type="checkbox">
+      Enable hard start / hard stop
+      <span class="info" data-tip="Adds Hard start / Hard stop buttons on Overview. The writes below are sent one-shot when you press them.">i</span>
+    </label>
+    <div id="hardSwitchConfig">
+      <div class="split-tables">
+        <div>
+          <div class="toolbar">
+            <strong>Start writes</strong>
+            <button type="button" id="addHardStartBtn">Add start write</button>
+          </div>
+          <table>
+            <thead><tr><th>channel</th><th>value</th><th></th></tr></thead>
+            <tbody id="hardSwitchStartRows"></tbody>
+          </table>
+        </div>
+        <div>
+          <div class="toolbar">
+            <strong>Stop writes</strong>
+            <button type="button" id="addHardStopBtn">Add stop write</button>
+          </div>
+          <table>
+            <thead><tr><th>channel</th><th>value</th><th></th></tr></thead>
+            <tbody id="hardSwitchStopRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
