@@ -1578,10 +1578,10 @@ function fillNetworkForm(ns) {
   const sug = ns.suggested || {};
   const useCurrent = ns.method === "manual" && ns.address;
   if ($("net.method")) $("net.method").value = ns.method === "auto" ? "auto" : "manual";
-  if ($("net.address")) $("net.address").value = useCurrent ? ns.address : (sug.address || "");
-  if ($("net.prefix")) $("net.prefix").value = useCurrent ? (ns.prefix ?? sug.prefix ?? 24) : (sug.prefix ?? 24);
-  if ($("net.gateway")) $("net.gateway").value = useCurrent ? ns.gateway : (ns.gateway || sug.gateway || "");
-  if ($("net.dns")) $("net.dns").value = useCurrent ? ns.dns : (ns.dns || sug.dns || "");
+  if ($("net.address")) $("net.address").value = useCurrent ? ns.address : (ns.live_address || sug.address || "");
+  if ($("net.prefix")) $("net.prefix").value = useCurrent ? (ns.prefix ?? sug.prefix ?? 24) : (ns.live_prefix ?? sug.prefix ?? 24);
+  if ($("net.gateway")) $("net.gateway").value = useCurrent ? ns.gateway : (ns.live_gateway || ns.gateway || sug.gateway || "");
+  if ($("net.dns")) $("net.dns").value = useCurrent ? ns.dns : (ns.live_dns || ns.dns || sug.dns || "");
   renderNetworkModeFields();
 }
 function renderNetworkSubnetHint() {
@@ -1615,17 +1615,21 @@ function renderNetwork() {
     text.className = "hint warn";
   } else {
     const mode = ns.method === "manual" ? "static" : "DHCP";
-    const addr = ns.address ? ` ${ns.address}/${ns.prefix ?? ""}` : "";
+    const liveA = ns.live_address || ns.address;
+    const liveP = ns.live_prefix ?? ns.prefix;
+    const addr = liveA ? ` ${liveA}/${liveP ?? ""}` : "";
     text.textContent = `"${ns.connection}" on ${ns.device || "?"} — ${mode}${addr}`;
     text.className = "hint ok";
   }
+  const liveAddr = ns.live_address || ns.address;
+  const livePrefix = ns.live_prefix ?? ns.prefix;
   const rows = [
     ["Connection", ns.connection || "—"],
     ["Interface", ns.device || "—"],
     ["Mode", ns.method === "manual" ? "Static" : ns.method === "auto" ? "DHCP" : "—"],
-    ["Address", ns.address ? `${ns.address}/${ns.prefix ?? ""}` : "—"],
-    ["Gateway", ns.gateway || "—"],
-    ["DNS", ns.dns || "—"],
+    ["Address", liveAddr ? `${liveAddr}/${livePrefix ?? ""}` : "—"],
+    ["Gateway", ns.live_gateway || ns.gateway || "—"],
+    ["DNS", ns.live_dns || ns.dns || "—"],
   ];
   if (ns.device_hosts && ns.device_hosts.length) rows.push(["Device IPs (site.yaml)", ns.device_hosts.join(", ")]);
   const body = $("networkCurrentRows");
@@ -1685,7 +1689,7 @@ function showView(name) {
     clearInterval(overviewTimer);
     overviewTimer = null;
   }
-  if (name === "network") refreshNetwork().catch(handleError);
+  if (name === "network" && !networkStatus) refreshNetwork().catch(handleError);
 }
 
 // Secondary in-view navigation: a .subtab swaps which .subview group is shown

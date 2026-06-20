@@ -1507,6 +1507,34 @@ def parse_nmcli_ipv4(terse_output: str) -> dict[str, Any]:
     }
 
 
+def parse_nmcli_device_show(terse_output: str) -> dict[str, Any]:
+    """Parse `nmcli -t -f IP4.ADDRESS,IP4.GATEWAY,IP4.DNS device show <iface>`
+    into {address, prefix, gateway, dns} — the live values active on the wire,
+    including DHCP-assigned ones that don't appear in the connection profile."""
+    fields: dict[str, str] = {}
+    for line in terse_output.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        fields[key.strip()] = value.strip()
+    address, prefix = "", None
+    addr_field = fields.get("IP4.ADDRESS[1]", "")
+    if addr_field and "/" in addr_field:
+        addr_part, prefix_part = addr_field.split("/", 1)
+        address = addr_part.strip()
+        prefix = int(prefix_part.strip()) if prefix_part.strip().isdigit() else None
+    elif addr_field:
+        address = addr_field
+    gateway = fields.get("IP4.GATEWAY", "") or ""
+    dns_parts = [v for k, v in sorted(fields.items()) if k.startswith("IP4.DNS") and v]
+    return {
+        "address": address,
+        "prefix": prefix,
+        "gateway": gateway,
+        "dns": ", ".join(dns_parts),
+    }
+
+
 def validate_network_request(req: dict[str, Any]) -> dict[str, Any]:
     """Validate an IP-change request from the UI; raise ValueError on bad input.
 
@@ -1658,6 +1686,13 @@ class NetworkController:
             ]
         )
         ipv4 = parse_nmcli_ipv4(ipv4_out)
+        live: dict[str, Any] = {}
+        if primary.get("device"):
+            _, dev_out, _ = self._nmcli(
+                ["-t", "-f", "IP4.ADDRESS,IP4.GATEWAY,IP4.DNS",
+                 "device", "show", primary["device"]]
+            )
+            live = parse_nmcli_device_show(dev_out)
         device_hosts = self._device_hosts()
         return {
             "ok": True,
@@ -1669,9 +1704,15 @@ class NetworkController:
             "prefix": ipv4["prefix"],
             "gateway": ipv4["gateway"],
             "dns": ipv4["dns"],
+            "live_address": live.get("address", ""),
+            "live_prefix": live.get("prefix"),
+            "live_gateway": live.get("gateway", ""),
+            "live_dns": live.get("dns", ""),
             "device_hosts": device_hosts,
             "device_subnet_warning": subnet_mismatch_hosts(
-                ipv4["address"], ipv4["prefix"], device_hosts
+                live.get("address") or ipv4["address"],
+                live.get("prefix") if live.get("prefix") is not None else ipv4["prefix"],
+                device_hosts,
             ),
             "suggested": suggested,
         }

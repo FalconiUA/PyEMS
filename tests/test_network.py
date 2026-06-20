@@ -8,6 +8,7 @@ from pyems.ui import (
     DEFAULT_SIM_SITE,
     NetworkController,
     parse_nmcli_connections,
+    parse_nmcli_device_show,
     parse_nmcli_ipv4,
     pick_primary_connection,
     subnet_mismatch_hosts,
@@ -53,6 +54,27 @@ def test_parse_ipv4_auto_has_no_address():
     assert parsed["prefix"] is None
 
 
+def test_parse_device_show_dhcp_live_values():
+    out = (
+        "IP4.ADDRESS[1]:192.168.0.11/24\n"
+        "IP4.GATEWAY:192.168.0.1\n"
+        "IP4.DNS[1]:192.168.0.1\n"
+    )
+    parsed = parse_nmcli_device_show(out)
+    assert parsed["address"] == "192.168.0.11"
+    assert parsed["prefix"] == 24
+    assert parsed["gateway"] == "192.168.0.1"
+    assert parsed["dns"] == "192.168.0.1"
+
+
+def test_parse_device_show_empty_when_not_connected():
+    parsed = parse_nmcli_device_show("")
+    assert parsed["address"] == ""
+    assert parsed["prefix"] is None
+    assert parsed["gateway"] == ""
+    assert parsed["dns"] == ""
+
+
 # ── request validation ───────────────────────────────────────────────────────
 
 def test_validate_manual_normalizes_dns_list():
@@ -89,6 +111,29 @@ def test_subnet_mismatch_flags_other_subnet_and_skips_hostnames():
 
 
 # ── NetworkController ────────────────────────────────────────────────────────
+
+def test_status_dhcp_includes_live_address(monkeypatch):
+    nc = NetworkController(DEFAULT_SIM_SITE)
+
+    def fake_nmcli(args):
+        if "--active" in args:
+            return (0, "netplan-wlan0-Photomate_LAB:wlan0:wifi:activated\n", "")
+        if "device" in args and "show" in args:
+            return (0, "IP4.ADDRESS[1]:192.168.0.11/24\nIP4.GATEWAY:192.168.0.1\nIP4.DNS[1]:192.168.0.1\n", "")
+        # connection show <name>
+        return (0, "ipv4.method:auto\nipv4.addresses:\nipv4.gateway:\nipv4.dns:\n", "")
+
+    monkeypatch.setattr(nc, "_nmcli", fake_nmcli)
+    monkeypatch.setattr(nc, "_device_hosts", lambda: [])
+
+    status = nc.status()
+    assert status["method"] == "auto"
+    assert status["address"] == ""          # profile has nothing for DHCP
+    assert status["live_address"] == "192.168.0.11"
+    assert status["live_prefix"] == 24
+    assert status["live_gateway"] == "192.168.0.1"
+    assert status["live_dns"] == "192.168.0.1"
+
 
 def test_status_degrades_without_nmcli(monkeypatch):
     nc = NetworkController(DEFAULT_SIM_SITE)
