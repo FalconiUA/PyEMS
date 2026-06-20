@@ -195,6 +195,115 @@ def test_time_page_uses_the_os_clock_endpoint_not_ems_telemetry():
     assert 'api("/api/time")' in app_js
 
 
+class _RecordingTimeController:
+    """Stand-in for TimeController that records dispatched calls."""
+
+    def __init__(self):
+        self.calls = []
+
+    def status(self):
+        self.calls.append(("status", None))
+        return {"ok": True, "settings": {"mode": "manual"}}
+
+    def clock(self):
+        self.calls.append(("clock", None))
+        return {"ok": True, "local_time": "2026-06-20 10:00:00"}
+
+    def configure_ntp(self, payload):
+        self.calls.append(("configure_ntp", payload))
+        return {"ok": True, "settings": {"mode": "ntp"}}
+
+    def set_manual_time(self, payload):
+        self.calls.append(("set_manual_time", payload))
+        return {"ok": True, "settings": {"mode": "manual"}}
+
+    def set_timezone_policy(self, payload):
+        self.calls.append(("set_timezone_policy", payload))
+        return {"ok": True, "settings": {"dst_mode": "fixed"}}
+
+    def test_ntp(self, payload):
+        self.calls.append(("test_ntp", payload))
+        return {"ok": True, "server": payload.get("server")}
+
+    def synchronize_now(self):
+        self.calls.append(("synchronize_now", None))
+        return {"ok": True, "settings": {"mode": "ntp"}}
+
+
+@pytest.fixture
+def time_http_client(tmp_path):
+    """Serve a UIApp over a real loopback socket so /api/time routing is exercised."""
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    fake = _RecordingTimeController()
+    app = ui.UIApp(tmp_path / "site.yaml", time_controller=fake)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ui.make_handler(app))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def request(method, path, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        payload = None if body is None else json.dumps(body)
+        headers = {"Content-Type": "application/json"} if payload else {}
+        conn.request(method, path, body=payload, headers=headers)
+        response = conn.getresponse()
+        data = json.loads(response.read().decode("utf-8"))
+        conn.close()
+        return response.status, data
+
+    try:
+        yield fake, request
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_time_get_endpoints_dispatch_to_the_controller(time_http_client):
+    fake, request = time_http_client
+
+    status, data = request("GET", "/api/time")
+    assert status == 200 and data["ok"] is True
+    request("GET", "/api/time/clock")
+
+    assert ("status", None) in fake.calls
+    assert ("clock", None) in fake.calls
+
+
+def test_time_post_endpoints_forward_their_payloads(time_http_client):
+    fake, request = time_http_client
+
+    request("POST", "/api/time/ntp", {"server": "time.google.com", "sync_at": "03:15"})
+    request("POST", "/api/time/manual", {"time": "2026-06-20T10:26"})
+    request("POST", "/api/time/timezone", {"dst_mode": "fixed", "fixed_timezone": "Etc/GMT-2"})
+    request("POST", "/api/time/test-ntp", {"server": "time.google.com"})
+    status, data = request("POST", "/api/time/sync", {})
+
+    dispatched = {name: arg for name, arg in fake.calls}
+    assert dispatched["configure_ntp"]["server"] == "time.google.com"
+    assert dispatched["set_manual_time"]["time"] == "2026-06-20T10:26"
+    assert dispatched["set_timezone_policy"]["fixed_timezone"] == "Etc/GMT-2"
+    assert dispatched["test_ntp"]["server"] == "time.google.com"
+    assert status == 200 and data["ok"] is True
+
+
+def test_time_endpoint_reports_controller_errors_as_json(time_http_client):
+    fake, request = time_http_client
+
+    def _boom():
+        raise ValueError("configure an NTP server before synchronizing")
+
+    fake.synchronize_now = _boom
+
+    status, data = request("POST", "/api/time/sync", {})
+
+    assert status == 400
+    assert data["ok"] is False
+    assert "configure an NTP server" in data["error"]
+
+
 # ── Modbus connection diagnostics ────────────────────────────────────────────
 HUAWEI_PROFILE = "inverters/huawei_sun2000_100ktl_m1.yaml"
 GRID_PROFILE = "meters/example_grid_meter.yaml"
