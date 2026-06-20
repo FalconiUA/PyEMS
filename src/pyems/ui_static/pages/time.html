@@ -32,6 +32,36 @@
   </section>
 
   <section class="panel full">
+    <h2>Clock policy</h2>
+    <p class="lead">
+      Define the local time basis independently from its source. This is the
+      same separation used by industrial controllers: an IANA time zone carries
+      legal seasonal rules; a fixed UTC offset never changes automatically.
+    </p>
+    <div class="fields">
+      <label>
+        <span class="lbl">Time zone <span class="info" data-tip="Choose the geographical IANA time zone used by the controller, for example Europe/Kyiv. It defines the local clock and the daily NTP schedule time.">i</span></span>
+        <select id="time.timezone"></select>
+      </label>
+      <label>
+        <span class="lbl">Seasonal clock change <span class="info" data-tip="Automatic follows the daylight-saving rules embedded in the selected geographical time zone. Fixed UTC offset permanently disables summer/winter clock changes.">i</span></span>
+        <select id="time.dst_mode">
+          <option value="automatic">Automatic — use time-zone rules</option>
+          <option value="fixed">Disabled — fixed UTC offset</option>
+        </select>
+      </label>
+      <label id="timeFixedTimezoneField" hidden>
+        <span class="lbl">Fixed UTC offset</span>
+        <select id="time.fixed_timezone"></select>
+      </label>
+    </div>
+    <div class="toolbar">
+      <button class="primary" id="saveTimezoneBtn">Apply clock policy</button>
+    </div>
+    <p class="hint" id="timePolicyHint"></p>
+  </section>
+
+  <section class="panel full">
     <h2>Time source</h2>
     <p class="lead">Choose manual time or a daily synchronization with one NTP server.</p>
     <div class="fields">
@@ -75,5 +105,13 @@
       </div>
     </div>
     <p class="hint">Changing time does not require restarting the Raspberry Pi, the EMS runtime, or this web interface.</p>
+  </section>
+
+  <section class="panel full">
+    <h2>Synchronization diagnostics</h2>
+    <p class="lead">The latest scheduled or manual NTP attempt is retained here with its exact outcome.</p>
+    <table>
+      <tbody id="timeSyncDiagnostics"></tbody>
+    </table>
   </section>
 </div>

@@ -1,0 +1,9 @@
+# PyEMS controller-clock helper — apply the manual time entered in the HMI.
+# install.sh generates this with the real checkout and service-user paths.
+[Unit]
+Description=PyEMS set controller time manually
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/pi/PyEMS/.venv/bin/pyems-time-helper --state /home/pi/PyEMS/logs/time-settings.json --status /home/pi/PyEMS/logs/time-sync-status.json --set-manual-time

@@ -189,6 +189,8 @@ def test_time_page_uses_the_os_clock_endpoint_not_ems_telemetry():
 
     assert 'data-view="time"' in index
     assert 'id="timeCurrent"' in page
+    assert 'id="time.timezone"' in page
+    assert 'id="timeSyncDiagnostics"' in page
     assert "/api/time/clock" in app_js
     assert 'api("/api/time")' in app_js
 

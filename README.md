@@ -37,9 +37,11 @@ Two separate, OS-supervised processes, exactly like an HMI driving a PLC:
 - The **HMI is always on** and reachable on the LAN. It runs no control logic.
 - The **controller clock** is an operating-system responsibility, not EMS
   telemetry. The **Time** tab can set it manually or synchronize with one NTP
-  server daily at a selected local time. Its systemd timer continues to run
-  while the EMS runtime is stopped; changing time does not restart the Pi, EMS,
-  or HMI.
+  server daily at a selected local time. It also separates the geographical
+  IANA time zone from the seasonal-clock policy: automatic DST follows the
+  zone's rules, while a fixed UTC offset disables summer/winter changes. Its
+  systemd timer continues to run while the EMS runtime is stopped; changing
+  time does not restart the Pi, EMS, or HMI.
 - The **EMS runtime** is a separate supervised process. The HMI's **RUN/STOP**
   buttons issue `systemctl start/stop pyems` (granted by a narrow polkit rule —
   see [`deploy/pyems-polkit.rules`](deploy/pyems-polkit.rules)); systemd, not

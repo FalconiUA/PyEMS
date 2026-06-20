@@ -65,11 +65,16 @@ from pyems.ems import (
 from pyems.logging import setup_logging
 from pyems.time_sync import (
     DEFAULT_TIME_STATE_PATH,
+    DEFAULT_TIME_STATUS_PATH,
+    available_timezones,
     controller_clock,
+    fixed_timezone_options,
     load_time_settings,
+    load_time_sync_status,
     ntp_probe,
     validate_manual_time,
     validate_ntp_server,
+    normalize_timezone_policy,
     validate_sync_time,
     write_time_settings,
 )
@@ -1792,16 +1797,21 @@ class TimeController:
     """
 
     APPLY_UNIT = "pyems-time-apply.service"
+    MANUAL_TIME_UNIT = "pyems-time-manual.service"
     SYNC_NOW_UNIT = "pyems-time-sync-now.service"
 
     def __init__(
         self,
         state_path: str | Path = DEFAULT_TIME_STATE_PATH,
+        status_path: str | Path = DEFAULT_TIME_STATUS_PATH,
         apply_unit: str = APPLY_UNIT,
+        manual_time_unit: str = MANUAL_TIME_UNIT,
         sync_now_unit: str = SYNC_NOW_UNIT,
     ) -> None:
         self.state_path = Path(state_path)
+        self.status_path = Path(status_path)
         self.apply_unit = apply_unit
+        self.manual_time_unit = manual_time_unit
         self.sync_now_unit = sync_now_unit
         self._lock = threading.Lock()
 
@@ -1849,6 +1859,9 @@ class TimeController:
             settings = {"mode": "manual"}
             settings_error = str(exc)
         result["settings"] = settings
+        result["last_sync"] = load_time_sync_status(self.status_path)
+        result["timezones"] = available_timezones()
+        result["fixed_timezones"] = fixed_timezone_options()
         if settings_error:
             result["settings_error"] = settings_error
         try:
@@ -1891,11 +1904,14 @@ class TimeController:
         return result
 
     def configure_ntp(self, request: dict[str, Any]) -> dict[str, Any]:
+        previous = load_time_settings(self.state_path)
         settings = {
+            **previous,
             "mode": "ntp",
             "server": validate_ntp_server(request.get("server")),
             "sync_at": validate_sync_time(request.get("sync_at")),
         }
+        settings.pop("manual_time", None)
         with self._lock:
             write_time_settings(settings, self.state_path)
             self._systemctl_start_wait(self.apply_unit)
@@ -1903,14 +1919,25 @@ class TimeController:
 
     def set_manual_time(self, request: dict[str, Any]) -> dict[str, Any]:
         value = validate_manual_time(request.get("time"))
+        previous = load_time_settings(self.state_path)
         settings = {
+            **previous,
             "mode": "manual",
             "manual_time": value.strftime("%Y-%m-%d %H:%M:%S"),
         }
         with self._lock:
             write_time_settings(settings, self.state_path)
-            self._systemctl_start_wait(self.apply_unit)
+            self._systemctl_start_wait(self.manual_time_unit)
         return {"ok": True, "settings": settings}
+
+    def set_timezone_policy(self, request: dict[str, Any]) -> dict[str, Any]:
+        previous = load_time_settings(self.state_path)
+        policy = normalize_timezone_policy(request)
+        settings = {**previous, **policy}
+        with self._lock:
+            saved = write_time_settings(settings, self.state_path)
+            self._systemctl_start_wait(self.apply_unit)
+        return {"ok": True, "settings": saved}
 
     def test_ntp(self, request: dict[str, Any]) -> dict[str, Any]:
         return ntp_probe(validate_ntp_server(request.get("server")))
@@ -2206,6 +2233,8 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(app.time.configure_ntp(payload))
                 elif path == "/api/time/manual":
                     self._send_json(app.time.set_manual_time(payload))
+                elif path == "/api/time/timezone":
+                    self._send_json(app.time.set_timezone_policy(payload))
                 elif path == "/api/time/test-ntp":
                     self._send_json(app.time.test_ntp(payload))
                 elif path == "/api/time/sync":

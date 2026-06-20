@@ -49,7 +49,10 @@ LAN. In the UI:
 4. Open **Time** to set the Pi clock manually, or specify an NTP server and a
    daily local synchronization time. Use **Test NTP connection** before saving;
    **Synchronize now** is available for commissioning. This works with EMS
-   stopped and needs no Pi, EMS, or HMI restart.
+   stopped and needs no Pi, EMS, or HMI restart. Set the geographical IANA time
+   zone separately; choose automatic seasonal time from that zone's rules, or a
+   fixed UTC offset to disable summer/winter transitions. The page retains the
+   exact outcome of the latest NTP attempt.
 
 There is no separate "edit site.yaml over SSH" step; the UI writes it.
 
@@ -63,11 +66,11 @@ polkit `subject.user` to match yours, then:
 sudo cp deploy/pyems.service     /etc/systemd/system/pyems.service
 sudo cp deploy/pyems-ui.service  /etc/systemd/system/pyems-ui.service
 sudo cp deploy/pyems-time-apply.service /etc/systemd/system/
+sudo cp deploy/pyems-time-manual.service /etc/systemd/system/
 sudo cp deploy/pyems-time-sync-now.service /etc/systemd/system/
 sudo cp deploy/pyems-time-sync.service /etc/systemd/system/
 sudo cp deploy/pyems-time-schedule.timer /etc/systemd/system/
 sudo cp deploy/pyems-polkit.rules /etc/polkit-1/rules.d/49-pyems.rules
-sudo install -d -o pi -g pi -m 0750 /var/lib/pyems
 sudo systemctl daemon-reload
 sudo systemctl enable --now pyems-ui     # HMI on boot; do NOT enable pyems
 sudo systemctl enable --now pyems-time-schedule.timer

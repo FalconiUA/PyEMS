@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_TIME_STATE_PATH = Path("/var/lib/pyems/time-settings.json")
+# The HMI runs as the normal PyEMS service user. Store its state beside the
+# existing telemetry/command files, not in /var/lib (which is normally root
+# owned and caused configuration saves to fail on deployed controllers).
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_TIME_STATE_PATH = PROJECT_ROOT / "logs" / "time-settings.json"
+DEFAULT_TIME_STATUS_PATH = PROJECT_ROOT / "logs" / "time-sync-status.json"
 NTP_PORT = 123
 NTP_EPOCH_OFFSET_S = 2_208_988_800
 _HOSTNAME_RE = re.compile(
@@ -28,6 +33,10 @@ _HOSTNAME_RE = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.?$"
 )
 _SYNC_TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d$")
+_TIMEZONE_RE = re.compile(
+    r"(?:UTC|[A-Za-z][A-Za-z0-9_.+-]*(?:/[A-Za-z][A-Za-z0-9_.+-]*)+)$"
+)
+_FIXED_TIMEZONE_RE = re.compile(r"Etc/(?:UTC|GMT[+-](?:[1-9]|1[0-4]))$")
 
 
 def validate_ntp_server(value: object) -> str:
@@ -35,7 +44,11 @@ def validate_ntp_server(value: object) -> str:
     server = str(value or "").strip()
     if not server:
         raise ValueError("NTP server is required")
-    if any(ch.isspace() for ch in server) or "/" in server or "\\" in server:
+    if any(ch.isspace() for ch in server):
+        raise ValueError(
+            f"NTP server {server!r} contains spaces; enter only a host name such as ua.pool.ntp.org"
+        )
+    if "/" in server or "\\" in server:
         raise ValueError("NTP server must be a host name or IP address, without a port")
     try:
         return str(ipaddress.ip_address(server))
@@ -64,19 +77,98 @@ def validate_manual_time(value: object) -> dt.datetime:
     raise ValueError("manual time must be YYYY-MM-DD HH:MM (optional :SS)")
 
 
+def validate_timezone(value: object) -> str:
+    """Validate an IANA time-zone identifier without accepting path traversal."""
+    timezone = str(value or "").strip()
+    if not _TIMEZONE_RE.fullmatch(timezone) or ".." in timezone:
+        raise ValueError("time zone must be an IANA name, for example Europe/Kyiv")
+    return timezone
+
+
+def fixed_timezone_options() -> list[dict[str, str]]:
+    """UTC offsets represented by IANA Etc/GMT zones (which never observe DST)."""
+    options = []
+    for offset in range(-12, 15):
+        if offset == 0:
+            zone = "Etc/UTC"
+        elif offset > 0:
+            # IANA Etc/GMT signs are intentionally the inverse of UTC offsets.
+            zone = f"Etc/GMT-{offset}"
+        else:
+            zone = f"Etc/GMT+{-offset}"
+        sign = "+" if offset >= 0 else ""
+        options.append({"id": zone, "label": f"UTC{sign}{offset:02d}:00 — fixed, no DST"})
+    return options
+
+
+def available_timezones() -> list[str]:
+    """Return IANA zones installed on Linux, with a useful dev-machine fallback."""
+    for path in (Path("/usr/share/zoneinfo/zone.tab"), Path("/usr/share/zoneinfo/zone1970.tab")):
+        try:
+            zones = sorted(
+                {
+                    parts[2]
+                    for line in path.read_text(encoding="utf-8").splitlines()
+                    if line and not line.startswith("#")
+                    for parts in [line.split("\t")]
+                    if len(parts) >= 3
+                }
+            )
+        except OSError:
+            continue
+        if zones:
+            return ["UTC", "Etc/UTC", *zones]
+    return [
+        "UTC",
+        "Etc/UTC",
+        "Europe/Kyiv",
+        "Europe/Warsaw",
+        "Europe/Berlin",
+        "Europe/London",
+        "America/New_York",
+        "Asia/Tokyo",
+    ]
+
+
+def normalize_timezone_policy(value: dict[str, Any]) -> dict[str, str]:
+    """Validate the DST policy stored together with the clock source settings."""
+    result: dict[str, str] = {}
+    raw_timezone = value.get("timezone")
+    if raw_timezone not in (None, ""):
+        result["timezone"] = validate_timezone(raw_timezone)
+    dst_mode = str(value.get("dst_mode", "automatic"))
+    if dst_mode not in ("automatic", "fixed"):
+        raise ValueError("DST mode must be 'automatic' or 'fixed'")
+    result["dst_mode"] = dst_mode
+    if dst_mode == "fixed":
+        fixed_timezone = validate_timezone(value.get("fixed_timezone"))
+        if not _FIXED_TIMEZONE_RE.fullmatch(fixed_timezone):
+            raise ValueError("fixed DST mode requires a fixed UTC offset")
+        result["fixed_timezone"] = fixed_timezone
+    return result
+
+
+def effective_timezone(settings: dict[str, str]) -> str | None:
+    if settings.get("dst_mode") == "fixed":
+        return settings.get("fixed_timezone")
+    return settings.get("timezone")
+
+
 def normalize_time_settings(value: object) -> dict[str, str]:
     """Validate the unprivileged settings file before a root helper reads it."""
     if not isinstance(value, dict):
         raise ValueError("time settings must be a JSON object")
+    policy = normalize_timezone_policy(value)
     mode = str(value.get("mode", "manual"))
     if mode == "ntp":
         return {
             "mode": "ntp",
             "server": validate_ntp_server(value.get("server")),
             "sync_at": validate_sync_time(value.get("sync_at")),
+            **policy,
         }
     if mode == "manual":
-        result = {"mode": "manual"}
+        result = {"mode": "manual", **policy}
         manual_time = value.get("manual_time")
         if manual_time not in (None, ""):
             result["manual_time"] = validate_manual_time(manual_time).strftime(
@@ -89,7 +181,7 @@ def normalize_time_settings(value: object) -> dict[str, str]:
 def load_time_settings(path: str | Path = DEFAULT_TIME_STATE_PATH) -> dict[str, str]:
     state_path = Path(path)
     if not state_path.exists():
-        return {"mode": "manual"}
+        return {"mode": "manual", "dst_mode": "automatic"}
     try:
         raw = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -103,7 +195,13 @@ def write_time_settings(
     """Atomically store validated settings in the UI-owned state directory."""
     normalized = normalize_time_settings(settings)
     state_path = Path(path)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise ValueError(
+            f"cannot save time settings at {state_path}; the UI service needs write access to "
+            "the PyEMS logs directory (rerun install.sh after updating)"
+        ) from exc
     fd, temp_name = tempfile.mkstemp(prefix=".time-settings-", dir=state_path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -124,6 +222,48 @@ def write_time_settings(
             pass
         raise
     return normalized
+
+
+def load_time_sync_status(
+    path: str | Path = DEFAULT_TIME_STATUS_PATH,
+) -> dict[str, Any] | None:
+    status_path = Path(path)
+    if not status_path.exists():
+        return None
+    try:
+        value = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "ok": False,
+            "operation": "status",
+            "recorded_at": "",
+            "message": "could not read the last synchronization status",
+        }
+    return value if isinstance(value, dict) else None
+
+
+def write_time_sync_status(
+    value: dict[str, Any], path: str | Path = DEFAULT_TIME_STATUS_PATH
+) -> None:
+    """Write the root-owned record shown by the HMI after each NTP attempt."""
+    status_path = Path(path)
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=".time-sync-status-", dir=status_path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            if hasattr(os, "fchmod"):
+                os.fchmod(handle.fileno(), 0o644)
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, status_path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def controller_clock() -> dict[str, Any]:

@@ -22,8 +22,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN_USER="${SUDO_USER:-$(id -un)}"
 VENV="$REPO_DIR/.venv"
 UI_PORT=8765
-TIME_STATE_DIR=/var/lib/pyems
-TIME_STATE=$TIME_STATE_DIR/time-settings.json
+TIME_STATE=$REPO_DIR/logs/time-settings.json
+TIME_STATUS=$REPO_DIR/logs/time-sync-status.json
 
 if [ "$RUN_USER" = "root" ]; then
     echo "ERROR: run this as the normal Pi user (e.g. 'pi'), not as root." >&2
@@ -131,7 +131,6 @@ as_root install -m 0644 "$tmp_ui" /etc/systemd/system/pyems-ui.service
 rm -f "$tmp_ui"
 
 echo "Installing controller-clock helper units…"
-as_root install -d -m 0750 -o "$RUN_USER" -g "$RUN_USER" "$TIME_STATE_DIR"
 
 tmp_time_apply="$(mktemp)"
 cat >"$tmp_time_apply" <<EOF
@@ -141,10 +140,23 @@ Description=PyEMS apply controller time settings
 [Service]
 Type=oneshot
 User=root
-ExecStart=$VENV/bin/pyems-time-helper --state $TIME_STATE --apply
+ExecStart=$VENV/bin/pyems-time-helper --state $TIME_STATE --status $TIME_STATUS --apply
 EOF
 as_root install -m 0644 "$tmp_time_apply" /etc/systemd/system/pyems-time-apply.service
 rm -f "$tmp_time_apply"
+
+tmp_time_manual="$(mktemp)"
+cat >"$tmp_time_manual" <<EOF
+[Unit]
+Description=PyEMS set controller time manually
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=$VENV/bin/pyems-time-helper --state $TIME_STATE --status $TIME_STATUS --set-manual-time
+EOF
+as_root install -m 0644 "$tmp_time_manual" /etc/systemd/system/pyems-time-manual.service
+rm -f "$tmp_time_manual"
 
 tmp_time_sync_now="$(mktemp)"
 cat >"$tmp_time_sync_now" <<EOF
@@ -156,7 +168,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=root
-ExecStart=$VENV/bin/pyems-time-helper --state $TIME_STATE --sync-now
+ExecStart=$VENV/bin/pyems-time-helper --state $TIME_STATE --status $TIME_STATUS --sync-now
 EOF
 as_root install -m 0644 "$tmp_time_sync_now" /etc/systemd/system/pyems-time-sync-now.service
 rm -f "$tmp_time_sync_now"
@@ -171,7 +183,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=root
-ExecStart=$VENV/bin/pyems-time-helper --state $TIME_STATE --sync-if-due
+ExecStart=$VENV/bin/pyems-time-helper --state $TIME_STATE --status $TIME_STATUS --sync-if-due
 EOF
 as_root install -m 0644 "$tmp_time_sync" /etc/systemd/system/pyems-time-sync.service
 rm -f "$tmp_time_sync"
@@ -208,6 +220,7 @@ polkit.addRule(function(action, subject) {
         var unit = action.lookup("unit");
         if (unit == "pyems.service" ||
             unit == "pyems-time-apply.service" ||
+            unit == "pyems-time-manual.service" ||
             unit == "pyems-time-sync-now.service") {
             var verb = action.lookup("verb");
             if (verb == "start" || verb == "stop" || verb == "restart") {

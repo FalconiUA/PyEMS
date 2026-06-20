@@ -278,6 +278,7 @@ td input, td select { min-height: 32px; }
 @media (max-width: 560px) { .summary { grid-template-columns: 1fr; } }
 
 .hint.ok { color: var(--ok); }
+.hint.error { color: var(--danger); }
 .sim-frame {
   width: 100%;
   height: 78vh;

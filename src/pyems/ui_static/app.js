@@ -1688,6 +1688,61 @@ function renderTimeMode() {
   if (ntp) ntp.hidden = mode !== "ntp";
   if (manual) manual.hidden = mode !== "manual";
 }
+function renderTimeZoneMode() {
+  const fixed = $("time.dst_mode")?.value === "fixed";
+  const field = $("timeFixedTimezoneField");
+  if (field) field.hidden = !fixed;
+}
+function optionHtml(value, label, selected) {
+  return '<option value="' + esc(value) + '"' + (value === selected ? " selected" : "") + '>' + esc(label) + "</option>";
+}
+function renderTimeZoneControls(settings) {
+  const zone = $("time.timezone");
+  const fixed = $("time.fixed_timezone");
+  const currentZone = settings.timezone || timeStatus.timezone || "UTC";
+  const zones = [...new Set([currentZone, ...(timeStatus.timezones || [])])];
+  if (zone) zone.innerHTML = zones.map((id) => optionHtml(id, id, currentZone)).join("");
+  const dstMode = settings.dst_mode === "fixed" ? "fixed" : "automatic";
+  if ($("time.dst_mode")) $("time.dst_mode").value = dstMode;
+  const fixedZone = settings.fixed_timezone || "Etc/UTC";
+  const fixedZones = [...new Map(
+    [{ id: fixedZone, label: fixedZone }, ...(timeStatus.fixed_timezones || [])]
+      .map((item) => [item.id, item])
+  ).values()];
+  if (fixed) fixed.innerHTML = fixedZones
+    .map((item) => optionHtml(item.id, item.label || item.id, fixedZone))
+    .join("");
+  renderTimeZoneMode();
+  const hint = $("timePolicyHint");
+  if (hint) {
+    hint.textContent = dstMode === "fixed"
+      ? "Fixed offset selected: the controller will never change its clock for summer or winter time."
+      : "Automatic selected: the chosen IANA time zone controls seasonal clock changes.";
+  }
+}
+function renderTimeDiagnostics() {
+  const body = $("timeSyncDiagnostics");
+  if (!body) return;
+  const last = timeStatus?.last_sync;
+  const rows = !last ? [
+    ["Last NTP attempt", "No synchronization attempt has been recorded yet."],
+    ["Required action", "Test the NTP connection, save the schedule, then use Synchronize now."],
+  ] : [
+    ["Last attempt", last.recorded_at || "—"],
+    ["Operation", last.operation === "scheduled_ntp" ? "Scheduled NTP" : last.operation === "manual_ntp" ? "Manual NTP" : "Manual time"],
+    ["Result", last.ok ? "Succeeded" : "Failed"],
+    ["Exact detail", last.message || "No diagnostic detail supplied."],
+  ];
+  body.innerHTML = rows.map(([name, value]) =>
+    "<tr><th class=\"nowrap\">" + esc(name) + "</th><td>" + esc(String(value)) + "</td></tr>"
+  ).join("");
+}
+function showNtpResult(message, kind = "") {
+  const result = $("ntpTestResult");
+  if (!result) return;
+  result.className = "hint" + (kind ? " " + kind : "");
+  result.textContent = message;
+}
 function renderTimeClock(clock = controllerClock) {
   if (!clock) return;
   controllerClock = clock;
@@ -1704,7 +1759,9 @@ function renderTime() {
   if ($("time.server")) $("time.server").value = settings.server || "";
   if ($("time.sync_at")) $("time.sync_at").value = settings.sync_at || "03:00";
   if ($("time.manual")) $("time.manual").value = (settings.manual_time || timeStatus.local_datetime || "").replace(" ", "T").slice(0, 19);
+  renderTimeZoneControls(settings);
   renderTimeMode();
+  renderTimeDiagnostics();
 
   const text = $("timeStateText");
   const ntpState = $("timeNtpState");
@@ -1738,6 +1795,7 @@ async function refreshTimeClock() {
 }
 async function saveNtpSettings() {
   setStatus("Saving NTP schedule…");
+  try {
   const data = await api("/api/time/ntp", {
     method: "POST",
     body: JSON.stringify({
@@ -1747,10 +1805,33 @@ async function saveNtpSettings() {
   });
   await refreshTime();
   setStatus(`NTP schedule saved: ${data.settings.server} at ${data.settings.sync_at} every day.`, "ok");
+  } catch (error) {
+    showNtpResult("NTP schedule was not saved: " + (error.message || String(error)), "error");
+    throw error;
+  }
+}
+async function saveTimezonePolicy() {
+  setStatus("Applying clock policy…");
+  const data = await api("/api/time/timezone", {
+    method: "POST",
+    body: JSON.stringify({
+      timezone: $("time.timezone").value,
+      dst_mode: $("time.dst_mode").value,
+      fixed_timezone: $("time.fixed_timezone").value,
+    }),
+  });
+  await Promise.all([refreshTime(), refreshTimeClock()]);
+  setStatus(
+    data.settings.dst_mode === "fixed"
+      ? "Clock policy applied: fixed UTC offset, seasonal clock changes disabled."
+      : "Clock policy applied: seasonal clock changes follow the selected time zone.",
+    "ok",
+  );
 }
 async function testNtpConnection() {
   const result = $("ntpTestResult");
   if (result) result.textContent = "Testing NTP connection…";
+  try {
   const data = await api("/api/time/test-ntp", {
     method: "POST",
     body: JSON.stringify({ server: $("time.server").value.trim() }),
@@ -1760,12 +1841,23 @@ async function testNtpConnection() {
     result.textContent = `Connected to ${data.server} (${data.peer}), stratum ${data.stratum}; round trip ${data.round_trip_ms} ms, offset ${data.offset_ms >= 0 ? "+" : ""}${data.offset_ms} ms.`;
   }
   setStatus("NTP connection test succeeded.", "ok");
+  } catch (error) {
+    showNtpResult("NTP connection test failed: " + (error.message || String(error)), "error");
+    throw error;
+  }
 }
 async function synchronizeTimeNow() {
   setStatus("Synchronizing controller time with NTP…");
+  try {
   await api("/api/time/sync", { method: "POST", body: "{}" });
   await Promise.all([refreshTime(), refreshTimeClock()]);
   setStatus("Controller time synchronized. EMS and web interface were not restarted.", "ok");
+  } catch (error) {
+    await refreshTime().catch(() => {});
+    const detail = timeStatus?.last_sync?.message || error.message || String(error);
+    showNtpResult("Synchronization failed: " + detail, "error");
+    throw error;
+  }
 }
 async function setManualTime() {
   const value = $("time.manual").value;
@@ -1855,6 +1947,7 @@ document.addEventListener("change", async (event) => {
   if (id === "scenario.pid_tuning") renderSiteYaml();
   if (id === "net.method") { renderNetworkModeFields(); renderNetworkSubnetHint(); }
   if (id === "time.mode") renderTimeMode();
+  if (id === "time.dst_mode") renderTimeZoneMode();
   if (event.target.id === "profileDeviceSelect") loadSelectedProfile().catch(handleError);
   if (event.target.id === "siteFileSelect") switchSiteFile(event.target.value).catch(handleError);
 });
@@ -1886,6 +1979,7 @@ document.addEventListener("click", async (event) => {
   if (target.id === "refreshNetworkBtn") refreshNetwork().catch(handleError);
   if (target.id === "applyNetworkBtn") applyNetwork().catch(handleError);
   if (target.id === "refreshTimeBtn") refreshTime().catch(handleError);
+  if (target.id === "saveTimezoneBtn") saveTimezonePolicy().catch(handleError);
   if (target.id === "saveNtpBtn") saveNtpSettings().catch(handleError);
   if (target.id === "testNtpBtn") testNtpConnection().catch(handleError);
   if (target.id === "syncTimeNowBtn") synchronizeTimeNow().catch(handleError);

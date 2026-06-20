@@ -22,6 +22,7 @@ polkit.addRule(function(action, subject) {
         var unit = action.lookup("unit");
         if (unit == "pyems.service" ||
             unit == "pyems-time-apply.service" ||
+            unit == "pyems-time-manual.service" ||
             unit == "pyems-time-sync-now.service") {
             var verb = action.lookup("verb");
             if (verb == "start" || verb == "stop" || verb == "restart") {

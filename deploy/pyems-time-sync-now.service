@@ -8,4 +8,4 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=root
-ExecStart=/home/pi/PyEMS/.venv/bin/pyems-time-helper --sync-now
+ExecStart=/home/pi/PyEMS/.venv/bin/pyems-time-helper --state /home/pi/PyEMS/logs/time-settings.json --status /home/pi/PyEMS/logs/time-sync-status.json --sync-now
