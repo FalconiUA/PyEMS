@@ -104,16 +104,7 @@
     <div class="panel">
       <h2>Allocation priorities</h2>
       <p class="lead">When several controllers request the same setpoint, the allocator keeps the lower priority number. 0 is reserved for safety.</p>
-      <div class="fields">
-        <label>
-          <span class="lbl">Export-limit priority <span class="info" data-tip="Priority of the export cap (lower wins). Default 5 — above regulation, below safety.">i</span></span>
-          <input id="scenario.export_priority" type="number" step="1" min="1" required>
-        </label>
-        <label>
-          <span class="lbl">Regulation priority <span class="info" data-tip="Priority of target-power regulation (lower wins). Default 10 — below the export cap.">i</span></span>
-          <input id="scenario.regulation_priority" type="number" step="1" min="1" required>
-        </label>
-      </div>
+      <div class="fields" data-schema-group="allocation_priorities"></div>
     </div>
 
     <div class="panel">

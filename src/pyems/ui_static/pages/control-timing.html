@@ -2,31 +2,6 @@
   <div class="panel full">
     <h2>Control timing</h2>
     <p class="lead">How often the control loop runs and talks to the bus, plus the operator-command channel.</p>
-    <div class="fields">
-      <label>
-        <span class="lbl">Fast control cycle, s <span class="info" data-tip="How often the control logic runs. Shorter reacts faster but uses more CPU. Typically 0.2–1 s.">i</span></span>
-        <input id="control.fast_cycle_s" type="number" step="0.1" min="0.1" required>
-      </label>
-      <label>
-        <span class="lbl">Modbus poll interval, s <span class="info" data-tip="How often the background reader polls devices over Modbus. Kept separate from the control cycle so bus I/O never blocks control.">i</span></span>
-        <input id="control.poll_interval_s" type="number" step="0.1" min="0.1" required>
-      </label>
-      <label>
-        <span class="lbl">Setpoint keepalive rewrite, s <span class="info" data-tip="Even an unchanged setpoint is re-sent at this cadence to keep the device's command watchdog fed. Empty = rewrite every cycle.">i</span></span>
-        <input id="control.setpoint_rewrite_s" type="number" step="0.1" min="0">
-      </label>
-      <label>
-        <span class="lbl">Operator command file <span class="info" data-tip="JSON file the UI writes RUN/STOP and hard-switch commands to. Enables the soft generation gate. Empty disables operator commands.">i</span></span>
-        <input id="control.command_json" placeholder="logs/commands.json">
-      </label>
-      <label>
-        <span class="lbl">Command freshness window, s <span class="info" data-tip="A RUN command must be newer than this when the EMS first reads it; then it stays latched for the run. Guards against acting on a stale leftover command.">i</span></span>
-        <input id="control.command_max_age_s" type="number" step="1" min="0">
-      </label>
-      <label>
-        <span class="lbl">Generation-gate priority <span class="info" data-tip="Allocator priority used to pin output to the floor while generation is OFF. Must sit below safety (0) and above normal control — usually 1.">i</span></span>
-        <input id="control.generation_gate_priority" type="number" step="1" min="1">
-      </label>
-    </div>
+    <div class="fields" data-schema-group="control_timing"></div>
   </div>
 </div>

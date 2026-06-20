@@ -80,12 +80,16 @@ def test_frontend_gather_site_preserves_hidden_operational_settings():
 
 
 def test_frontend_exposes_advanced_protection_settings():
-    # Settings live across the functional Setup/Control pages (the former single
-    # "Site YAML" page was dissolved); every field must still be exposed somewhere.
+    # Every advanced setting must be exposed in the UI. After the restructure a
+    # field is exposed either as static markup in a page (bespoke widgets) or as
+    # a registry entry the front end renders (scalar fields), so accept both.
+    from pyems import ui_schema
+
     pages_dir = ui.STATIC_ROOT / "pages"
     all_pages = "".join(
         path.read_text(encoding="utf-8") for path in sorted(pages_dir.glob("*.html"))
     )
+    schema_paths = {field["path"] for field in ui_schema.FIELDS}
 
     for field_id in [
         "safety.safe_active_power_w",
@@ -102,4 +106,4 @@ def test_frontend_exposes_advanced_protection_settings():
         "setpoint_headroom.enabled",
         "setpoint_headroom.priority",
     ]:
-        assert f'id="{field_id}"' in all_pages
+        assert f'id="{field_id}"' in all_pages or field_id in schema_paths, field_id

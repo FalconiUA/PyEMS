@@ -62,6 +62,7 @@ from pyems.ems import (
     validate_setpoint_keepalive,
     validate_write_age_guard,
 )
+from pyems import ui_schema
 from pyems.logging import setup_logging
 from pyems.time_sync import (
     DEFAULT_TIME_STATE_PATH,
@@ -291,43 +292,24 @@ def _require_number(mapping: dict[str, Any], key: str, path: str) -> None:
 def validate_site_for_ui(site: dict[str, Any]) -> list[Channel]:
     site = normalize_site(site)
     scenario = _require_mapping(site, "scenario", "site")
-    _require_text(scenario, "control_mode", "scenario")
-    _require_number(scenario, "active_power_limit_w", "scenario")
-    for key in ("connection_point_device_id", "unit_device_id"):
-        _require_text(scenario, key, "scenario")
-
-    control = _require_mapping(site, "control", "site")
-    for key in ("fast_cycle_s", "poll_interval_s"):
-        _require_number(control, key, "control")
-    for key in ("setpoint_rewrite_s", "command_max_age_s", "generation_gate_priority"):
-        if key in control:
-            _require_number(control, key, "control")
-    if "command_json" in control and not isinstance(control["command_json"], str):
-        raise ValueError("control.command_json must be text")
-
+    _require_mapping(site, "control", "site")
     safety = _require_mapping(site, "safety", "site")
-    _require_number(safety, "max_comms_age_s", "safety")
-    for key in (
-        "safe_active_power_w",
-        "max_write_age_s",
-        "device_comms_watchdog_s",
-        "max_measurement_frozen_s",
-    ):
-        if key in safety:
-            _require_number(safety, key, "safety")
+    allocation = _require_mapping(site, "allocation", "site")
+
+    # Scalar field types, ranges and required-ness come from the central registry
+    # (ui_schema.FIELDS) so they are declared once. Only the cross-references and
+    # conditionally-gated sections the registry can't express stay below.
+    ui_schema.validate_site(site)
+
     device_comms = safety.get("device_comms_max_age_s") or {}
     if not isinstance(device_comms, dict):
         raise ValueError("safety.device_comms_max_age_s must be a mapping")
     for device_id, _ in device_comms.items():
         _require_number(device_comms, device_id, "safety.device_comms_max_age_s")
-    frozen = safety.get("frozen_measurement_channels") or []
-    if not isinstance(frozen, list):
-        raise ValueError("safety.frozen_measurement_channels must be a list")
     setpoint_channels = _require_list(safety, "unit_active_power_setpoint_channels", "safety")
     if not setpoint_channels:
         raise ValueError("safety.unit_active_power_setpoint_channels must not be empty")
 
-    allocation = _require_mapping(site, "allocation", "site")
     allocation_channels = _require_list(allocation, "channels", "allocation")
     if len(allocation_channels) != 1:
         raise ValueError("allocation.channels must contain exactly one scenario-generated channel")
@@ -337,47 +319,14 @@ def validate_site_for_ui(site: dict[str, Any]) -> list[Channel]:
     if "ramp_down_w_per_s" in allocation_channels[0]:
         _require_number(allocation_channels[0], "ramp_down_w_per_s", "allocation.channels[0]")
 
+    # The headroom limiter's numbers are required only while it is enabled, a
+    # gate the flat registry doesn't model, so it stays here.
     headroom = site.get("setpoint_headroom") or {}
     if headroom.get("enabled", True) is not False:
         _require_number(headroom, "headroom_w", "setpoint_headroom")
         _require_number(headroom, "headroom_pct", "setpoint_headroom")
         if "priority" in headroom:
             _require_number(headroom, "priority", "setpoint_headroom")
-
-    compliance = site.get("setpoint_compliance")
-    if compliance is not None:
-        if not isinstance(compliance, dict):
-            raise ValueError("setpoint_compliance must be a mapping")
-        for key in ("tolerance_w", "max_violation_s"):
-            if key in compliance:
-                _require_number(compliance, key, "setpoint_compliance")
-
-    telemetry = site.get("telemetry") or {}
-    if not isinstance(telemetry, dict):
-        raise ValueError("telemetry must be a mapping")
-    if "live_json" in telemetry and not isinstance(telemetry["live_json"], str):
-        raise ValueError("telemetry.live_json must be text")
-
-    recording = site.get("recording") or {}
-    if not isinstance(recording, dict):
-        raise ValueError("recording must be a mapping")
-    if "cycle_csv" in recording and not isinstance(recording["cycle_csv"], str):
-        raise ValueError("recording.cycle_csv must be text")
-    if "channels" in recording and not isinstance(recording["channels"], list):
-        raise ValueError("recording.channels must be a list")
-
-    simulation = site.get("simulation") or {}
-    if not isinstance(simulation, dict):
-        raise ValueError("simulation must be a mapping")
-    for key in ("tick_s", "meter_noise_w"):
-        if key in simulation:
-            _require_number(simulation, key, "simulation")
-    for group_key in ("unit", "load"):
-        group = simulation.get(group_key) or {}
-        if not isinstance(group, dict):
-            raise ValueError(f"simulation.{group_key} must be a mapping")
-        for key in group:
-            _require_number(group, key, f"simulation.{group_key}")
 
     devices = _require_list(site, "devices", "site")
     if not devices:
@@ -2165,6 +2114,8 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_static(path)
                 elif path == "/api/config":
                     self._send_json(app_config_payload(app))
+                elif path == "/api/settings-schema":
+                    self._send_json(ui_schema.schema_payload())
                 elif path == "/api/profile":
                     device_id = query.get("device_id", [""])[0]
                     self._send_json(profile_payload(load_site(app.site_path), device_id))

@@ -2,32 +2,7 @@
   <div class="panel">
     <h2>Safety interlocks</h2>
     <p class="lead">Conditions that force the unit to its safe state.</p>
-    <div class="fields">
-      <label>
-        <span class="lbl">Safe active power, W <span class="info" data-tip="Setpoint forced on a safety trip, at priority 0 (overrides everything). 0 W curtails to zero if the unit envelope allows.">i</span></span>
-        <input id="safety.safe_active_power_w" type="number" step="1">
-      </label>
-      <label>
-        <span class="lbl">Bus communication timeout, s <span class="info" data-tip="Trip the safe state when the whole bus has had no fresh read for this long.">i</span></span>
-        <input id="safety.max_comms_age_s" type="number" step="0.1" min="0" required>
-      </label>
-      <label>
-        <span class="lbl">Write-path timeout, s <span class="info" data-tip="Trip when reads still work but setpoint writes stop reaching the bus. Empty disables this guard.">i</span></span>
-        <input id="safety.max_write_age_s" type="number" step="0.1" min="0">
-      </label>
-      <label>
-        <span class="lbl">Device-side watchdog, s <span class="info" data-tip="The command-watchdog period configured on the device itself. Used to check the keepalive rewrite is frequent enough.">i</span></span>
-        <input id="safety.device_comms_watchdog_s" type="number" step="0.1" min="0">
-      </label>
-      <label>
-        <span class="lbl">Frozen-measurement timeout, s <span class="info" data-tip="Trip when a watched measurement stops changing for this long (a stuck sensor). Empty disables freeze detection.">i</span></span>
-        <input id="safety.max_measurement_frozen_s" type="number" step="0.1" min="0">
-      </label>
-      <label>
-        <span class="lbl">Watched measurement tags <span class="info" data-tip="Tags checked for freeze, one per line or comma-separated, e.g. grid.W.">i</span></span>
-        <textarea id="safety.frozen_measurement_channels" rows="3" placeholder="grid.W"></textarea>
-      </label>
-    </div>
+    <div class="fields" data-schema-group="safety_interlocks"></div>
   </div>
 
   <div class="panel">
