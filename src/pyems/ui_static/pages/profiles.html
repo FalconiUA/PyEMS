@@ -33,14 +33,21 @@
   <div class="panel full">
     <h2>Registers</h2>
     <p class="lead">Edit device YAML here. Required rows are marked; other rows are optional live measurements.</p>
-    <table>
-      <thead>
-        <tr>
-          <th>required</th><th>channel</th><th>meaning</th><th>address</th><th>type</th><th>scale</th><th>unit</th><th>access</th><th>cmd</th><th>min</th><th>max</th><th></th>
-        </tr>
-      </thead>
-      <tbody id="registerRows"></tbody>
-    </table>
+    <div class="table-scroll">
+      <table class="register-table">
+        <colgroup>
+          <col style="width:6%"><col style="width:12%"><col style="width:12%"><col style="width:7%">
+          <col style="width:9%"><col style="width:6%"><col style="width:6%"><col style="width:10%">
+          <col style="width:5%"><col style="width:9.5%"><col style="width:9.5%"><col style="width:8%">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>required</th><th>channel</th><th>meaning</th><th>address</th><th>type</th><th>scale</th><th>unit</th><th>access</th><th>cmd</th><th>min</th><th>max</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="registerRows"></tbody>
+      </table>
+    </div>
     <!-- canonical field vocabulary (device_fields.py); the channel inputs
          autocomplete against it. The <prefix> is cosmetic — namespaced() swaps
          it for the site.yaml device id at runtime; only the field is validated. -->

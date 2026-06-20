@@ -180,3 +180,151 @@ def test_overview_does_not_poll_live_api():
     body = overview[: overview.index("\n}")]
     assert "/api/fast-loop-state" in body
     assert "/api/live" not in body
+
+
+# ── Modbus connection diagnostics ────────────────────────────────────────────
+HUAWEI_PROFILE = "inverters/huawei_sun2000_100ktl_m1.yaml"
+GRID_PROFILE = "meters/example_grid_meter.yaml"
+
+
+class _FakeOkClient:
+    """A Modbus client that connects and answers every read with zeros — enough
+    for diagnose_device to walk the full layered probe."""
+
+    def __init__(self):
+        self.reads = []
+
+    def connect(self):
+        return True
+
+    def close(self):
+        pass
+
+    def read_holding_registers(self, address, count, slave):
+        self.reads.append((address, count, slave))
+
+        class _R:
+            registers = [0] * count
+
+            def isError(self):
+                return False
+
+        return _R()
+
+
+def test_diagnose_device_tcp_unreachable_short_circuits(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise ConnectionRefusedError("Connection refused")
+
+    monkeypatch.setattr(ui.socket, "create_connection", refuse)
+    result = ui.diagnose_device(
+        {"id": "pv", "profile": HUAWEI_PROFILE, "host": "10.9.9.9", "slave_id": 1}
+    )
+
+    assert result["ok"] is False
+    assert [c["step"] for c in result["checks"]] == ["tcp"]  # no Modbus attempt
+    assert result["checks"][0]["ok"] is False
+    assert result["checks"][0]["cause"] == "refused"  # named, not generic
+    assert "unreachable" in result["summary"]
+    assert result["causes"] and "wrong port" in result["causes"][0]
+    assert result["endpoint"]["port"] == 502  # profile default_port resolved
+
+
+def test_classify_tcp_error_names_each_cause():
+    import socket as _socket
+
+    assert ui._classify_tcp_error(ConnectionRefusedError()) == "refused"
+    assert ui._classify_tcp_error(_socket.gaierror()) == "dns"
+    assert ui._classify_tcp_error(TimeoutError()) == "timeout"
+    assert ui._classify_tcp_error(OSError(ui.errno.EHOSTUNREACH, "x")) == "no_route"
+    assert ui._classify_tcp_error(OSError("something else")) == "other"
+
+
+def test_read_failure_causes_rtu_lists_serial_culprits():
+    regs = [{"ok": False, "timeout": True, "exception_code": None}]
+    serial = {"baudrate": 19200, "parity": "E", "bytesize": 8, "stopbits": 1}
+    causes = ui._read_failure_causes("modbus_rtu", regs, serial)
+    text = " ".join(causes)
+    assert "19200" in text  # the actual baud is echoed into the checklist
+    assert "A/B" in text and "unit-id scan" in text
+
+
+def test_read_failure_causes_address_mismatch_points_at_profile():
+    regs = [{"ok": False, "timeout": False, "exception_code": 2}]
+    causes = ui._read_failure_causes("modbus_tcp", regs, None)
+    assert any("illegal data address" in c for c in causes)
+
+
+def test_read_failure_causes_flags_implausible_value():
+    regs = [{"ok": True, "in_bounds": False}]
+    causes = ui._read_failure_causes("modbus_tcp", regs, None)
+    assert any("word/byte order" in c for c in causes)
+
+
+def test_diagnose_device_rtu_echoes_serial_params(monkeypatch):
+    fake = _FakeOkClient()
+    monkeypatch.setattr(ui.md, "make_client", lambda *a, **k: fake)
+    monkeypatch.setattr(ui.Path, "exists", lambda self: True)  # pretend the port exists
+    result = ui.diagnose_device(
+        {"id": "gen", "profile": "gensets/example_genset.yaml", "host": "/dev/ttyUSB0",
+         "slave_id": 1, "serial": {"baudrate": 19200, "parity": "E"}}
+    )
+
+    serial = result["endpoint"]["serial"]
+    assert serial["baudrate"] == 19200 and serial["parity"] == "E"
+    assert serial["stopbits"] == 1 and serial["bytesize"] == 8  # defaults filled in
+    assert [c["step"] for c in result["checks"]] == ["serial", "modbus_connect"]
+
+
+def test_diagnose_device_probes_every_register(monkeypatch):
+    import contextlib
+
+    @contextlib.contextmanager
+    def fake_conn(addr, timeout=None):
+        yield object()
+
+    fake = _FakeOkClient()
+    monkeypatch.setattr(ui.socket, "create_connection", fake_conn)
+    monkeypatch.setattr(ui.md, "make_client", lambda *a, **k: fake)
+
+    result = ui.diagnose_device(
+        {"id": "pv", "profile": HUAWEI_PROFILE, "host": "192.168.0.100", "slave_id": 7}
+    )
+
+    assert [c["step"] for c in result["checks"]] == ["tcp", "modbus_connect"]
+    assert all(c["ok"] for c in result["checks"])
+    assert len(result["registers"]) == result["endpoint"]["register_count"]
+    assert result["registers"][0]["channel"].startswith("pv.")
+    # the device's slave/unit id is threaded into the actual reads
+    assert fake.reads and all(slave == 7 for (_a, _c, slave) in fake.reads)
+
+
+def test_diagnose_site_runs_each_device_without_scenario_validation(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise OSError("Connection refused")
+
+    monkeypatch.setattr(ui.socket, "create_connection", refuse)
+    # No scenario/safety/allocation — diagnose must not require a valid site.
+    site = {
+        "devices": [
+            {"id": "grid", "profile": GRID_PROFILE, "host": "1.2.3.4", "slave_id": 1},
+            {"id": "pv", "profile": HUAWEI_PROFILE, "host": "1.2.3.5", "slave_id": 1},
+        ]
+    }
+
+    result = ui.diagnose_site(site)
+
+    assert result["ok"] is False
+    assert [d["device_id"] for d in result["devices"]] == ["grid", "pv"]
+    assert all(d["checks"][0]["step"] == "tcp" for d in result["devices"])
+
+
+def test_diagnostics_route_and_page_are_wired():
+    """The Diagnostics view exists end to end: nav tab, static page, the POST
+    route and the button handler."""
+    index = (ui.STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    assert 'data-view="diagnostics"' in index
+    assert (ui.STATIC_ROOT / "pages" / "diagnostics.html").exists()
+    app_js = (ui.STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    assert "/api/diagnose" in app_js
+    assert "runDiagnosticsBtn" in app_js

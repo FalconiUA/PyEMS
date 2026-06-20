@@ -1,0 +1,22 @@
+<div class="toolbar">
+  <button class="primary" id="runDiagnosticsBtn">Run Modbus diagnostics</button>
+  <span id="diagnosticsStateText" class="hint">Probes each device: TCP reach → Modbus session → per-register read.</span>
+</div>
+
+<p class="lead">
+  Connection troubleshooter. For every device in this config it checks, in order:
+  <strong>(1)</strong> can the Pi open a TCP socket to the device IP/port,
+  <strong>(2)</strong> can it open a Modbus session, and
+  <strong>(3)</strong> what each profile register actually returns — the raw
+  register words, the decoded value, or the exact Modbus exception code. This is
+  how you tell an <em>IP/port/subnet</em> problem (step 1 fails) from a
+  <em>slave id / address / register-map</em> problem (step 1–2 pass, reads fail).
+</p>
+<div class="status warn">
+  It probes the devices currently shown on <strong>Device profiles / Site YAML</strong>
+  (no save needed) — fix host, port or slave id there and re-run. Opening this
+  competes with a running EMS for the same bus: <strong>stop the EMS</strong>
+  before probing a real device.
+</div>
+
+<div id="diagnosticsResults"></div>

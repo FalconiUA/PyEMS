@@ -214,3 +214,48 @@ def test_make_client_builds_working_real_tcp_client(modbus_server):
         assert not result.isError()
     finally:
         client.close()
+
+
+def test_probe_registers_over_real_tcp_reports_raw_and_value(
+    modbus_server, seeded_client, tmp_path
+):
+    """The UI diagnostic primitive over the real wire: raw words and the decoded,
+    scaled value per register — exactly what the operator needs to see."""
+    from pyems.drivers.modbus_device import DeviceProfile, probe_registers
+
+    host, port = modbus_server
+    assert not seeded_client.write_registers(100, [0x0000, 0x04D2], device_id=1).isError()  # 1234
+    assert not seeded_client.write_registers(110, [5001], device_id=1).isError()  # 50.01 Hz
+
+    profile = DeviceProfile.load(write_profile(tmp_path, PROFILE))
+    client = make_client("modbus_tcp", host, port=port, timeout_s=2.0, retries=0)
+    assert client.connect()
+    try:
+        results = probe_registers(client, profile, 1, prefix="dev1")
+    finally:
+        client.close()
+
+    by_channel = {r["channel"]: r for r in results if not r.get("aborted")}
+    assert by_channel["dev1.W"]["ok"] is True
+    assert by_channel["dev1.W"]["raw"] == [0x0000, 0x04D2]
+    assert by_channel["dev1.W"]["value"] == pytest.approx(1234.0)
+    assert by_channel["dev1.Hz"]["value"] == pytest.approx(50.01)
+
+
+def test_probe_registers_over_real_tcp_reports_exception_code(modbus_server, tmp_path):
+    """A read of an address the server does not serve comes back as a true Modbus
+    exception RESPONSE (0x02), not a timeout — the diagnostic must name it."""
+    from pyems.drivers.modbus_device import DeviceProfile, probe_registers
+
+    host, port = modbus_server
+    profile = DeviceProfile.load(write_profile(tmp_path, BROKEN_PROFILE))
+    client = make_client("modbus_tcp", host, port=port, timeout_s=2.0, retries=0)
+    assert client.connect()
+    try:
+        results = probe_registers(client, profile, 1, prefix="dev1")
+    finally:
+        client.close()
+
+    entry = results[0]
+    assert entry["ok"] is False and entry["timeout"] is False
+    assert "0x02" in entry["error"]  # illegal data address

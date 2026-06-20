@@ -325,6 +325,131 @@ def test_make_client_rtu_overrides_serial_and_timeout(monkeypatch):
     assert client.kwargs["timeout"] == 0.4
 
 
+# ── connection diagnostics (probe_*) ─────────────────────────────────────────
+from pyems.drivers.modbus_device import (  # noqa: E402
+    describe_modbus_error,
+    probe_register,
+    probe_registers,
+    scan_unit_ids,
+)
+
+
+class FakeExceptionResult:
+    """A pymodbus-style error RESPONSE carrying an exception code (device
+    answered with a code, vs a transport failure which raises)."""
+
+    def __init__(self, exception_code: int):
+        self.exception_code = exception_code
+
+    def isError(self):
+        return True
+
+
+class DiagFakeClient:
+    """Per-address scripted reads: a list of words (good read), an int (exception
+    code → error response), or an Exception instance (transport → raised)."""
+
+    def __init__(self, behaviour: dict):
+        self._behaviour = behaviour
+
+    def read_holding_registers(self, address, count, slave):
+        spec = self._behaviour.get(address)
+        if isinstance(spec, BaseException):
+            raise spec
+        if isinstance(spec, int):
+            return FakeExceptionResult(spec)
+        return FakeResult(spec if spec is not None else [0] * count)
+
+
+def test_describe_modbus_error_names_exception_code():
+    assert describe_modbus_error(FakeExceptionResult(2)) == (
+        "Modbus exception 0x02 (illegal data address)"
+    )
+    assert describe_modbus_error(FakeExceptionResult(11)) == (
+        "Modbus exception 0x0B (gateway target device failed to respond)"
+    )
+
+
+def test_probe_register_decodes_raw_and_scaled_value():
+    prof = DeviceProfile.load(HUAWEI)
+    reg_w = profile_reg(prof, "pv.W")
+    client = DiagFakeClient({reg_w.address: words_for(50000.0, reg_w)})
+    entry = probe_register(client, reg_w, 1, "pv.W")
+    assert entry["ok"] is True and entry["timeout"] is False
+    assert entry["raw"] == words_for(50000.0, reg_w)
+    assert entry["value"] == pytest.approx(50000.0)
+    assert entry["in_bounds"] is True
+
+
+def test_probe_register_reports_modbus_exception_code():
+    r = reg("uint16")  # address 0
+    entry = probe_register(DiagFakeClient({0: 2}), r, 1, "x")
+    assert entry["ok"] is False and entry["timeout"] is False
+    assert "0x02" in entry["error"]
+
+
+def test_probe_register_flags_transport_timeout():
+    r = reg("uint16")
+    entry = probe_register(DiagFakeClient({0: TimeoutError("no response")}), r, 1, "x")
+    assert entry["ok"] is False and entry["timeout"] is True
+    assert "TimeoutError" in entry["error"]
+
+
+def _multi_read_profile(n: int) -> DeviceProfile:
+    regs = [
+        RegisterDef(channel="x.W", address=i, type="uint16", scale=1.0, unit="W", access="read")
+        for i in range(n)
+    ]
+    return DeviceProfile(model="m", protocol="modbus_tcp", default_port=502, registers=regs)
+
+
+def test_probe_registers_bails_after_consecutive_timeouts():
+    prof = _multi_read_profile(5)
+    client = DiagFakeClient({i: TimeoutError("x") for i in range(5)})
+    results = probe_registers(client, prof, 1, prefix="x1", max_consecutive_timeouts=3)
+    probed = [r for r in results if not r.get("aborted")]
+    assert len(probed) == 3  # stopped at the threshold, did not read all 5
+    assert results[-1].get("aborted") is True
+
+
+def test_probe_registers_exception_response_does_not_count_as_timeout():
+    # A device that REJECTS every address (wrong slave id) answers fast — every
+    # register must be probed, never the early-out.
+    prof = _multi_read_profile(5)
+    client = DiagFakeClient({i: 2 for i in range(5)})
+    results = probe_registers(client, prof, 9, prefix="x1", max_consecutive_timeouts=3)
+    assert not any(r.get("aborted") for r in results)
+    assert len(results) == 5 and all("0x02" in r["error"] for r in results)
+
+
+class SlaveAwareClient:
+    """Per-unit-id behaviour for the id-scan test: ids in `data` answer with
+    registers, ids in `exc` answer with exception 0x02 (alive but wrong address),
+    every other id is silent (raises)."""
+
+    def __init__(self, data=(), exc=()):
+        self._data = set(data)
+        self._exc = set(exc)
+
+    def read_holding_registers(self, address, count, slave):
+        if slave in self._data:
+            return FakeResult([0] * count)
+        if slave in self._exc:
+            return FakeExceptionResult(2)
+        raise TimeoutError("no response")
+
+
+def test_scan_unit_ids_finds_the_live_id():
+    prof = DeviceProfile.load(HUAWEI)
+    client = SlaveAwareClient(data={6}, exc={7})
+    by_id = {r["unit_id"]: r for r in scan_unit_ids(client, prof, [1, 6, 7])}
+    # A silent id and a live id are told apart; an exception RESPONSE still proves
+    # the id is alive (the device answered, just rejected the address).
+    assert by_id[1]["alive"] is False and by_id[1]["status"] == "silent"
+    assert by_id[6]["alive"] is True and by_id[6]["status"] == "data"
+    assert by_id[7]["alive"] is True and by_id[7]["status"] == "exception"
+
+
 def test_make_client_rtu_rejects_unknown_serial_key(monkeypatch):
     monkeypatch.setattr(md, "ModbusSerialClient", FakeSerialClient)
     with pytest.raises(ValueError, match="baud_rate"):

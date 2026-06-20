@@ -256,6 +256,169 @@ def _write_registers(client, address: int, values: list[int], slave_id: int):
     return method(address, values, **{unit_kw: slave_id})
 
 
+# Modbus exception codes (MODBUS Application Protocol v1.1b §7). These are the
+# names an integrator needs when a read is REJECTED rather than unanswered:
+# 0x02 means the address is wrong (or the slave/unit id, or the profile); 0x0B
+# is the classic "gateway reached, but the target unit behind it is offline"
+# (e.g. a SmartLogger answering for a dead inverter — see ModbusReadError).
+MODBUS_EXCEPTION_NAMES = {
+    1: "illegal function",
+    2: "illegal data address",
+    3: "illegal data value",
+    4: "device failure",
+    5: "acknowledge",
+    6: "device busy",
+    7: "negative acknowledge",
+    8: "memory parity error",
+    10: "gateway path unavailable",
+    11: "gateway target device failed to respond",
+}
+
+
+def describe_modbus_error(result) -> str:
+    """One-line cause for a pymodbus error response: the exception code and its
+    meaning when the device ANSWERED with one, else the raw error text."""
+    code = getattr(result, "exception_code", None)
+    if isinstance(code, int):
+        name = MODBUS_EXCEPTION_NAMES.get(code, "unknown")
+        return f"Modbus exception 0x{code:02X} ({name})"
+    return f"error response: {result}"
+
+
+def probe_register(client, reg: RegisterDef, slave_id: int, tag: str) -> dict:
+    """Read ONE register once and report exactly what came back — the raw words,
+    the decoded/scaled value, or the precise reason it failed.
+
+    The diagnostic primitive behind the UI connection tool. Unlike `read_state`
+    it NEVER raises: a bad register is data (a row in the report), not an
+    exception. `timeout` distinguishes a transport failure (device silent — the
+    read raised) from a Modbus error RESPONSE (device answered with a code).
+    """
+    entry = {
+        "channel": tag,
+        "address": reg.address,
+        "type": reg.type,
+        "count": reg.count,
+        "access": reg.access,
+        "unit": reg.unit,
+        "scale": reg.scale,
+    }
+    try:
+        result = _read_holding_registers(client, reg.address, reg.count, slave_id)
+    except Exception as exc:  # transport: timeout, reset, no route to host
+        entry.update(ok=False, timeout=True, error=f"{type(exc).__name__}: {exc}")
+        return entry
+    if result.isError():
+        code = getattr(result, "exception_code", None)
+        entry.update(
+            ok=False, timeout=False,
+            exception_code=code if isinstance(code, int) else None,
+            error=describe_modbus_error(result),
+        )
+        return entry
+    raw = list(getattr(result, "registers", []) or [])
+    if len(raw) < reg.count:
+        entry.update(
+            ok=False, timeout=False,
+            error=f"short response: got {len(raw)} of {reg.count} register(s)",
+        )
+        return entry
+    decoded = _decode(raw, reg)
+    value = decoded * reg.scale
+    # Same plausibility gate read_state applies — a value outside a measurement's
+    # bounds usually means a wrong scale/type/address, exactly what diagnosis is
+    # for. Writable registers are exempt (their bounds guard what WE write).
+    in_bounds = reg.writable or (reg.min_val <= value <= reg.max_val)
+    entry.update(
+        ok=True, timeout=False, error="",
+        raw=raw, decoded=decoded, value=value, in_bounds=in_bounds,
+    )
+    return entry
+
+
+def probe_registers(
+    client,
+    profile: DeviceProfile,
+    slave_id: int,
+    prefix: str | None = None,
+    max_consecutive_timeouts: int = 3,
+) -> list[dict]:
+    """Probe every register in the profile once (see `probe_register`).
+
+    Bails out after `max_consecutive_timeouts` transport timeouts in a row: a
+    device that accepts TCP but never answers Modbus would otherwise stall one
+    full timeout per register. Exception RESPONSES do NOT count toward the limit
+    — the device answered, those come back fast, and they are exactly what we
+    want to surface (e.g. a wrong slave id rejecting every address).
+    """
+    results: list[dict] = []
+    consecutive = 0
+    for reg in profile.registers:
+        entry = probe_register(client, reg, slave_id, namespaced(reg.channel, prefix))
+        results.append(entry)
+        if entry.get("timeout"):
+            consecutive += 1
+            if consecutive >= max_consecutive_timeouts:
+                results.append(
+                    {
+                        "aborted": True,
+                        "error": (
+                            f"stopped after {consecutive} reads timed out — the "
+                            f"endpoint accepts TCP but is not answering Modbus "
+                            f"(check the slave/unit id {slave_id}, and that this "
+                            f"is a Modbus device on this port)"
+                        ),
+                    }
+                )
+                break
+        else:
+            consecutive = 0
+    return results
+
+
+def scan_unit_ids(
+    client, profile: DeviceProfile, unit_ids, address: int | None = None,
+    count: int | None = None,
+) -> list[dict]:
+    """Read one register across a set of unit/slave ids to find which id the
+    device actually answers on.
+
+    A response of ANY kind — data OR a Modbus exception code — proves that id is
+    live on the bus; only silence means "nothing there". That is the
+    discriminator the wire otherwise hides: when the configured id is silent you
+    cannot tell a wrong id from a dead bus, but if id 6 answers (even with an
+    error code) while id 1 is silent, the id is the problem. Reuses the given
+    connected client (so it works for RTU's exclusive serial port too).
+    """
+    first = profile.registers[0] if profile.registers else None
+    if first is None:
+        return []
+    addr = first.address if address is None else address
+    cnt = first.count if count is None else count
+    results: list[dict] = []
+    for uid in unit_ids:
+        try:
+            result = _read_holding_registers(client, addr, cnt, uid)
+        except Exception as exc:  # transport: no response for this id
+            results.append(
+                {"unit_id": uid, "alive": False, "status": "silent",
+                 "detail": f"no response ({type(exc).__name__})"}
+            )
+            continue
+        if result.isError():
+            # The device answered — this id is live, the address is just wrong.
+            results.append(
+                {"unit_id": uid, "alive": True, "status": "exception",
+                 "detail": describe_modbus_error(result)}
+            )
+        else:
+            results.append(
+                {"unit_id": uid, "alive": True, "status": "data",
+                 "detail": "answered with data"}
+            )
+    return results
+
+
 class ModbusDeviceDriver(Driver):
     def __init__(
         self, profile: DeviceProfile, client, slave_id: int = 1, prefix: str | None = None

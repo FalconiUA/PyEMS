@@ -17,24 +17,24 @@
       <h2>Scenario</h2>
       <p class="lead">Choose one active-power mode. PyEMS derives controller channels, safety claim, and allocation from the selected devices.</p>
       <div class="fields">
-        <label>Mode
+        <label>
+          <span class="lbl">Mode <span class="info" data-tip="Export limit curtails generation so export at the connection point stays under the limit. Import limit raises generation only when grid import is too high.">i</span></span>
           <select id="scenario.control_mode">
             <option value="export_limit">Export limit</option>
             <option value="import_limit">Import limit</option>
           </select>
-          <span class="hint">Export limit curtails generation. Import limit raises generation only when grid import is too high.</span>
         </label>
-        <label id="limitLabel">Limit at connection point, W
+        <label id="limitLabel">
+          <span class="lbl"><span id="limitLabelText">Limit at connection point, W</span> <span class="info" data-tip="Positive magnitude in watts, measured at the grid connection point (POC).">i</span></span>
           <input id="scenario.active_power_limit_w" type="number" step="1" min="0" required>
-          <span class="hint">Positive magnitude in watts at the grid connection point.</span>
         </label>
-        <label>Connection point meter
+        <label>
+          <span class="lbl">Connection point meter <span class="info" data-tip="Device that measures active power at the grid connection point. Its active-power channel (device.W) is read by the controller.">i</span></span>
           <select id="scenario.connection_point_device_id"></select>
-          <span class="hint">Device that measures P at the grid connection point; expected channel is device.W.</span>
         </label>
-        <label>Controlled generating unit
+        <label>
+          <span class="lbl">Controlled generating unit <span class="info" data-tip="Unit the EMS commands. It must expose an active-power measurement (device.W) and a writable setpoint (device.WSet).">i</span></span>
           <select id="scenario.unit_device_id"></select>
-          <span class="hint">Unit that has active power measurement device.W and writable setpoint device.WSet.</span>
         </label>
       </div>
     </div>
@@ -45,28 +45,31 @@
   <div class="grid">
     <div class="panel full">
       <h2>Unit envelope</h2>
-      <p class="lead">These values become the single allocation channel for the selected scenario.</p>
+      <p class="lead">The operating range and ramp limits of the controlled unit. These become the single allocation channel for the selected scenario — every setpoint is clamped into this envelope.</p>
       <div class="fields">
-        <label>Minimum active power, W
+        <label>
+          <span class="lbl">Minimum active power, W <span class="info" data-tip="Envelope floor: the lowest active power the unit may be commanded to. Usually 0 W.">i</span></span>
           <input id="allocation.p_min_w" type="number" step="1" required>
         </label>
-        <label>P_max, W
+        <label>
+          <span class="lbl">P_max (rated capacity), W <span class="info" data-tip="Envelope ceiling: the unit's maximum active power (RfG Maximum Capacity). No setpoint may exceed it.">i</span></span>
           <input id="allocation.p_max_w" type="number" step="1" required>
         </label>
-        <label>Default active power, W
+        <label>
+          <span class="lbl">Default active power, W <span class="info" data-tip="Setpoint applied when no controller is requesting one (e.g. before the first regulation cycle).">i</span></span>
           <input id="allocation.default_w" type="number" step="1" required>
-          <span class="hint">Value used when no controller requests a setpoint.</span>
         </label>
-        <label>Deadband, W
+        <label>
+          <span class="lbl">Deadband, W <span class="info" data-tip="Setpoint changes smaller than this are ignored, so the inverter is not chattered by tiny corrections.">i</span></span>
           <input id="allocation.deadband_w" type="number" step="1" min="0" required>
         </label>
-        <label>Active power gradient (up), W/s
+        <label>
+          <span class="lbl">Active power gradient (up), W/s <span class="info" data-tip="Grid-code ramp rate for raising production. Limits how fast the setpoint may increase.">i</span></span>
           <input id="allocation.ramp_rate_w_per_s" type="number" step="1" min="0" required>
-          <span class="hint">Grid-code ramp for raising production.</span>
         </label>
-        <label>Curtailment gradient (down), W/s
+        <label>
+          <span class="lbl">Curtailment gradient (down), W/s <span class="info" data-tip="Faster ramp for reducing power (export-limit compliance). Leave empty to use the same gradient as up.">i</span></span>
           <input id="allocation.ramp_down_w_per_s" type="number" step="1" min="0">
-          <span class="hint">Fast ramp for reducing power (export-limit compliance). Empty = same as the up gradient.</span>
         </label>
       </div>
     </div>
@@ -77,23 +80,24 @@
   <div class="grid">
     <div class="panel full">
       <h2>Export-spike protection</h2>
-      <p class="lead">Caps how far the applied setpoint may sit above actual production, so power does not spike when the resource returns.</p>
+      <p class="lead">Caps how far the applied setpoint may sit above actual production, so power does not spike when the resource (sun, wind) suddenly returns.</p>
+      <label class="inline-check">
+        <input id="setpoint_headroom.enabled" type="checkbox">
+        Enable headroom limiter
+        <span class="info" data-tip="When on, the allocator refuses a stale setpoint that sits far above measured unit output.">i</span>
+      </label>
       <div class="fields">
-        <label>Enable headroom limiter
-          <input id="setpoint_headroom.enabled" type="checkbox">
-          <span class="hint">When enabled, the allocator refuses stale setpoints far above measured unit output.</span>
-        </label>
-        <label>Setpoint headroom floor, W
+        <label>
+          <span class="lbl">Setpoint headroom floor, W <span class="info" data-tip="The setpoint may sit at most this much above actual production — the fixed part of the cap. Prevents export spikes when the resource returns.">i</span></span>
           <input id="setpoint_headroom.headroom_w" type="number" step="100" min="1" required>
-          <span class="hint">The setpoint may sit at most this much above actual production — prevents export spikes when the resource returns.</span>
         </label>
-        <label>Setpoint headroom, % of output
+        <label>
+          <span class="lbl">Setpoint headroom, % of output <span class="info" data-tip="Dynamic part: a percentage of current production, used when larger than the floor. 0 = floor only.">i</span></span>
           <input id="setpoint_headroom.headroom_pct" type="number" step="1" min="0">
-          <span class="hint">Dynamic part: percent of current production, applied when larger than the floor. 0 = floor only.</span>
         </label>
-        <label>Headroom priority
+        <label>
+          <span class="lbl">Headroom priority <span class="info" data-tip="Allocator priority of this limiter (lower wins). In import-limit mode keep it just below regulation — usually 11 when regulation is 10.">i</span></span>
           <input id="setpoint_headroom.priority" type="number" step="1" min="1">
-          <span class="hint">Lower number wins. In import-limit mode this should sit below regulation priority, usually 11 when regulation is 10.</span>
         </label>
       </div>
     </div>
@@ -104,7 +108,7 @@
   <div class="grid">
     <div class="panel full">
       <h2>Generated bindings</h2>
-      <p class="lead">These are generated from the selected devices and written to site.yaml on save.</p>
+      <p class="lead">These channel bindings are generated from the selected devices and written to site.yaml on save.</p>
       <table>
         <tbody id="bindingRows"></tbody>
       </table>

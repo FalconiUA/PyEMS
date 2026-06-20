@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import ipaddress
 import json
 import logging
 import math
 import mimetypes
 import re
+import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
+from collections import Counter
 from copy import deepcopy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,6 +46,7 @@ from pyems.system_tags import (
     WRITE_AGE_CHANNEL,
     comms_age_channel,
 )
+import pyems.drivers.modbus_device as md
 from pyems.drivers.composite import CompositeDriver
 from pyems.ems import (
     DEFAULT_SITE,
@@ -666,6 +670,340 @@ def test_read_once(site: dict[str, Any]) -> dict[str, Any]:
         return session.read_once()
     finally:
         session.close()
+
+
+# ── Modbus connection diagnostics ────────────────────────────────────────────
+# A layered probe of one device's endpoint: TCP reach → Modbus session →
+# per-register read → (on silence) a unit-id scan. Deliberately does NOT go
+# through validate_site_for_ui — a half-configured site (the usual state during
+# bring-up) must still be probeable. The goal is to NAME the cause, not leave the
+# operator to disambiguate: every failing layer carries a classified cause and a
+# concrete checklist. It only reads `site["devices"]`, device by device.
+DIAGNOSTIC_TIMEOUT_S = 1.0
+# Unit/slave ids tried when the configured id is silent. A response of any kind
+# (data or an exception code) proves an id is live, so this finds the right id
+# without guessing. TCP gets its own short-timeout client (a second socket is
+# fine); RTU reuses a fresh client on the now-free serial port.
+SCAN_UNIT_IDS = list(range(0, 17)) + [32, 247]
+SCAN_TIMEOUT_S = 0.4
+
+# Named cause + guidance per TCP connect failure, so the report says WHICH fault
+# this is rather than listing every possibility.
+_TCP_CAUSE_GUIDANCE = {
+    "no_host": "No host/IP is set for this device — enter the device's address.",
+    "dns": "The hostname does not resolve — use the device's numeric IP, or fix DNS on the Network tab.",
+    "refused": "The host is up but nothing is listening on this port — wrong port, or the device's Modbus-TCP server is off/disabled.",
+    "timeout": "No answer in time — the device is powered off, the IP is wrong (but still in-subnet), or a firewall is dropping the connection.",
+    "no_route": "No route to the host — the Pi and the device are on different subnets, or the link/cable is down. Check the Network tab: the Pi's address must share the device subnet.",
+    "other": "The TCP connection failed — see the detail line.",
+}
+
+
+def _classify_tcp_error(exc: OSError) -> str:
+    """Map a socket error to a named cause key (portable across OSes — keys off
+    the exception type and errno, not the message text)."""
+    if isinstance(exc, socket.gaierror):
+        return "dns"
+    if isinstance(exc, ConnectionRefusedError):
+        return "refused"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if exc.errno in (errno.EHOSTUNREACH, errno.ENETUNREACH, errno.ENETDOWN):
+        return "no_route"
+    return "other"
+
+
+def _tcp_probe(host: str, port: int, timeout_s: float = DIAGNOSTIC_TIMEOUT_S) -> dict[str, Any]:
+    """Can the Pi open a TCP socket to host:port at all? Separates an IP/port/
+    subnet/cabling fault (this fails, with a NAMED cause) from a Modbus-level one
+    (this passes, the register read does not)."""
+    if not host:
+        return {"step": "tcp", "ok": False, "cause": "no_host",
+                "detail": "no host/IP configured for this device"}
+    started = time.monotonic()
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            ms = (time.monotonic() - started) * 1000.0
+            return {"step": "tcp", "ok": True,
+                    "detail": f"TCP {host}:{port} reachable ({ms:.0f} ms)"}
+    except OSError as exc:
+        return {"step": "tcp", "ok": False, "cause": _classify_tcp_error(exc),
+                "detail": f"cannot open TCP {host}:{port} — {exc}"}
+
+
+def _serial_params(device: dict[str, Any]) -> dict[str, Any]:
+    """Effective RTU line settings (device override merged over the 9600 8N1
+    defaults) — echoed so the operator can eyeball them against the device
+    manual, since a mismatch is silent on the wire."""
+    return {**md.DEFAULT_SERIAL, **(device.get("serial") or {})}
+
+
+def _fully_good(reg: dict[str, Any]) -> bool:
+    """A register that both answered AND decoded to a plausible value — the bar
+    for a green device (an out-of-bounds read means a decoding/profile fault, not
+    a healthy channel)."""
+    return bool(reg.get("ok")) and reg.get("in_bounds", True)
+
+
+def _diagnose_summary(registers: list[dict[str, Any]]) -> str:
+    real = [r for r in registers if not r.get("aborted")]
+    if not real:
+        return "no registers in the profile to read"
+    good = [r for r in real if _fully_good(r)]
+    if len(good) == len(real):
+        return f"all {len(real)} registers read OK — the device is reachable and the profile matches"
+    bad = [r for r in real if not _fully_good(r)]
+    reasons = Counter(
+        (r.get("error") or "implausible value") for r in bad
+    )
+    top = "; ".join(f"{count}× {reason}" for reason, count in reasons.most_common(3))
+    return f"{len(good)}/{len(real)} registers OK; {len(bad)} not: {top}"
+
+
+def _read_failure_causes(
+    protocol: str, registers: list[dict[str, Any]], serial: dict[str, Any] | None,
+) -> list[str]:
+    """The concrete checklist when reads fail AFTER connect succeeded — branched
+    on the exact failure mode so the operator is pointed at the cause, not a
+    catalogue. `registers` are the per-register probe results."""
+    real = [r for r in registers if not r.get("aborted")]
+    failed = [r for r in real if not r.get("ok")]
+    codes = {r.get("exception_code") for r in failed if r.get("exception_code") is not None}
+    silent = [r for r in failed if r.get("timeout")]
+    causes: list[str] = []
+
+    # The device ANSWERED, but rejected the addresses → profile/firmware mismatch.
+    if 2 in codes:  # illegal data address
+        causes.append(
+            "The unit answers but rejects the addresses (0x02 illegal data address) "
+            "— the register map (Device profiles) does not match this model/firmware, "
+            "or there is a base-address offset (some docs are 1-based)."
+        )
+    if 1 in codes:  # illegal function
+        causes.append(
+            "0x01 illegal function — this device does not serve these as holding "
+            "registers (the data may be in input registers or coils); the profile "
+            "is for a different map."
+        )
+    if 11 in codes:  # gateway target failed to respond
+        causes.append(
+            "0x0B gateway target failed to respond — the gateway (e.g. SmartLogger) "
+            "is reachable but the unit behind it is offline or the unit id is wrong."
+        )
+    if 4 in codes:  # device failure
+        causes.append("0x04 device failure — the unit is in a fault state; check the device itself.")
+    if codes:
+        # Every register answered the same way on the configured id, but some
+        # devices/gateways return a blanket error for the WRONG unit id. The scan
+        # settles it: if another id returns data, the unit/slave id is wrong.
+        causes.append(
+            "If the unit-id scan below shows another id returning data, the "
+            "configured unit/slave id is wrong — use that id."
+        )
+
+    # The device was SILENT — the genuinely ambiguous case. List the culprits
+    # that are indistinguishable on the wire, by protocol.
+    if silent:
+        if protocol == "modbus_rtu":
+            s = serial or {}
+            causes.append(
+                "The serial port is open but the unit sent no reply. On RS-485 these "
+                "all look identical — verify each against the device manual:"
+            )
+            causes.append(f"• Baud rate must match the device (probe used {s.get('baudrate')}).")
+            causes.append(
+                f"• Parity / data bits / stop bits must match "
+                f"(probe used {s.get('parity')} {s.get('bytesize')}{s.get('stopbits')})."
+            )
+            causes.append("• A/B (D+/D−) lines may be swapped, or termination/biasing missing.")
+            causes.append("• Wrong slave/unit id — see the unit-id scan below.")
+            causes.append("• USB-RS485 adapter direction control, or a second master on the bus.")
+        else:
+            causes.append("TCP connects but the unit sent no Modbus reply. Check:")
+            causes.append("• Wrong unit/slave id — see the unit-id scan below.")
+            causes.append("• Behind a gateway (e.g. SmartLogger): the target unit is offline.")
+            causes.append("• The device allows only one Modbus client — stop the EMS and retry.")
+            causes.append("• A firewall passes the TCP handshake but blocks Modbus traffic.")
+
+    # Read, but the numbers are implausible → decoding, not connectivity.
+    if any(r.get("ok") and not r.get("in_bounds") for r in real):
+        causes.append(
+            "Some registers read but the values look implausible — likely the wrong "
+            "scale, data type, or word/byte order in the profile (Device profiles)."
+        )
+    return causes
+
+
+def _run_unit_id_scan(
+    profile, host: str, port: int | None, serial: dict | None,
+) -> list[dict[str, Any]] | None:
+    """Open a short-timeout client and try one register across SCAN_UNIT_IDS to
+    find which id is live. Returns None if even the scan client cannot connect.
+    Runs on a FRESH client (the main one is already closed), so RTU's serial port
+    is free and a TCP gateway is not held by two sockets."""
+    client = md.make_client(
+        profile.protocol, host, port=port, default_port=profile.default_port,
+        serial=serial, timeout_s=SCAN_TIMEOUT_S, retries=0,
+    )
+    try:
+        if not client.connect():
+            return None
+        return md.scan_unit_ids(client, profile, SCAN_UNIT_IDS)
+    except Exception:
+        return None
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def diagnose_device(device: dict[str, Any]) -> dict[str, Any]:
+    """Probe one device's Modbus endpoint layer by layer and NAME the cause.
+
+    Returns a structure the UI renders directly: the resolved endpoint (incl. RTU
+    serial settings), an ordered list of pass/fail `checks` (tcp / serial /
+    modbus_connect) each with a classified cause, a per-register `registers`
+    table (raw words, decoded value, or the exact Modbus exception), a `causes`
+    checklist for the failure mode, and — when the unit was silent — a `scan` of
+    other unit ids. Never raises; every failure is data so the report builds.
+    """
+    device_id = str(device.get("id") or device.get("host") or "?")
+    out: dict[str, Any] = {
+        "device_id": device_id,
+        "profile": device.get("profile", ""),
+        "checks": [],
+        "registers": [],
+        "causes": [],
+        "scan": None,
+        "ok": False,
+    }
+    profile_path = device.get("profile")
+    if not profile_path:
+        out["error"] = "no device profile selected"
+        out["causes"] = ["Select a device profile (the register map) for this device."]
+        return out
+    try:
+        profile = md.DeviceProfile.load(PROFILES / profile_path)
+    except Exception as exc:
+        out["error"] = f"cannot load profile {profile_path}: {exc}"
+        out["causes"] = [f"The profile {profile_path} is missing or invalid: {exc}"]
+        return out
+
+    host = str(device.get("host", "")).strip()
+    port = device.get("port")
+    if port in (None, ""):
+        port = profile.default_port if profile.protocol == "modbus_tcp" else None
+    else:
+        port = int(port)
+    slave = int(device.get("slave_id", 1))
+    raw_timeout = device.get("timeout_s")
+    probe_timeout = float(raw_timeout) if raw_timeout not in (None, "") else DIAGNOSTIC_TIMEOUT_S
+    raw_retries = device.get("retries")
+    is_rtu = profile.protocol == "modbus_rtu"
+    serial = _serial_params(device) if is_rtu else None
+    out["endpoint"] = {
+        "protocol": profile.protocol,
+        "model": profile.model,
+        "host": host,
+        "port": port,
+        "slave_id": slave,
+        "timeout_s": probe_timeout,
+        "register_count": len(profile.registers),
+        # RTU line settings, echoed so a silent mismatch is at least visible.
+        "serial": serial,
+    }
+
+    if profile.protocol == "modbus_tcp":
+        tcp = _tcp_probe(host, port, probe_timeout)
+        out["checks"].append(tcp)
+        if not tcp["ok"]:
+            out["summary"] = f"TCP unreachable ({tcp.get('cause')})"
+            out["causes"] = [_TCP_CAUSE_GUIDANCE.get(tcp.get("cause"), _TCP_CAUSE_GUIDANCE["other"])]
+            return out
+    elif is_rtu:
+        # Serial bus: no TCP layer. Report whether the port path exists
+        # (informational — connect() below is authoritative).
+        present = bool(host) and Path(host).exists()
+        out["checks"].append(
+            {
+                "step": "serial", "ok": present,
+                "detail": (f"serial port {host} present" if present
+                           else f"serial port {host!r} not found on this host"),
+            }
+        )
+        if not present and host:
+            out["causes"] = [
+                f"Serial port {host!r} is not present — wrong device path, or the "
+                f"USB-RS485 adapter is unplugged / not enumerated (ls /dev/tty*)."
+            ]
+
+    client = md.make_client(
+        profile.protocol, host, port=port, default_port=profile.default_port,
+        serial=device.get("serial"), timeout_s=probe_timeout,
+        # Diagnose fast: skip pymodbus's default retries (each is another full
+        # timeout) unless the operator set them explicitly on the device.
+        retries=int(raw_retries) if raw_retries not in (None, "") else 0,
+    )
+    started = time.monotonic()
+    connected = False
+    try:
+        try:
+            connected = bool(client.connect())
+            connect_detail = ("Modbus session opened" if connected
+                              else "could not open a Modbus session to the endpoint")
+        except Exception as exc:  # serial permission/port errors land here
+            connect_detail = f"{type(exc).__name__}: {exc}"
+        out["checks"].append({"step": "modbus_connect", "ok": connected, "detail": connect_detail})
+        if not connected:
+            out["summary"] = "could not open a Modbus session"
+            if is_rtu:
+                out["causes"] = out["causes"] or [
+                    f"Could not open serial port {host!r}: {connect_detail}. Wrong "
+                    f"path, adapter unplugged, or this user lacks permission "
+                    f"(add it to the 'dialout' group)."
+                ]
+            else:
+                out["causes"] = [
+                    "The socket opened but the Modbus session did not — the device "
+                    "may allow only one client (stop the EMS) or reset the link."
+                ]
+            return out
+        out["registers"] = md.probe_registers(client, profile, slave, prefix=device_id)
+    except Exception as exc:  # one device must never break the whole report
+        out["checks"].append({"step": "probe", "ok": False, "detail": str(exc)})
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    out["read_s"] = round(time.monotonic() - started, 3)
+    out["summary"] = _diagnose_summary(out["registers"])
+    real = [r for r in out["registers"] if not r.get("aborted")]
+    # Green only when every register answered AND decoded to a plausible value.
+    out["ok"] = connected and bool(real) and all(_fully_good(r) for r in real)
+    if connected and not out["ok"]:
+        out["causes"] = _read_failure_causes(profile.protocol, out["registers"], serial)
+        # If the configured id returned NO data (all silent, or all exceptions),
+        # scan other ids to find a live one — the discriminator for "wrong unit
+        # id" vs "dead bus" vs "wrong register map". Skipped when data DID come
+        # back (the id is right; the problem is decoding/bounds, not the id).
+        if not any(r.get("ok") for r in real):
+            out["scan"] = _run_unit_id_scan(profile, host, port, device.get("serial"))
+    return out
+
+
+def diagnose_site(site: dict[str, Any]) -> dict[str, Any]:
+    """Run `diagnose_device` for every device in the site (no scenario
+    validation) — the payload behind POST /api/diagnose."""
+    devices = [d for d in (site.get("devices") or []) if isinstance(d, dict)]
+    results = [diagnose_device(device) for device in devices]
+    return {
+        "ok": bool(results) and all(item.get("ok") for item in results),
+        "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "devices": results,
+    }
 
 
 def fast_loop_state_path(site: dict[str, Any]) -> Path:
@@ -1643,6 +1981,12 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(profile_payload(load_site(app.site_path), payload["device_id"]))
                 elif path == "/api/test-read":
                     self._send_json(test_read_once(load_site(app.site_path)))
+                elif path == "/api/diagnose":
+                    # Optional `site` lets the UI probe UNSAVED device edits; with
+                    # no body we fall back to the saved file.
+                    requested = payload.get("site")
+                    site = requested if isinstance(requested, dict) else load_site(app.site_path)
+                    self._send_json(diagnose_site(site))
                 elif path == "/api/live/start":
                     self._send_json(app.start_live())
                 elif path == "/api/live/stop":

@@ -1,25 +1,25 @@
 scenario:
   control_mode: export_limit
-  active_power_limit_w: 100.0
+  active_power_limit_w: 0.0
   connection_point_device_id: grid
   unit_device_id: pv
   pid_tuning: auto
   export_priority: 5
   regulation_priority: 10
 control:
-  fast_cycle_s: 1
-  poll_interval_s: 0.5
+  fast_cycle_s: 0.3
+  poll_interval_s: 0.2
   setpoint_rewrite_s: 10
   command_json: logs/commands.json
   command_max_age_s: 30
 export_limit:
-  limit_w: 100.0
+  limit_w: 0.0
   priority: 5
   connection_point_active_power_channel: grid.W
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
 connection_point_active_power:
-  export_limit_w: 100.0
+  export_limit_w: 0.0
   import_limit_w: 1000000000.0
   priority: 10
   gains:
@@ -49,14 +49,14 @@ allocation:
     p_min_w: 0
     p_max_w: 100000
     default_w: 0
-    ramp_rate_w_per_s: 1000
-    deadband_w: 200
+    ramp_rate_w_per_s: 5000
+    deadband_w: 500
     ramp_down_w_per_s: 50000
 telemetry:
   live_json: logs/live_state.json
 devices:
 - id: grid
-  profile: meters/example_grid_meter.yaml
+  profile: meters/grid_meter_huawei_smartlogger3000.yaml
   host: 127.0.0.1
   port: 15021
   slave_id: 1
@@ -76,10 +76,11 @@ setpoint_compliance:
   max_violation_s: 30
 setpoint_headroom:
   headroom_w: 1000
-  headroom_pct: 15
+  headroom_pct: 5
   priority: 11
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
+  enabled: true
 recording:
   cycle_csv: logs/sim_cycles.csv
 hard_switch:

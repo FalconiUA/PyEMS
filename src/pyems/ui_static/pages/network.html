@@ -15,28 +15,28 @@
       the device must share one subnet.
     </p>
     <div class="fields">
-      <label>Mode
+      <label>
+        <span class="lbl">Mode <span class="info" data-tip="An EMS appliance wants a fixed address — choose Static. DHCP lets the router assign one.">i</span></span>
         <select id="net.method">
           <option value="manual">Static IP</option>
           <option value="auto">DHCP (automatic)</option>
         </select>
-        <span class="hint">An EMS appliance wants a fixed address — use Static.</span>
       </label>
-      <label>IPv4 address
+      <label>
+        <span class="lbl">IPv4 address <span class="info" data-tip="The address you will type in the browser to reach this console, e.g. 192.168.0.11.">i</span></span>
         <input id="net.address" type="text" inputmode="decimal" placeholder="192.168.0.11">
-        <span class="hint">The address you will type in the browser, e.g. 192.168.0.11.</span>
       </label>
-      <label>Prefix length (mask)
+      <label>
+        <span class="lbl">Prefix length (mask) <span class="info" data-tip="/24 = 255.255.255.0, the usual home/industrial LAN.">i</span></span>
         <input id="net.prefix" type="number" min="1" max="32" step="1" placeholder="24">
-        <span class="hint">/24 = 255.255.255.0 (the usual home/industrial LAN).</span>
       </label>
-      <label>Gateway
+      <label>
+        <span class="lbl">Gateway <span class="info" data-tip="Your router. Needed for internet/time sync; not for local Modbus.">i</span></span>
         <input id="net.gateway" type="text" inputmode="decimal" placeholder="192.168.0.1">
-        <span class="hint">Your router. Needed for internet/time; not for local Modbus.</span>
       </label>
-      <label>DNS servers
+      <label>
+        <span class="lbl">DNS servers <span class="info" data-tip="Comma- or space-separated. Optional.">i</span></span>
         <input id="net.dns" type="text" placeholder="192.168.0.1">
-        <span class="hint">Comma- or space-separated. Optional.</span>
       </label>
     </div>
     <p class="hint" id="networkSubnetHint"></p>

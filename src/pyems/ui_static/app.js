@@ -10,6 +10,7 @@ let liveRows = [];
 let errorLog = [];
 let currentProfile = null;
 let liveTimer = null;
+let diagnostics = null;
 const $ = (id) => document.getElementById(id);
 
 function esc(value) {
@@ -142,6 +143,18 @@ async function loadPages() {
   }));
 }
 
+// Per-field help lives behind an info icon (see .info in styles.css). Mirror the
+// tip into aria-label and make each icon keyboard-focusable so the tooltip is
+// reachable by hover, Tab, and screen reader alike. Run once after the static
+// pages are injected — these icons are part of the page HTML, not re-rendered.
+function decorateInfoIcons() {
+  document.querySelectorAll(".info[data-tip]").forEach((el) => {
+    if (!el.getAttribute("aria-label")) el.setAttribute("aria-label", el.dataset.tip);
+    if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+    el.setAttribute("role", "note");
+  });
+}
+
 function siteFileName(path) {
   const parts = String(path || "").split(/[\\/]/);
   return parts[parts.length - 1] || path;
@@ -199,7 +212,7 @@ function renderScenario() {
   setValue("setpoint_headroom.headroom_w", headroom.headroom_w ?? Math.round((alloc.p_max_w || 100000) * 0.1));
   setValue("setpoint_headroom.headroom_pct", headroom.headroom_pct ?? 0);
   setValue("setpoint_headroom.priority", headroom.priority ?? "");
-  $("limitLabel").firstChild.textContent = scen.control_mode === "import_limit" ? "Import limit at connection point, W" : "Export limit at connection point, W";
+  $("limitLabelText").textContent = scen.control_mode === "import_limit" ? "Import limit at connection point, W" : "Export limit at connection point, W";
   const cp = scen.connection_point_device_id || "grid";
   const unit = scen.unit_device_id || "pv";
   $("bindingRows").innerHTML = [
@@ -424,6 +437,136 @@ function renderLiveRows(rows) {
       <td>${esc(row.unit)}</td><td><span class="tag">${esc(row.access)}</span></td><td>${esc(row.role)}</td>
     </tr>
   `).join("");
+}
+
+// ── Modbus diagnostics view ──────────────────────────────────────────────────
+function diagBadge(ok) {
+  return `<span class="tag ${ok ? "ok" : "bad"}">${ok ? "OK" : "FAIL"}</span>`;
+}
+function hex4(word) {
+  return Number(word).toString(16).toUpperCase().padStart(4, "0");
+}
+function diagEndpointLine(ep) {
+  if (!ep || !ep.protocol) return "";
+  const port = ep.port != null && ep.port !== "" ? ":" + ep.port : "";
+  const parts = [
+    `${ep.protocol}`,
+    `${ep.host || "?"}${port}`,
+    `unit/slave ${ep.slave_id}`,
+  ];
+  // RTU line settings, echoed because a mismatch is silent on the wire.
+  if (ep.serial) {
+    const s = ep.serial;
+    parts.push(`${s.baudrate} ${s.bytesize}${s.parity}${s.stopbits}`);
+  }
+  parts.push(`timeout ${ep.timeout_s}s`, `${ep.register_count} registers`, ep.model || "");
+  return parts.filter(Boolean).map(esc).join(" · ");
+}
+function renderDiagnosticCauses(causes) {
+  if (!causes || !causes.length) return "";
+  const items = causes.map((c) => `<li>${esc(c)}</li>`).join("");
+  return `<div class="diag-causes"><strong>Likely cause / what to check</strong><ul>${items}</ul></div>`;
+}
+function renderDiagnosticScan(scan) {
+  if (!scan || !scan.length) return "";
+  const dataIds = scan.filter((s) => s.status === "data").map((s) => s.unit_id);
+  const excIds = scan.filter((s) => s.status === "exception").map((s) => s.unit_id);
+  let lead;
+  if (dataIds.length) {
+    lead = `A device returned DATA on unit id ${dataIds.join(", ")} — set the slave id to that.`;
+  } else if (excIds.length) {
+    lead = `Ids ${excIds.join(", ")} answered but with an error code — the bus is alive, yet no id returned data: likely the wrong register map (profile), or a gateway answering for an absent unit.`;
+  } else {
+    lead = "No unit id answered — the bus itself is silent (not an id problem; see the checklist above).";
+  }
+  const statusTag = (s) => {
+    if (s.status === "data") return `<span class="tag ok">data</span>`;
+    if (s.status === "exception") return `<span class="tag warn">error code</span>`;
+    return `<span class="tag">silent</span>`;
+  };
+  const rows = scan.map((s) => `<tr>
+      <td class="nowrap">${esc(s.unit_id)}</td>
+      <td>${statusTag(s)}</td>
+      <td>${esc(s.detail)}</td>
+    </tr>`).join("");
+  return `<div class="diag-scan">
+    <p class="hint"><strong>Unit-id scan</strong> — ${esc(lead)}</p>
+    <table><thead><tr><th>Unit id</th><th>Response</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table>
+  </div>`;
+}
+function renderDiagnosticRegisters(registers) {
+  const rows = (registers || []).map((reg) => {
+    if (reg.aborted) {
+      return `<tr><td colspan="6" class="diag-aborted">${esc(reg.error)}</td></tr>`;
+    }
+    let status;
+    if (reg.ok && reg.in_bounds) status = `<span class="tag ok">OK</span>`;
+    else if (reg.ok) status = `<span class="tag warn">out of bounds</span>`;
+    else status = `<span class="tag bad">${esc(reg.error)}</span>`;
+    const raw = reg.ok && Array.isArray(reg.raw) ? reg.raw.map(hex4).join(" ") : "—";
+    const value = reg.ok ? `${esc(formatValue(reg.value))} ${esc(reg.unit)}` : "—";
+    return `<tr>
+      <td>${esc(reg.channel)}</td>
+      <td class="nowrap">${esc(reg.address)}</td>
+      <td>${esc(reg.type)}</td>
+      <td class="nowrap mono">${raw}</td>
+      <td class="nowrap">${value}</td>
+      <td>${status}</td>
+    </tr>`;
+  }).join("");
+  return `<table class="diag-regs">
+    <thead><tr><th>Channel</th><th>Address</th><th>Type</th><th>Raw words (hex)</th><th>Value</th><th>Status</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+function renderDiagnosticDevice(dev) {
+  const checks = (dev.checks || []).map((check) =>
+    `<li>${diagBadge(check.ok)} <strong>${esc(check.step)}</strong> — ${esc(check.detail)}</li>`
+  ).join("");
+  const error = dev.error ? `<div class="status error">${esc(dev.error)}</div>` : "";
+  const summary = dev.summary
+    ? `<div class="status ${dev.ok ? "ok" : "warn"}">${esc(dev.summary)}</div>` : "";
+  const registers = (dev.registers || []).length ? renderDiagnosticRegisters(dev.registers) : "";
+  return `<div class="panel full">
+    <h2>${diagBadge(dev.ok)} ${esc(dev.device_id)} <span class="hint">${esc(dev.profile)}</span></h2>
+    <p class="hint mono">${diagEndpointLine(dev.endpoint)}</p>
+    ${error}
+    <ul class="diag-checks">${checks}</ul>
+    ${summary}
+    ${renderDiagnosticCauses(dev.causes)}
+    ${renderDiagnosticScan(dev.scan)}
+    ${registers}
+  </div>`;
+}
+function renderDiagnostics() {
+  const host = $("diagnosticsResults");
+  if (!host) return;
+  if (!diagnostics) { host.innerHTML = ""; return; }
+  const devices = diagnostics.devices || [];
+  if (!devices.length) {
+    host.innerHTML = `<div class="status warn">No devices configured. Add a device on the Site YAML page first.</div>`;
+    return;
+  }
+  host.innerHTML = devices.map(renderDiagnosticDevice).join("");
+}
+async function runDiagnostics() {
+  const text = $("diagnosticsStateText");
+  if (text) { text.textContent = "Probing devices…"; text.className = "hint"; }
+  setStatus("Running Modbus diagnostics…");
+  // Probe the CURRENT (possibly unsaved) device edits — gatherDevices reads the
+  // Site YAML rows, which live in the DOM regardless of the active view.
+  diagnostics = await api("/api/diagnose", {
+    method: "POST",
+    body: JSON.stringify({ site: { devices: gatherDevices() } }),
+  });
+  renderDiagnostics();
+  const devices = diagnostics.devices || [];
+  const okCount = devices.filter((dev) => dev.ok).length;
+  if (text) text.textContent = `Last run ${diagnostics.checked_at}.`;
+  setStatus(
+    `Diagnostics: ${okCount}/${devices.length} device(s) fully reachable.`,
+    devices.length && okCount === devices.length ? "ok" : "warn",
+  );
 }
 function renderLogs() {
   const rows = $("errorLogRows");
@@ -1598,11 +1741,23 @@ document.addEventListener("change", async (event) => {
 });
 document.addEventListener("click", async (event) => {
   const target = event.target;
+  // Info icons: tap toggles the tooltip (hover/focus already cover mouse and
+  // keyboard); any other click closes an open one. Handled first and returned
+  // so a tap on an icon never triggers the field it sits next to.
+  if (target.classList.contains("info")) {
+    event.preventDefault();
+    const wasOpen = target.classList.contains("open");
+    document.querySelectorAll(".info.open").forEach((el) => el.classList.remove("open"));
+    if (!wasOpen) target.classList.add("open");
+    return;
+  }
+  document.querySelectorAll(".info.open").forEach((el) => el.classList.remove("open"));
   if (target.matches(".tab")) showView(target.dataset.view);
   if (target.matches(".subtab")) showSubtab(target);
   if (target.id === "reloadBtn") loadConfig().catch(handleError);
   if (target.id === "saveBtn" || target.id === "saveSiteBtn") saveConfig().catch(handleError);
   if (target.id === "testReadBtn") testRead().catch(handleError);
+  if (target.id === "runDiagnosticsBtn") runDiagnostics().catch(handleError);
   if (target.id === "startFastLoopBtn") startFastLoop().catch(handleError);
   if (target.id === "refreshFastLoopBtn") refreshFastLoop().catch(handleError);
   if (target.id === "stopFastLoopBtn") stopFastLoop().catch(handleError);
@@ -1655,6 +1810,6 @@ document.addEventListener("click", async (event) => {
 });
 
 loadPages()
-  .then(loadConfig)
+  .then(() => { decorateInfoIcons(); return loadConfig(); })
   .then(() => showView("overview")) // first/default view; starts the 1 s snapshot poll
   .catch(handleError);
