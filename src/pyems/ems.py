@@ -31,6 +31,7 @@ from pyems.controllers.setpoint_headroom import SetpointHeadroomLimiter
 from pyems.drivers.cached import CachedDriver
 from pyems.drivers.composite import CompositeDriver
 import pyems.drivers.modbus_device as md
+from pyems.events import EventJournal
 from pyems.logging import setup_logging
 from pyems.recording import CycleRecorder
 from pyems.scheduler import Scheduler, Task
@@ -452,7 +453,7 @@ def validate_write_age_guard(site: dict) -> None:
         )
 
 
-def build_tasks(site: dict, command_sink=None) -> list[Task]:
+def build_tasks(site: dict, command_sink=None, journal=None) -> list[Task]:
     """Build the control tasks from a site config dict.
 
     Shared by build_ems() (real Modbus) and the simulation harness, so both
@@ -461,6 +462,9 @@ def build_tasks(site: dict, command_sink=None) -> list[Task]:
     `command_sink` (the CachedDriver) is required only for the hard inverter
     switch (one-shot command writes); when None, the hard switch is skipped even
     if configured — keeps build_tasks usable in tests with no driver.
+
+    `journal` (the optional EventJournal) is wired into the safety interlock so
+    a trip/release persists as an alarm; None disables journaling.
     """
     exp_cfg = site["export_limit"]
     cp_cfg = site["connection_point_active_power"]
@@ -486,6 +490,7 @@ def build_tasks(site: dict, command_sink=None) -> list[Task]:
                 max_frozen_s=safe_cfg.get("max_measurement_frozen_s"),
                 max_write_age_s=safe_cfg.get("max_write_age_s"),
                 comms_age_limits=device_comms_limits,
+                journal=journal,
             ),
         ],
     )
@@ -612,11 +617,14 @@ def build_tasks(site: dict, command_sink=None) -> list[Task]:
     return [safety_task, fast_task]
 
 
-def build_allocation(site: dict) -> tuple[PowerAllocator, RequestBoard]:
+def build_allocation(site: dict, journal=None) -> tuple[PowerAllocator, RequestBoard]:
     """Build the RequestBoard + PowerAllocator from the `allocation` section.
 
     The board (where controllers post) and the allocator (sole writer of the
     setpoint channels) share the same channel list, so a typo is impossible.
+
+    `journal` (the optional EventJournal) lets the arbiters persist a `warning`
+    when a request is rejected by an empty intersection; None disables it.
     """
     fast_cycle_s = site["control"]["fast_cycle_s"]
     configs = [
@@ -633,7 +641,7 @@ def build_allocation(site: dict) -> tuple[PowerAllocator, RequestBoard]:
             c.ramp_up_w_per_s, c.ramp_down_w_per_s, c.deadband_w,
         )
     board = RequestBoard([c.setpoint_channel for c in configs])
-    allocator = PowerAllocator(configs, board, cycle_s=fast_cycle_s)
+    allocator = PowerAllocator(configs, board, cycle_s=fast_cycle_s, journal=journal)
     return allocator, board
 
 
@@ -742,6 +750,25 @@ def build_publisher(
     return publisher
 
 
+def build_journal(site: dict) -> EventJournal | None:
+    """Build the append-only event journal from the optional `events:` section.
+
+    One JSONL line per alarm/event transition (raise/clear/ack) for the SCADA
+    alarm banner + post-hoc event history. Absent section → None (journaling
+    off). Relative paths resolve against the repo root, like the recorder.
+    """
+    ev_cfg = site.get("events") or {}
+    jsonl_path = ev_cfg.get("journal_jsonl")
+    if not jsonl_path:
+        return None
+    path = Path(jsonl_path)
+    if not path.is_absolute():
+        path = ROOT / path
+    journal = EventJournal(path)
+    logger.info("Event journal to %s", path)
+    return journal
+
+
 def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     logger.info("Building EMS from %s", Path(site_path).resolve())
     site = yaml.safe_load(Path(site_path).read_text(encoding="utf-8"))
@@ -835,8 +862,11 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     validate_binding_directions(site, channels)
 
     # The CachedDriver is the command sink for the hard switch (one-shot writes).
-    tasks = build_tasks(site, command_sink=driver)
-    allocator, board = build_allocation(site)
+    # Build the event journal first so both the safety task and the allocator can
+    # post alarms into it.
+    journal = build_journal(site)
+    tasks = build_tasks(site, command_sink=driver, journal=journal)
+    allocator, board = build_allocation(site, journal=journal)
     recorder = build_recorder(site, [c.name for c in channels])
     publisher = build_publisher(site, channels)
 
@@ -847,7 +877,7 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
     )
     return Scheduler(
         tasks=tasks, state=state, driver=driver, allocator=allocator, board=board,
-        recorder=recorder, telemetry=publisher, commands=commands,
+        recorder=recorder, telemetry=publisher, commands=commands, journal=journal,
     )
 
 

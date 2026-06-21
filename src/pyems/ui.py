@@ -33,6 +33,11 @@ from pyems.commands import (
     write_inverter_command,
 )
 from pyems.device_fields import FIELD_LABELS, field_label
+from pyems.events import (
+    SEVERITY_INFO,
+    append_event_line,
+    make_event_dict,
+)
 from pyems.system_tags import (
     COMMAND_AGE_CHANNEL,
     COMMS_AGE_CHANNEL,
@@ -1048,6 +1053,9 @@ def fast_loop_state(site: dict[str, Any]) -> dict[str, Any]:
         "monotonic_s": data.get("monotonic_s"),
         "cycle_s": data.get("cycle_s"),
         "cycle_overrun": data.get("cycle_overrun"),
+        # Currently-active alarms the EMS published this cycle, for the SCADA-style
+        # banner. Empty list when journaling is off or nothing is active.
+        "alarms": data.get("alarms") or [],
         # Raw tag → value map as published, for tag-addressed consumers (the
         # Overview cards); `rows` below is the same data shaped for tables.
         "values": data.get("values") or {},
@@ -1066,6 +1074,111 @@ def telemetry_fresh(fls: dict[str, Any]) -> bool:
     age_s = fls.get("age_s")
     cycle_s = fls.get("cycle_s") or 1.0
     return isinstance(age_s, (int, float)) and age_s <= max(5.0, 3.0 * cycle_s)
+
+
+def events_log_path(site: dict[str, Any]) -> Path:
+    """Resolve the event-journal JSONL path from the site's `events:` section
+    (default logs/events.jsonl) — the append-only alarm log the EMS writes.
+    Relative paths resolve against the repo root, as in `build_journal`."""
+    events = site.get("events") or {}
+    jsonl_path = events.get("journal_jsonl") or "logs/events.jsonl"
+    path = Path(jsonl_path)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
+def ui_audit_path(site: dict[str, Any]) -> Path:
+    """Resolve the UI audit-log path (`events.ui_audit_jsonl`, default
+    logs/ui_audit.jsonl). The UI process — not the EMS — appends operator and
+    config-change events here, so the two processes never share one file handle.
+    Merged with the EMS journal at read time in `event_log`."""
+    events = site.get("events") or {}
+    jsonl_path = events.get("ui_audit_jsonl") or "logs/ui_audit.jsonl"
+    path = Path(jsonl_path)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
+def _read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
+    """Parse the last `limit` JSON lines of a file (skip blanks + a torn final
+    line from a crash mid-append). Empty list if the file does not exist."""
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return rows
+
+
+def event_log(site: dict[str, Any], limit: int = 200) -> dict[str, Any]:
+    """Merged, newest-first tail of the EMS alarm journal AND the UI audit log.
+
+    The EMS process appends alarms (safety trip/release, allocator rejections);
+    the UI process appends operator and config-change events to a SEPARATE file
+    (so the two processes never contend for one handle). They are merged here, on
+    the read side, into one operator timeline. Returns a clean error (not an
+    exception) when neither source exists yet."""
+    journal = events_log_path(site)
+    audit = ui_audit_path(site)
+    if not journal.exists() and not audit.exists():
+        return {
+            "ok": False,
+            "error": "no events yet — the EMS is not running and nothing has been "
+            "changed through the UI",
+            "events": [],
+        }
+    try:
+        events = _read_jsonl_tail(journal, limit) + _read_jsonl_tail(audit, limit)
+    except OSError as exc:
+        return {"ok": False, "error": f"could not read event journal: {exc}", "events": []}
+    # Stable newest-first: the "%Y-%m-%d %H:%M:%S" stamp sorts chronologically.
+    events.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
+    return {"ok": True, "events": events[:limit]}
+
+
+def _audit_value(value: Any) -> str:
+    """Compact one config value for an audit line (a whole section is summarized,
+    not dumped)."""
+    if isinstance(value, dict):
+        return "{" + ", ".join(sorted(map(str, value))) + "}"
+    if isinstance(value, list):
+        return f"[{len(value)} items]"
+    return str(value)
+
+
+def diff_config(old: Any, new: Any, prefix: str = "") -> list[str]:
+    """Human-readable changes between two (normalized) config trees, as dotted
+    paths: `safety.max_comms_age_s: 2.0 → 3.0`, `+ added`, `− removed`."""
+    changes: list[str] = []
+    if isinstance(old, dict) and isinstance(new, dict):
+        for key in sorted(set(old) | set(new), key=str):
+            sub = f"{prefix}.{key}" if prefix else str(key)
+            if key not in new:
+                changes.append(f"− {sub}")
+            elif key not in old:
+                changes.append(f"+ {sub} = {_audit_value(new[key])}")
+            else:
+                changes.extend(diff_config(old[key], new[key], sub))
+    elif isinstance(old, list) and isinstance(new, list):
+        for i in range(max(len(old), len(new))):
+            sub = f"{prefix}[{i}]"
+            if i >= len(new):
+                changes.append(f"− {sub}")
+            elif i >= len(old):
+                changes.append(f"+ {sub} = {_audit_value(new[i])}")
+            else:
+                changes.extend(diff_config(old[i], new[i], sub))
+    elif old != new:
+        changes.append(f"{prefix}: {_audit_value(old)} → {_audit_value(new)}")
+    return changes
 
 
 def command_file_path(site: dict[str, Any]) -> Path | None:
@@ -1981,9 +2094,41 @@ class UIApp:
                 self._session = None
 
     def save(self, site: dict[str, Any]) -> dict[str, Any]:
+        # Snapshot what is on disk first, so the audit can record what changed.
+        try:
+            previous = load_site(self.site_path)
+        except Exception:
+            previous = None
         saved = save_site(site, self.site_path)
+        self._record_config_audit(previous, saved)
         self.close()
         return saved
+
+    def _record_config_audit(
+        self, previous: dict[str, Any] | None, saved: dict[str, Any]
+    ) -> None:
+        """Append a config-change event to the UI audit log so the Events page
+        shows *what* was edited through the UI. Contained: a failed audit write
+        must never fail the save itself."""
+        try:
+            changes = diff_config(previous, saved) if previous is not None else ["(initial save)"]
+            if not changes:
+                return  # unchanged re-save → don't spam the journal
+            head = changes[:20]
+            more = len(changes) - len(head)
+            if more > 0:
+                head = head + [f"…and {more} more"]
+            n = len(changes)
+            event = make_event_dict(
+                source="ui",
+                severity=SEVERITY_INFO,
+                kind="config",
+                message=f"{self.site_path.name} saved — {n} change{'' if n == 1 else 's'}",
+                details=head,
+            )
+            append_event_line(ui_audit_path(saved), event)
+        except Exception as exc:
+            self.record_error("config audit", exc)
 
     def record_error(self, source: str, exc: Exception) -> dict[str, Any]:
         message = str(exc) or exc.__class__.__name__
@@ -2125,6 +2270,8 @@ def make_handler(app: UIApp) -> type[BaseHTTPRequestHandler]:
                     self._send_json(app.read_live())
                 elif path == "/api/fast-loop-state":
                     self._send_json(fast_loop_state(load_site(app.site_path)))
+                elif path == "/api/events":
+                    self._send_json(event_log(load_site(app.site_path)))
                 elif path == "/api/sim/status":
                     self._send_json(app.sim.status())
                 elif path == "/api/ems/status":

@@ -261,6 +261,20 @@ td input, td select { min-height: 32px; }
 .tag.bad { color: var(--danger); background: #fff0ef; }
 .empty-state { color: var(--muted); margin: 8px 0 12px; }
 .log-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+.muted { color: var(--muted); }
+.event-details { margin: 4px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
+.event-details li { overflow-wrap: anywhere; }
+/* Active-alarm banner: SCADA-style summary fed by the live snapshot's `alarms`.
+   The wrap stays empty (no chrome) when nothing is active. Accent comes from the
+   most-severe active alarm. */
+.alarm-banner { border: 1px solid var(--line); border-left-width: 4px; border-radius: 10px; background: var(--panel); padding: 10px 14px; margin: 0 0 14px; }
+.alarm-banner.sev-alarm { border-left-color: var(--danger); background: #fff6f5; }
+.alarm-banner.sev-warning { border-left-color: var(--warn); background: #fff9e8; }
+.alarm-banner-title { font-weight: 700; margin-bottom: 6px; }
+.alarm-banner ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.alarm-banner li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.alarm-banner .alarm-msg { overflow-wrap: anywhere; }
+.alarm-banner .when { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; }
 /* Modbus diagnostics: an ordered list of layer checks, then a per-register
    table. Raw words and the endpoint line are monospace so hex and addresses
    line up. */

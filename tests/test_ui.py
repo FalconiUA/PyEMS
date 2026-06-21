@@ -132,6 +132,120 @@ def test_fast_loop_state_reads_published_snapshot(tmp_path):
     assert rows["pv.WSet"]["role"] == "active power setpoint"
     assert rows["sys.safe_mode"]["role"] == "system"
     assert rows["sys.comms_age_s"]["value"] is None  # +inf was published as null
+    # no alarms in the snapshot → an empty banner list (never None)
+    assert result["alarms"] == []
+
+
+def test_fast_loop_state_passes_through_active_alarms(tmp_path):
+    snap = tmp_path / "live_state.json"
+    snap.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "timestamp": "2026-06-13 10:00:00",
+                "monotonic_s": 1.0,
+                "values": {"grid.W": -500.0},
+                "alarms": [
+                    {"key": "safety.trip", "severity": "alarm", "acked": False},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = ui.fast_loop_state({"telemetry": {"live_json": str(snap)}})
+    assert result["alarms"] == [
+        {"key": "safety.trip", "severity": "alarm", "acked": False}
+    ]
+
+
+def _events_site(tmp_path, journal="journal.jsonl", audit="audit.jsonl"):
+    # Both sources point at tmp so a stray repo-level logs/ file can't leak in.
+    return {"events": {
+        "journal_jsonl": str(tmp_path / journal),
+        "ui_audit_jsonl": str(tmp_path / audit),
+    }}
+
+
+def test_event_log_absent_file_gives_clean_error(tmp_path):
+    result = ui.event_log(_events_site(tmp_path))  # neither file exists
+    assert result["ok"] is False
+    assert result["events"] == []
+
+
+def test_event_log_reads_tail_newest_first(tmp_path):
+    (tmp_path / "journal.jsonl").write_text(
+        '{"seq":1,"timestamp":"t1","severity":"alarm","source":"safety",'
+        '"kind":"raised","key":"safety.trip","message":"a"}\n'
+        '{"seq":2,"timestamp":"t2","severity":"alarm","source":"safety",'
+        '"kind":"cleared","key":"safety.trip","message":"b"}\n',
+        encoding="utf-8",
+    )
+    result = ui.event_log(_events_site(tmp_path))
+    assert result["ok"] is True
+    assert [e["seq"] for e in result["events"]] == [2, 1]  # newest first
+
+
+def test_event_log_skips_torn_final_line(tmp_path):
+    (tmp_path / "journal.jsonl").write_text(
+        '{"seq":1,"timestamp":"t1","severity":"info","source":"safety",'
+        '"kind":"info","key":null,"message":"ok"}\n'
+        '{"seq":2,"timestamp":"t2","severi',  # torn write (crash mid-append)
+        encoding="utf-8",
+    )
+    result = ui.event_log(_events_site(tmp_path))
+    assert result["ok"] is True
+    assert [e["seq"] for e in result["events"]] == [1]
+
+
+def test_event_log_merges_ems_journal_and_ui_audit_newest_first(tmp_path):
+    (tmp_path / "journal.jsonl").write_text(
+        '{"timestamp":"2026-06-21 10:00:00","severity":"alarm","source":"safety",'
+        '"kind":"raised","key":"safety.trip","message":"trip"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "audit.jsonl").write_text(
+        '{"timestamp":"2026-06-21 10:05:00","severity":"info","source":"ui",'
+        '"kind":"config","key":null,"message":"site.yaml saved — 1 change"}\n',
+        encoding="utf-8",
+    )
+    result = ui.event_log(_events_site(tmp_path))
+    assert result["ok"] is True
+    # the later UI config edit sorts above the earlier EMS alarm
+    assert [(e["source"], e["kind"]) for e in result["events"]] == [
+        ("ui", "config"), ("safety", "raised"),
+    ]
+
+
+def test_diff_config_reports_changed_added_removed_paths():
+    old = {"safety": {"max_comms_age_s": 2.0}, "recording": {"cycle_csv": "x"},
+           "devices": [{"id": "pv", "host": "1.1.1.1"}]}
+    new = {"safety": {"max_comms_age_s": 3.0}, "telemetry": {"live_json": "y"},
+           "devices": [{"id": "pv", "host": "2.2.2.2"}]}
+    changes = ui.diff_config(old, new)
+    assert "safety.max_comms_age_s: 2.0 → 3.0" in changes
+    assert "devices[0].host: 1.1.1.1 → 2.2.2.2" in changes
+    assert any(c.startswith("− recording") for c in changes)
+    assert any(c.startswith("+ telemetry") for c in changes)
+
+
+def test_ui_app_save_writes_config_audit(tmp_path):
+    site_path = tmp_path / "site.yaml"
+    app = ui.UIApp(site_path)
+    base = ui.load_site(site_path)  # normalized default (file not created yet)
+    base.setdefault("events", {})["ui_audit_jsonl"] = str(tmp_path / "audit.jsonl")
+    app.save(base)  # initial save → one audit event
+
+    changed = ui.load_site(site_path)
+    changed["safety"]["max_comms_age_s"] = 99.0
+    app.save(changed)  # second save → audit records the single change
+
+    lines = [
+        __import__("json").loads(ln)
+        for ln in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    last = lines[-1]
+    assert last["source"] == "ui" and last["kind"] == "config"
+    assert any("safety.max_comms_age_s" in d for d in last["details"])
 
 
 def test_fast_loop_state_missing_snapshot_gives_clean_error(tmp_path):

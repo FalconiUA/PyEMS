@@ -42,6 +42,9 @@ allocation:
     ramp_down_w_per_s: 1000
 telemetry:
   live_json: logs/live_state.json
+events:
+  journal_jsonl: logs/events.jsonl
+  ui_audit_jsonl: logs/ui_audit.jsonl
 devices:
 - id: grid
   profile: meters/grid_meter_huawei_smartlogger3000.yaml

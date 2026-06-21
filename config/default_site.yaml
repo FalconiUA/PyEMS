@@ -58,6 +58,17 @@ allocation:
 telemetry:
   live_json: logs/live_state.json
 
+# Persisted alarm/event journal + UI audit trail. `journal_jsonl` is written by
+# the EMS: one append-only JSONL line per alarm transition (safety trip/release,
+# a setpoint request rejected by the allocator). `ui_audit_jsonl` is written by
+# the UI process: one line per config change (with the changed paths) and other
+# operator actions, so you can see WHAT was changed through the UI. The Events
+# page merges both into one timeline and shows active alarms as a banner. Omit to
+# disable; relative paths resolve against the repo root.
+events:
+  journal_jsonl: logs/events.jsonl
+  ui_audit_jsonl: logs/ui_audit.jsonl
+
 devices:
   # Per device you may set `timeout_s` and `retries` (both protocols) to bound
   # the worst-case poll time — a hung device costs ~(retries+1)*timeout_s per

@@ -7,9 +7,9 @@ scenario:
   export_priority: 5
   regulation_priority: 10
 control:
-  fast_cycle_s: 0.3
+  fast_cycle_s: 0.4
   poll_interval_s: 0.2
-  setpoint_rewrite_s: 10
+  setpoint_rewrite_s: 11
   command_json: logs/commands.json
   command_max_age_s: 30
 export_limit:
@@ -54,10 +54,13 @@ allocation:
     ramp_down_w_per_s: 50000
 telemetry:
   live_json: logs/live_state.json
+events:
+  journal_jsonl: logs/sim_events.jsonl
+  ui_audit_jsonl: logs/sim_ui_audit.jsonl
 devices:
 - id: grid
   profile: meters/grid_meter_huawei_smartlogger3000.yaml
-  host: 127.0.0.1
+  host: 127.0.5.1
   port: 15021
   slave_id: 1
   timeout_s: 1

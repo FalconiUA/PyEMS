@@ -221,3 +221,49 @@ def test_keyboard_interrupt_exits_cleanly_and_disconnects(state, fake_driver):
     fake_driver.connect()
     sched.run()  # must not raise
     assert not fake_driver.connected
+
+
+# ── event journal: active alarms ride the telemetry snapshot; closed on stop ──
+def test_step_includes_active_alarms_in_telemetry_metadata(state, fake_driver):
+    class FakeJournal:
+        def active_alarms(self):
+            return [{"key": "safety.trip", "severity": "alarm"}]
+
+        def close(self):
+            pass
+
+    class RecordingTelemetry:
+        def publish(self, now, s, metadata=None):
+            self.metadata = metadata
+
+    tele = RecordingTelemetry()
+    task = Task("t", 1.0, priority=1, controllers=[])
+    sched = Scheduler(
+        [task], state, fake_driver, telemetry=tele, journal=FakeJournal()
+    )
+    sched.step(now=0.0)
+    assert tele.metadata["alarms"] == [{"key": "safety.trip", "severity": "alarm"}]
+    assert tele.metadata["cycle_s"] == 1.0
+
+
+def test_run_closes_journal_on_shutdown(state, fake_driver):
+    class FakeJournal:
+        def __init__(self):
+            self.closed = False
+
+        def active_alarms(self):
+            return []
+
+        def close(self):
+            self.closed = True
+
+    j = FakeJournal()
+    task = Task("t", 0.01, priority=1, controllers=[])
+    sched = Scheduler([task], state, fake_driver, journal=j)
+    fake_driver.connect()
+    runner = threading.Thread(target=sched.run)
+    runner.start()
+    sched.stop()
+    runner.join(timeout=2.0)
+    assert not runner.is_alive()
+    assert j.closed

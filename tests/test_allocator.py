@@ -163,3 +163,50 @@ def test_allocator_never_writes_unconfigured_channels():
     ])
     alloc.resolve(state, now=0.0)
     assert state.get("ess.WSet") == 123.0  # untouched
+
+
+# -- event journal: a rejected request is a warning alarm ---------------------
+
+class FakeJournal:
+    def __init__(self) -> None:
+        self.events: list[tuple] = []
+
+    def raise_alarm(self, source, key, message, severity="alarm", *, now):
+        self.events.append(("raise", source, key, severity, now))
+        return True
+
+    def clear(self, source, key, *, now, message="cleared"):
+        self.events.append(("clear", source, key, now))
+        return True
+
+
+def test_rejected_request_raises_warning_then_clears_on_recovery():
+    j = FakeJournal()
+    a = ChannelArbiter(cfg(), cycle_s=1.0, journal=j)
+    hi = req("compliance", priority=5, min_w=0.0, max_w=30000.0)
+    lo = req("economic", priority=50, min_w=60000.0, max_w=80000.0, target_w=70000.0)
+
+    a.resolve([hi, lo], now=1.0)            # economic rejected (disjoint range)
+    a.resolve([hi, lo], now=1.5)            # steady state → no repeat event
+    assert j.events == [("raise", "allocation", "alloc.pv.WSet.economic", "warning", 1.0)]
+
+    # ranges now overlap → economic honored again → its alarm clears
+    a.resolve(
+        [
+            req("compliance", priority=5, max_w=80000.0),
+            req("economic", priority=50, min_w=60000.0, max_w=80000.0, target_w=70000.0),
+        ],
+        now=2.0,
+    )
+    assert ("clear", "allocation", "alloc.pv.WSet.economic", 2.0) in j.events
+
+
+def test_withdrawn_rejected_request_clears_its_alarm():
+    j = FakeJournal()
+    a = ChannelArbiter(cfg(), cycle_s=1.0, journal=j)
+    hi = req("compliance", priority=5, min_w=0.0, max_w=30000.0)
+    lo = req("economic", priority=50, min_w=60000.0, max_w=80000.0, target_w=70000.0)
+
+    a.resolve([hi, lo], now=1.0)            # economic rejected
+    a.resolve([hi], now=2.0)               # economic withdrawn entirely
+    assert ("clear", "allocation", "alloc.pv.WSet.economic", 2.0) in j.events

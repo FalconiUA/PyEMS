@@ -477,6 +477,7 @@ function renderRealtime(readData = null) {
     ["Devices", devices || "none"],
     ["Last read", lastRead],
   ].map(([name, value]) => `<div class="metric"><div class="name">${esc(name)}</div><div class="value">${esc(value)}</div></div>`).join("");
+  setAlarmBanner("realtimeAlarms", readData ? readData.alarms : []);
   renderLiveRows(readData ? readData.rows : liveRows);
 }
 
@@ -641,6 +642,78 @@ function renderLogs() {
       <td class="log-message">${esc(entry.message)}</td>
     </tr>
   `).join("");
+}
+
+// ── EMS alarm/event journal: active-alarm banner + history page ──────────────
+// The banner is fed by `alarms` in the fast-loop snapshot (Realtime/Overview);
+// the history table reads the persisted JSONL via /api/events.
+let eventLog = [];
+let eventLogMeta = null;
+let eventsTimer = null;
+
+function alarmTagClass(severity) {
+  return severity === "alarm" ? "bad" : severity === "warning" ? "warn" : "";
+}
+// active_alarms() arrives already sorted most-severe first, so alarms[0] sets
+// the banner accent; an empty list renders nothing.
+function alarmBannerHTML(alarms) {
+  if (!alarms || !alarms.length) return "";
+  const top = alarms[0].severity;
+  const sevClass = top === "alarm" ? "sev-alarm" : top === "warning" ? "sev-warning" : "";
+  const n = alarms.length;
+  const items = alarms.map((a) => `
+    <li>
+      <span class="tag ${alarmTagClass(a.severity)}">${esc(a.severity)}</span>
+      <span class="alarm-msg">${esc(a.message)}</span>
+      <span class="when">${esc(a.source)}${a.acked ? " · ack" : ""}${a.raised_at ? " · " + esc(a.raised_at) : ""}</span>
+    </li>`).join("");
+  return `<div class="alarm-banner ${sevClass}">
+    <div class="alarm-banner-title">${n} active alarm${n === 1 ? "" : "s"}</div>
+    <ul>${items}</ul>
+  </div>`;
+}
+function setAlarmBanner(id, alarms) {
+  const el = $(id);
+  if (el) el.innerHTML = alarmBannerHTML(alarms);
+}
+
+function renderEvents() {
+  const rows = $("eventLogRows");
+  if (!rows) return;
+  const empty = $("eventLogEmpty");
+  if (empty) {
+    empty.hidden = eventLog.length > 0;
+    empty.textContent = eventLogMeta && !eventLogMeta.ok
+      ? eventLogMeta.error : "No events recorded yet.";
+  }
+  setAlarmBanner("eventsAlarms", (lastSnapshot && lastSnapshot.alarms) || []);
+  rows.innerHTML = eventLog.map((entry) => {
+    const details = Array.isArray(entry.details) && entry.details.length
+      ? `<ul class="event-details">${entry.details.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>`
+      : "";
+    const key = entry.key ? ` <span class="muted">(${esc(entry.key)})</span>` : "";
+    return `
+    <tr>
+      <td class="nowrap">${esc(entry.timestamp)}</td>
+      <td><span class="tag ${alarmTagClass(entry.severity)}">${esc(entry.severity)}</span></td>
+      <td>${esc(entry.source)}</td>
+      <td>${esc(entry.kind)}</td>
+      <td class="log-message">${esc(entry.message)}${key}${details}</td>
+    </tr>`;
+  }).join("");
+}
+async function refreshEvents() {
+  // Pull the journal tail AND the live snapshot, so the page's active-alarm
+  // banner stays current even when Overview isn't the polling view.
+  const [data, snap] = await Promise.all([
+    api("/api/events"),
+    api("/api/fast-loop-state").catch(() => null),
+  ]);
+  eventLogMeta = data;
+  eventLog = data.events || [];
+  if (snap) lastSnapshot = snap;
+  renderEvents();
+  return data;
 }
 
 // ── Overview: read-only dashboard fed by the fast-loop telemetry snapshot ────
@@ -1133,6 +1206,7 @@ function drawOverviewChart() {
 
 function renderOverview() {
   if (!site || !$("overviewStatusBar")) return;
+  setAlarmBanner("overviewAlarms", (lastSnapshot && lastSnapshot.alarms) || []);
   renderStatusBar();
   renderStatusCounters();
   renderAssetCards();
@@ -1943,6 +2017,14 @@ function showView(name) {
     clearInterval(overviewTimer);
     overviewTimer = null;
   }
+  // Events page polls the journal (+ snapshot for the banner) while it is active.
+  if (name === "events") {
+    refreshEvents().catch(handleError);
+    if (!eventsTimer) eventsTimer = setInterval(() => refreshEvents().catch(() => {}), 3000);
+  } else if (eventsTimer) {
+    clearInterval(eventsTimer);
+    eventsTimer = null;
+  }
   if (name === "network" && !networkStatus) refreshNetwork().catch(handleError);
   if (name === "time") {
     if (!timeStatus) refreshTime().catch(handleError);
@@ -2030,6 +2112,7 @@ document.addEventListener("click", async (event) => {
   if (target.id === "refreshFastLoopBtn") refreshFastLoop().catch(handleError);
   if (target.id === "stopFastLoopBtn") stopFastLoop().catch(handleError);
   if (target.id === "saveProfileBtn") saveProfile().catch(handleError);
+  if (target.id === "refreshEventsBtn") refreshEvents().catch(handleError);
   if (target.id === "refreshErrorLogBtn") loadErrorLog().catch(handleError);
   if (target.id === "clearErrorLogBtn") clearErrorLog().catch(handleError);
   if (target.id === "refreshNetworkBtn") refreshNetwork().catch(handleError);

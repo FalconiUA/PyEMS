@@ -258,3 +258,60 @@ def test_trip_logs_once(state, caplog):
         safety.execute(state, b)  # second stale cycle must not re-log
     trips = [r for r in caplog.records if "SAFETY TRIP" in r.message]
     assert len(trips) == 1
+
+
+# ── event journal: a trip raises one alarm, a release clears it ──────────────
+class FakeJournal:
+    """Captures the journal calls the controller makes."""
+
+    def __init__(self) -> None:
+        self.raised: list[tuple] = []
+        self.cleared: list[tuple] = []
+
+    def raise_alarm(self, source, key, message, severity="alarm", *, now):
+        self.raised.append((source, key, severity, message, now))
+        return True
+
+    def clear(self, source, key, *, now, message="cleared"):
+        self.cleared.append((source, key, now))
+        return True
+
+
+def make_journal_safety(journal):
+    return SafetyController(
+        max_comms_age_s=2.0,
+        safe_active_power_w=50000.0,
+        unit_active_power_setpoint_channels=["pv.WSet"],
+        journal=journal,
+    )
+
+
+def test_trip_then_release_emits_journal_alarm(state):
+    j = FakeJournal()
+    safety = make_journal_safety(j)
+    b = board()
+
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 5.0)
+    b.tick(1.0)
+    safety.execute(state, b)
+    safety.execute(state, b)  # still tripped → raise exactly once
+    assert len(j.raised) == 1
+    source, key, severity, message, now = j.raised[0]
+    assert (source, key, severity) == ("safety", "safety.trip", "alarm")
+    assert "comms age" in message
+    assert now == 1.0
+    assert j.cleared == []
+
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 0.1)
+    b.tick(2.0)
+    safety.execute(state, b)
+    assert j.cleared == [("safety", "safety.trip", 2.0)]
+
+
+def test_journal_is_optional(state):
+    """A journal-less safety controller behaves exactly as before."""
+    safety = make_safety()
+    b = board()
+    state.apply_driver_value(COMMS_AGE_CHANNEL, 5.0)
+    safety.execute(state, b)  # must not raise without a journal
+    assert state.get(SAFE_MODE_CHANNEL) == 1.0

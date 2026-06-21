@@ -55,6 +55,7 @@ class Scheduler:
         recorder=None,
         telemetry=None,
         commands=None,
+        journal=None,
     ) -> None:
         self._tasks = sorted(tasks, key=lambda t: t.priority)
         self._state = state
@@ -75,6 +76,10 @@ class Scheduler:
         # of each cycle, mapped onto system tags before any controller runs.
         self._commands = commands
         self._commands_failed = False  # log on transition, not per cycle
+        # Optional persisted alarm/event journal (see pyems.events). Its live
+        # active-alarm list rides along in the telemetry snapshot (the UI banner),
+        # and it is closed on shutdown like the recorder.
+        self._journal = journal
         # Slowest-task tick, for telemetry metadata; default None when tasks is
         # empty (step()-only tests) so we never crash on an empty min().
         self._tick_s = min((t.interval_s for t in self._tasks), default=None)
@@ -158,14 +163,14 @@ class Scheduler:
         # logged once — the control loop never blocks on the read-only UI.
         if self._telemetry is not None:
             try:
-                self._telemetry.publish(
-                    now,
-                    self._state,
-                    metadata={
-                        "cycle_s": self._tick_s,
-                        "cycle_overrun": self._overrunning,
-                    },
-                )
+                metadata = {
+                    "cycle_s": self._tick_s,
+                    "cycle_overrun": self._overrunning,
+                }
+                # Currently-active alarms for the UI's SCADA-style banner.
+                if self._journal is not None:
+                    metadata["alarms"] = self._journal.active_alarms()
+                self._telemetry.publish(now, self._state, metadata=metadata)
             except Exception:
                 if not self._telemetry_failed:
                     logger.exception(
@@ -247,4 +252,9 @@ class Scheduler:
                     self._recorder.close()
                 except Exception:
                     logger.exception("Closing the cycle recorder failed")
+            if self._journal is not None:
+                try:
+                    self._journal.close()
+                except Exception:
+                    logger.exception("Closing the event journal failed")
             logger.info("Scheduler stopped")

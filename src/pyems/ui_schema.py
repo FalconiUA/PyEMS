@@ -31,6 +31,7 @@ NAV: list[dict[str, Any]] = [
         "pages": [
             {"view": "overview", "label": "Overview", "page": "overview.html"},
             {"view": "realtime", "label": "Realtime", "page": "realtime.html"},
+            {"view": "events", "label": "Events", "page": "events.html"},
             {"view": "logs", "label": "Logs", "page": "logs.html"},
         ],
     },

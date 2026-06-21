@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from pyems.allocation.request import ActivePowerRequest
 from pyems.channels import SystemState
+from pyems.events import SEVERITY_WARNING
 
 logger = logging.getLogger(__name__)
 
@@ -79,16 +80,23 @@ class ChannelArbiter:
     to unit-test; `PowerAllocator` does the `state.set`.
     """
 
-    def __init__(self, config: SetpointChannelConfig, cycle_s: float) -> None:
+    def __init__(self, config: SetpointChannelConfig, cycle_s: float, journal=None) -> None:
         self._cfg = config
         self._cycle_s = cycle_s
         self._last_setpoint: float | None = None          # VAR RETAIN; None = never resolved
         self._honored: dict[str, bool] = {}               # requester -> honored last cycle?
         self._target_owner: str | None = None             # owner of the winning target last cycle
+        # Optional alarm journal (pyems.events.EventJournal). When set, a request
+        # rejected by an empty intersection raises a `warning`, cleared when it is
+        # honored again or withdrawn. None keeps `resolve()` a pure, testable API.
+        self._journal = journal
 
-    def resolve(self, requests: list[ActivePowerRequest]) -> float:
+    def resolve(self, requests: list[ActivePowerRequest], now: float | None = None) -> float:
         cfg = self._cfg
         ch = cfg.setpoint_channel
+        # Journal records are stamped with the control-loop `now`; pure-API callers
+        # (no journal) may omit it.
+        now_s = 0.0 if now is None else now
 
         # 1. Sort deterministically (board already sorts; repeat for a pure API).
         requests = sorted(requests, key=lambda r: (r.priority, r.requester))
@@ -103,12 +111,18 @@ class ChannelArbiter:
             if new_lo <= new_hi:
                 lo, hi = new_lo, new_hi
                 honored.append(req)
-                self._note_honored(ch, req.requester, True)
+                self._note_honored(ch, req.requester, True, now_s)
             else:
                 # Higher-priority constraints always win — discard this range
                 # entirely, never split the difference.
-                self._note_honored(ch, req.requester, False)
-        # Forget requesters that are no longer present (withdrawn/expired).
+                self._note_honored(ch, req.requester, False, now_s)
+        # Forget requesters no longer present (withdrawn/expired); a request that
+        # was rejected and then vanishes must have its standing alarm cleared too.
+        for requester in [r for r in self._honored if r not in seen]:
+            if self._journal is not None and self._honored[requester] is False:
+                self._journal.clear(
+                    source="allocation", key=f"alloc.{ch}.{requester}", now=now_s
+                )
         self._honored = {r: v for r, v in self._honored.items() if r in seen}
 
         # 3. Pick the target.
@@ -166,7 +180,9 @@ class ChannelArbiter:
 
     # -- transition logging (state changes only; never per-cycle spam) ----------
 
-    def _note_honored(self, channel: str, requester: str, honored: bool) -> None:
+    def _note_honored(
+        self, channel: str, requester: str, honored: bool, now: float
+    ) -> None:
         prev = self._honored.get(requester)
         self._honored[requester] = honored
         if prev == honored:
@@ -176,8 +192,23 @@ class ChannelArbiter:
                 "%s: request from '%s' rejected (empty intersection with "
                 "higher-priority constraints)", channel, requester,
             )
+            if self._journal is not None:
+                self._journal.raise_alarm(
+                    source="allocation",
+                    key=f"alloc.{channel}.{requester}",
+                    message=(
+                        f"{channel}: request from '{requester}' rejected "
+                        f"(empty intersection with higher-priority constraints)"
+                    ),
+                    severity=SEVERITY_WARNING,
+                    now=now,
+                )
         elif prev is not None:  # rejected -> honored again (don't log first sight)
             logger.info("%s: request from '%s' honored again", channel, requester)
+            if self._journal is not None:
+                self._journal.clear(
+                    source="allocation", key=f"alloc.{channel}.{requester}", now=now
+                )
 
     def _note_target_owner(self, channel: str, owner: str, value: float) -> None:
         if owner == self._target_owner:
@@ -194,11 +225,12 @@ class PowerAllocator:
     cycle), driven by the same `now` the scheduler passes to `step()`."""
 
     def __init__(
-        self, configs: list[SetpointChannelConfig], board, cycle_s: float
+        self, configs: list[SetpointChannelConfig], board, cycle_s: float, journal=None
     ) -> None:
         self._board = board
         self._arbiters: dict[str, ChannelArbiter] = {
-            cfg.setpoint_channel: ChannelArbiter(cfg, cycle_s) for cfg in configs
+            cfg.setpoint_channel: ChannelArbiter(cfg, cycle_s, journal=journal)
+            for cfg in configs
         }
 
     @property
@@ -210,5 +242,5 @@ class PowerAllocator:
         touches channels it is not configured for."""
         for channel, arbiter in self._arbiters.items():
             requests = self._board.valid_requests(channel, now)
-            value = arbiter.resolve(requests)
+            value = arbiter.resolve(requests, now)
             state.set(channel, value)

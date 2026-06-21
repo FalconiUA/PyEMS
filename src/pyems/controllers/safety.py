@@ -68,6 +68,7 @@ class SafetyController(Controller):
         max_frozen_s: float | None = None,
         max_write_age_s: float | None = None,
         comms_age_limits: dict[str, float] | None = None,
+        journal=None,
     ) -> None:
         self._max_age = max_comms_age_s
         self._safe_active_power_w = safe_active_power_w
@@ -86,6 +87,10 @@ class SafetyController(Controller):
         self._comms_age_limits = comms_age_limits or {}
         # per-channel (last value, monotonic time it last changed)
         self._last_change: dict[str, tuple[float, float]] = {}
+        # Optional persisted alarm journal (pyems.events.EventJournal). When set,
+        # a trip raises one `safety.trip` alarm and a release clears it; None
+        # keeps the controller usable standalone (and the existing tests green).
+        self._journal = journal
         self._tripped = False  # last state — log only on transition, not per cycle
 
     def _frozen_measurements(self, state: SystemState, now: float) -> list[str]:
@@ -149,6 +154,13 @@ class SafetyController(Controller):
                     "; ".join(faults), self._setpoint_channels,
                     self._safe_active_power_w,
                 )
+                if self._journal is not None:
+                    self._journal.raise_alarm(
+                        source="safety",
+                        key="safety.trip",
+                        message="; ".join(faults),
+                        now=board.now,
+                    )
                 self._tripped = True
         else:
             # healthy → withdraw the claims (allocator ramps back up) and clear flag.
@@ -157,4 +169,8 @@ class SafetyController(Controller):
             state.set(SAFE_MODE_CHANNEL, 0.0)
             if self._tripped:
                 logger.info("SAFETY RELEASE: all preconditions healthy again")
+                if self._journal is not None:
+                    self._journal.clear(
+                        source="safety", key="safety.trip", now=board.now
+                    )
                 self._tripped = False
