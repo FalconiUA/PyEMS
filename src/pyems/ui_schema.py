@@ -89,6 +89,7 @@ def _field(
     placeholder: str = "",
     rows: int | None = None,
     group: str | None = None,
+    id: str | None = None,
     access: str = "operator",
     validate: bool = True,
 ) -> dict[str, Any]:
@@ -102,6 +103,7 @@ def _field(
         "validate": validate,
     }
     for key, value in (
+        ("id", id),
         ("unit", unit),
         ("placeholder", placeholder),
         ("group", group),
@@ -182,11 +184,13 @@ FIELDS: list[dict[str, Any]] = [
     _field("safety.frozen_measurement_channels", "list", "Watched measurement tags", rows=3,
            placeholder="grid.W", group="safety_interlocks",
            help="Tags checked for freeze, one per line or comma-separated, e.g. grid.W."),
-    # Actuator compliance (bespoke: an enable toggle wraps these).
+    # Actuator compliance (registry-rendered; an enable toggle stays hand-written).
     _field("setpoint_compliance.tolerance_w", "number", "Tolerance", unit="W", step=1, min=0,
+           group="actuator_compliance",
            help="How far actual output may deviate from the setpoint before it counts as a violation."),
     _field("setpoint_compliance.max_violation_s", "number", "Violation time", unit="s", step=0.1,
-           min=0, help="The deviation must persist this long before sys.setpoint_violation is raised."),
+           min=0, group="actuator_compliance",
+           help="The deviation must persist this long before sys.setpoint_violation is raised."),
     # Telemetry & recording (registry-rendered).
     _field("telemetry.live_json", "text", "Live snapshot file", placeholder="logs/live_state.json",
            group="telemetry",
@@ -196,31 +200,79 @@ FIELDS: list[dict[str, Any]] = [
     _field("recording.channels", "list", "Recorded tags", rows=3, group="telemetry",
            placeholder="Leave empty to record controller-bound tags",
            help="Tags to record, one per line or comma-separated. Empty records the default controller-bound tag set."),
-    # Simulation model (bespoke: an enable toggle wraps these).
-    _field("simulation.tick_s", "number", "Simulation tick", unit="s", step=0.1, min=0),
-    _field("simulation.meter_noise_w", "number", "Meter noise", unit="W", step=1, min=0),
-    _field("simulation.unit.tau_s", "number", "Unit response time τ", unit="s", step=0.1, min=0),
-    _field("simulation.unit.peak_w", "number", "Unit peak available power", unit="W", step=1, min=0),
-    _field("simulation.unit.period_s", "number", "Unit curve period", unit="s", step=1, min=1),
-    _field("simulation.unit.noise_w", "number", "Unit noise", unit="W", step=1, min=0),
-    _field("simulation.load.base_w", "number", "Load base", unit="W", step=1, min=0),
-    _field("simulation.load.amplitude_w", "number", "Load amplitude", unit="W", step=1, min=0),
-    _field("simulation.load.period_s", "number", "Load curve period", unit="s", step=1, min=1),
-    _field("simulation.load.noise_w", "number", "Load noise", unit="W", step=1, min=0),
-    # Allocation envelope + headroom limiter: metadata only — ui.py validates
-    # these (the envelope requires exactly one channel; the limiter is gated by
-    # its enabled flag), so they are excluded from the generic scalar loop.
-    _field("allocation.channels.0.p_min_w", "number", "Minimum active power", unit="W", validate=False),
-    _field("allocation.channels.0.p_max_w", "number", "P_max (rated capacity)", unit="W", validate=False),
-    _field("allocation.channels.0.default_w", "number", "Default active power", unit="W", validate=False),
-    _field("allocation.channels.0.ramp_rate_w_per_s", "number", "Active power gradient (up)",
-           unit="W/s", validate=False),
-    _field("allocation.channels.0.ramp_down_w_per_s", "number", "Curtailment gradient (down)",
-           unit="W/s", validate=False),
-    _field("allocation.channels.0.deadband_w", "number", "Deadband", unit="W", validate=False),
-    _field("setpoint_headroom.headroom_w", "number", "Setpoint headroom floor", unit="W", validate=False),
-    _field("setpoint_headroom.headroom_pct", "number", "Setpoint headroom", unit="%", validate=False),
-    _field("setpoint_headroom.priority", "number", "Headroom priority", validate=False),
+    # Simulation model (registry-rendered; an enable toggle stays hand-written).
+    _field("simulation.tick_s", "number", "Simulation tick", unit="s", step=0.1, min=0,
+           group="simulation_model", help="Time step of the synthetic plant model."),
+    _field("simulation.meter_noise_w", "number", "Meter noise", unit="W", step=1, min=0,
+           group="simulation_model",
+           help="Random noise added to simulated meter readings, to mimic a real sensor."),
+    _field("simulation.unit.tau_s", "number", "Unit response time τ", unit="s", step=0.1, min=0,
+           group="simulation_model",
+           help="First-order lag: how slowly simulated unit output follows its setpoint."),
+    _field("simulation.unit.peak_w", "number", "Unit peak available power", unit="W", step=1, min=0,
+           group="simulation_model", help="Peak of the synthetic available-power curve (e.g. midday PV)."),
+    _field("simulation.unit.period_s", "number", "Unit curve period", unit="s", step=1, min=1,
+           group="simulation_model", help="Period of the synthetic availability curve."),
+    _field("simulation.unit.noise_w", "number", "Unit noise", unit="W", step=1, min=0,
+           group="simulation_model", help="Random noise on simulated unit output."),
+    _field("simulation.load.base_w", "number", "Load base", unit="W", step=1, min=0,
+           group="simulation_model", help="Average site consumption in the synthetic load profile."),
+    _field("simulation.load.amplitude_w", "number", "Load amplitude", unit="W", step=1, min=0,
+           group="simulation_model", help="Swing of the synthetic load above and below the base."),
+    _field("simulation.load.period_s", "number", "Load curve period", unit="s", step=1, min=1,
+           group="simulation_model", help="Period of the synthetic load profile."),
+    _field("simulation.load.noise_w", "number", "Load noise", unit="W", step=1, min=0,
+           group="simulation_model", help="Random noise on simulated load."),
+    # Allocation envelope + headroom limiter: registry-rendered, but ui.py
+    # validates them (the envelope requires exactly one channel; the limiter is
+    # gated by its enabled flag), so they carry validate=False. The envelope
+    # fields use a flattened DOM id (`allocation.p_min_w`) distinct from their
+    # site path (`allocation.channels.0.p_min_w`) — the bespoke render/gather
+    # already address them by that id.
+    _field("allocation.channels.0.p_min_w", "number", "Minimum active power", unit="W",
+           id="allocation.p_min_w", group="allocation_envelope", required=True, step=1, validate=False,
+           help="Envelope floor: the lowest active power the unit may be commanded to. Usually 0 W."),
+    _field("allocation.channels.0.p_max_w", "number", "P_max (rated capacity)", unit="W",
+           id="allocation.p_max_w", group="allocation_envelope", required=True, step=1, validate=False,
+           help="Envelope ceiling: the unit's maximum active power (RfG Maximum Capacity). No setpoint may exceed it."),
+    _field("allocation.channels.0.default_w", "number", "Default active power", unit="W",
+           id="allocation.default_w", group="allocation_envelope", required=True, step=1, validate=False,
+           help="Setpoint applied when no controller is requesting one (e.g. before the first regulation cycle)."),
+    _field("allocation.channels.0.deadband_w", "number", "Deadband", unit="W",
+           id="allocation.deadband_w", group="allocation_envelope", required=True, step=1, min=0,
+           validate=False,
+           help="Setpoint changes smaller than this are ignored, so the inverter is not chattered by tiny corrections."),
+    _field("allocation.channels.0.ramp_rate_w_per_s", "number", "Active power gradient (up)", unit="W/s",
+           id="allocation.ramp_rate_w_per_s", group="allocation_envelope", required=True, step=1, min=0,
+           validate=False,
+           help="Grid-code ramp rate for raising production. Limits how fast the setpoint may increase."),
+    _field("allocation.channels.0.ramp_down_w_per_s", "number", "Curtailment gradient (down)", unit="W/s",
+           id="allocation.ramp_down_w_per_s", group="allocation_envelope", step=1, min=0, validate=False,
+           help="Faster ramp for reducing power (export-limit compliance). Leave empty to use the same gradient as up."),
+    _field("setpoint_headroom.headroom_w", "number", "Setpoint headroom floor", unit="W",
+           group="spike_protection", required=True, step=100, min=1, validate=False,
+           help="The setpoint may sit at most this much above actual production — the fixed part of the cap. Prevents export spikes when the resource returns."),
+    _field("setpoint_headroom.headroom_pct", "number", "Setpoint headroom, % of output",
+           group="spike_protection", step=1, min=0, validate=False,
+           help="Dynamic part: a percentage of current production, used when larger than the floor. 0 = floor only."),
+    _field("setpoint_headroom.priority", "number", "Headroom priority",
+           group="spike_protection", step=1, min=1, validate=False,
+           help="Allocator priority of this limiter (lower wins). In import-limit mode keep it just below regulation — usually 11 when regulation is 10."),
+    # PID regulator gains. DOM id (`pid.kp`) differs from the site path
+    # (`connection_point_active_power.gains.kp`); the bespoke render/gather and
+    # the manual/auto read-only toggle address them by id, so validate=False.
+    _field("connection_point_active_power.gains.kp", "number", "Proportional gain kp",
+           id="pid.kp", group="pid_gains", required=True, step=0.01, validate=False,
+           help="Immediate correction proportional to the connection-point active-power error."),
+    _field("connection_point_active_power.gains.ki", "number", "Integral gain ki",
+           id="pid.ki", group="pid_gains", required=True, step=0.01, validate=False,
+           help="Slow correction that removes steady-state error."),
+    _field("connection_point_active_power.gains.kd", "number", "Derivative gain kd",
+           id="pid.kd", group="pid_gains", required=True, step=0.01, validate=False,
+           help="Damping term. Usually 0 for noisy power measurements."),
+    _field("connection_point_active_power.gains.tt", "number", "Anti-windup tracking time tt", unit="s",
+           id="pid.tt", group="pid_gains", required=True, step=0.1, min=0, validate=False,
+           help="How fast the integrator backs off when the allocator clamps the output (ramp or deadband), to prevent wind-up."),
 ]
 
 # Top-level sections that may be absent entirely; their fields are validated

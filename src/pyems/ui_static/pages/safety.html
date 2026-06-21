@@ -13,15 +13,6 @@
       Enable compliance monitor
       <span class="info" data-tip="Raise sys.setpoint_violation when the unit's actual output ignores the applied setpoint for too long.">i</span>
     </label>
-    <div class="fields">
-      <label>
-        <span class="lbl">Tolerance, W <span class="info" data-tip="How far actual output may deviate from the setpoint before it counts as a violation.">i</span></span>
-        <input id="setpoint_compliance.tolerance_w" type="number" step="1" min="0">
-      </label>
-      <label>
-        <span class="lbl">Violation time, s <span class="info" data-tip="The deviation must persist this long before sys.setpoint_violation is raised.">i</span></span>
-        <input id="setpoint_compliance.max_violation_s" type="number" step="0.1" min="0">
-      </label>
-    </div>
+    <div class="fields" data-schema-group="actuator_compliance"></div>
   </div>
 </div>

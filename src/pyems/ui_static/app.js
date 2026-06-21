@@ -167,7 +167,7 @@ function decorateInfoIcons() {
 let settingsSchema = null;
 
 function schemaFieldInput(field) {
-  const attrs = [`id="${esc(field.path)}"`];
+  const attrs = [`id="${esc(field.id || field.path)}"`];
   if (field.type === "number") {
     attrs.push('type="number"');
     if (field.step !== undefined) attrs.push(`step="${esc(field.step)}"`);
