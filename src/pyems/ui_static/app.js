@@ -158,6 +158,62 @@ function decorateInfoIcons() {
   });
 }
 
+// ── Registry-driven forms ────────────────────────────────────────────────────
+// Plain scalar settings are declared once in ui_schema.py and served at
+// /api/settings-schema. The form field for each is generated here into its
+// [data-schema-group] container, producing the same markup (id="<dotted.path>",
+// .lbl/.info) the hand-written pages used — so the existing render/gather value
+// logic keeps finding every field by id, and add-a-setting is one schema entry.
+let settingsSchema = null;
+
+function schemaFieldInput(field) {
+  const attrs = [`id="${esc(field.id || field.path)}"`];
+  if (field.type === "number") {
+    attrs.push('type="number"');
+    if (field.step !== undefined) attrs.push(`step="${esc(field.step)}"`);
+    if (field.min !== undefined) attrs.push(`min="${esc(field.min)}"`);
+    if (field.max !== undefined) attrs.push(`max="${esc(field.max)}"`);
+    if (field.required) attrs.push("required");
+    return `<input ${attrs.join(" ")}>`;
+  }
+  if (field.type === "list") {
+    attrs.push(`rows="${esc(field.rows || 3)}"`);
+    if (field.placeholder) attrs.push(`placeholder="${esc(field.placeholder)}"`);
+    return `<textarea ${attrs.join(" ")}></textarea>`;
+  }
+  if (field.type === "select") {
+    const options = (field.options || [])
+      .map((opt) => `<option value="${esc(opt.value)}">${esc(opt.label)}</option>`)
+      .join("");
+    return `<select ${attrs.join(" ")}>${options}</select>`;
+  }
+  if (field.placeholder) attrs.push(`placeholder="${esc(field.placeholder)}"`);
+  if (field.required) attrs.push("required");
+  return `<input ${attrs.join(" ")}>`;
+}
+
+function schemaFieldLabel(field) {
+  const text = field.unit ? `${field.label}, ${field.unit}` : field.label;
+  const info = field.help ? ` <span class="info" data-tip="${esc(field.help)}">i</span>` : "";
+  return `<label><span class="lbl">${esc(text)}${info}</span>${schemaFieldInput(field)}</label>`;
+}
+
+function renderSchemaForms(schema) {
+  const byGroup = {};
+  for (const field of schema.fields || []) {
+    if (field.group) (byGroup[field.group] ||= []).push(field);
+  }
+  document.querySelectorAll("[data-schema-group]").forEach((container) => {
+    const fields = byGroup[container.dataset.schemaGroup] || [];
+    container.innerHTML = fields.map(schemaFieldLabel).join("");
+  });
+}
+
+async function loadSchemaForms() {
+  settingsSchema = await api("/api/settings-schema");
+  renderSchemaForms(settingsSchema);
+}
+
 function siteFileName(path) {
   const parts = String(path || "").split(/[\\/]/);
   return parts[parts.length - 1] || path;
@@ -1869,7 +1925,7 @@ async function setManualTime() {
 }
 
 function showView(name) {
-  document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === name));
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
   document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === name));
   if (name === "simulation") {
     refreshSim().catch(handleError);
@@ -1964,10 +2020,10 @@ document.addEventListener("click", async (event) => {
     return;
   }
   document.querySelectorAll(".info.open").forEach((el) => el.classList.remove("open"));
-  if (target.matches(".tab")) showView(target.dataset.view);
+  if (target.matches(".nav-item")) showView(target.dataset.view);
   if (target.matches(".subtab")) showSubtab(target);
   if (target.id === "reloadBtn") loadConfig().catch(handleError);
-  if (target.id === "saveBtn" || target.id === "saveSiteBtn") saveConfig().catch(handleError);
+  if (target.id === "saveBtn") saveConfig().catch(handleError);
   if (target.id === "testReadBtn") testRead().catch(handleError);
   if (target.id === "runDiagnosticsBtn") runDiagnostics().catch(handleError);
   if (target.id === "startFastLoopBtn") startFastLoop().catch(handleError);
@@ -2028,6 +2084,7 @@ document.addEventListener("click", async (event) => {
 });
 
 loadPages()
+  .then(() => loadSchemaForms()) // generate registry-driven fields before decorating
   .then(() => { decorateInfoIcons(); return loadConfig(); })
   .then(() => showView("overview")) // first/default view; starts the 1 s snapshot poll
   .catch(handleError);

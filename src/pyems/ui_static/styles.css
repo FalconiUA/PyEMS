@@ -30,18 +30,50 @@ header {
   color: white;
 }
 h1 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: 0; }
-main { max-width: 1200px; margin: 0 auto; padding: 18px; }
-.tabs { display: flex; gap: 8px; flex-wrap: wrap; }
-.tab {
-  border: 1px solid #425067;
-  color: #eef6ff;
-  background: #1d2a38;
+
+/* ── Shell: a left navigation tree beside the scrolling content ───────────────
+   The flat top tab bar did not scale as settings grew, so navigation is a
+   vertical tree of category groups (Monitor / Control / Setup / Tools) → pages.
+   In-page .subtabs (see below) remain the third tier within a page. */
+.app-shell { display: flex; align-items: flex-start; }
+.sidenav {
+  flex: 0 0 218px;
+  align-self: stretch;
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+  background: #101820;
+  color: #e8eef6;
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.nav-tree { display: flex; flex-direction: column; gap: 16px; }
+.nav-group { display: flex; flex-direction: column; gap: 3px; }
+.nav-group-title {
+  color: #7488a0;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding: 2px 8px 4px;
+}
+.nav-item {
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #cdd9e8;
   border-radius: 6px;
-  padding: 8px 12px;
+  padding: 7px 10px;
   cursor: pointer;
   font-weight: 650;
 }
-.tab.active { background: var(--accent); border-color: var(--accent); }
+.nav-item:hover { background: #1d2a38; }
+.nav-item.active { background: var(--accent); color: #fff; border-color: var(--accent-dark); }
+.nav-actions { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+main { flex: 1 1 auto; min-width: 0; max-width: 1200px; margin: 0 auto; padding: 18px; }
 .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 14px; }
 .toolbar h2 { margin: 0; margin-right: auto; }
 /* Secondary nav inside a view (e.g. Scenario): pill tabs that swap .subview groups. */
@@ -269,6 +301,22 @@ td input, td select { min-height: 32px; }
 }
 @media (max-width: 940px) {
   header { align-items: flex-start; flex-direction: column; }
+  /* Collapse the side tree into a horizontal strip above the content. */
+  .app-shell { flex-direction: column; }
+  .sidenav {
+    flex-basis: auto;
+    width: 100%;
+    position: static;
+    max-height: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .nav-tree { flex-direction: row; flex-wrap: wrap; gap: 10px; }
+  .nav-group { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .nav-group-title { width: 100%; padding: 0; }
+  .nav-actions { margin-top: 0; flex-direction: row; }
   .panel { grid-column: 1 / -1; }
   .fields { grid-template-columns: 1fr; }
   .summary { grid-template-columns: 1fr 1fr; }

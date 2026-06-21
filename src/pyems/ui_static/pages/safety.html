@@ -1,0 +1,18 @@
+<div class="grid">
+  <div class="panel">
+    <h2>Safety interlocks</h2>
+    <p class="lead">Conditions that force the unit to its safe state.</p>
+    <div class="fields" data-schema-group="safety_interlocks"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Actuator compliance</h2>
+    <p class="lead">Watches whether the unit actually follows the applied setpoint.</p>
+    <label class="inline-check">
+      <input id="setpoint_compliance.enabled" type="checkbox">
+      Enable compliance monitor
+      <span class="info" data-tip="Raise sys.setpoint_violation when the unit's actual output ignores the applied setpoint for too long.">i</span>
+    </label>
+    <div class="fields" data-schema-group="actuator_compliance"></div>
+  </div>
+</div>

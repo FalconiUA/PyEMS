@@ -1,13 +1,8 @@
-<div class="toolbar">
-  <button class="primary" id="saveBtn">Save site.yaml</button>
-  <button id="reloadBtn">Reload</button>
-  <button id="testReadBtn">Test read</button>
-</div>
-
 <nav class="subtabs" data-subtabs aria-label="Scenario sections">
   <button class="subtab active" data-subtab="basics">Basics</button>
   <button class="subtab" data-subtab="limits">Limits &amp; ramps</button>
   <button class="subtab" data-subtab="protection">Spike protection</button>
+  <button class="subtab" data-subtab="advanced">Advanced</button>
   <button class="subtab" data-subtab="reference">Generated config</button>
 </nav>
 
@@ -46,32 +41,7 @@
     <div class="panel full">
       <h2>Unit envelope</h2>
       <p class="lead">The operating range and ramp limits of the controlled unit. These become the single allocation channel for the selected scenario — every setpoint is clamped into this envelope.</p>
-      <div class="fields">
-        <label>
-          <span class="lbl">Minimum active power, W <span class="info" data-tip="Envelope floor: the lowest active power the unit may be commanded to. Usually 0 W.">i</span></span>
-          <input id="allocation.p_min_w" type="number" step="1" required>
-        </label>
-        <label>
-          <span class="lbl">P_max (rated capacity), W <span class="info" data-tip="Envelope ceiling: the unit's maximum active power (RfG Maximum Capacity). No setpoint may exceed it.">i</span></span>
-          <input id="allocation.p_max_w" type="number" step="1" required>
-        </label>
-        <label>
-          <span class="lbl">Default active power, W <span class="info" data-tip="Setpoint applied when no controller is requesting one (e.g. before the first regulation cycle).">i</span></span>
-          <input id="allocation.default_w" type="number" step="1" required>
-        </label>
-        <label>
-          <span class="lbl">Deadband, W <span class="info" data-tip="Setpoint changes smaller than this are ignored, so the inverter is not chattered by tiny corrections.">i</span></span>
-          <input id="allocation.deadband_w" type="number" step="1" min="0" required>
-        </label>
-        <label>
-          <span class="lbl">Active power gradient (up), W/s <span class="info" data-tip="Grid-code ramp rate for raising production. Limits how fast the setpoint may increase.">i</span></span>
-          <input id="allocation.ramp_rate_w_per_s" type="number" step="1" min="0" required>
-        </label>
-        <label>
-          <span class="lbl">Curtailment gradient (down), W/s <span class="info" data-tip="Faster ramp for reducing power (export-limit compliance). Leave empty to use the same gradient as up.">i</span></span>
-          <input id="allocation.ramp_down_w_per_s" type="number" step="1" min="0">
-        </label>
-      </div>
+      <div class="fields" data-schema-group="allocation_envelope"></div>
     </div>
   </div>
 </section>
@@ -86,20 +56,33 @@
         Enable headroom limiter
         <span class="info" data-tip="When on, the allocator refuses a stale setpoint that sits far above measured unit output.">i</span>
       </label>
+      <div class="fields" data-schema-group="spike_protection"></div>
+    </div>
+  </div>
+</section>
+
+<section class="subview" data-subtab="advanced">
+  <div class="grid">
+    <div class="panel">
+      <h2>Allocation priorities</h2>
+      <p class="lead">When several controllers request the same setpoint, the allocator keeps the lower priority number. 0 is reserved for safety.</p>
+      <div class="fields" data-schema-group="allocation_priorities"></div>
+    </div>
+
+    <div class="panel">
+      <h2>PID regulator</h2>
+      <p class="lead">Tuning of the connection-point active-power regulator.</p>
       <div class="fields">
         <label>
-          <span class="lbl">Setpoint headroom floor, W <span class="info" data-tip="The setpoint may sit at most this much above actual production — the fixed part of the cap. Prevents export spikes when the resource returns.">i</span></span>
-          <input id="setpoint_headroom.headroom_w" type="number" step="100" min="1" required>
-        </label>
-        <label>
-          <span class="lbl">Setpoint headroom, % of output <span class="info" data-tip="Dynamic part: a percentage of current production, used when larger than the floor. 0 = floor only.">i</span></span>
-          <input id="setpoint_headroom.headroom_pct" type="number" step="1" min="0">
-        </label>
-        <label>
-          <span class="lbl">Headroom priority <span class="info" data-tip="Allocator priority of this limiter (lower wins). In import-limit mode keep it just below regulation — usually 11 when regulation is 10.">i</span></span>
-          <input id="setpoint_headroom.priority" type="number" step="1" min="1">
+          <span class="lbl">Tuning mode <span class="info" data-tip="Auto fills conservative PID gains and locks them. Manual lets you edit the gains below.">i</span></span>
+          <select id="scenario.pid_tuning">
+            <option value="auto">Auto</option>
+            <option value="manual">Manual</option>
+          </select>
         </label>
       </div>
+      <div class="divider"></div>
+      <div class="fields" id="pidFields" data-schema-group="pid_gains"></div>
     </div>
   </div>
 </section>
