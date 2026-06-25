@@ -1,0 +1,13 @@
+<div id="eventsAlarms" class="alarm-banner-wrap"></div>
+<div class="toolbar">
+  <button id="refreshEventsBtn">Refresh</button>
+</div>
+<p class="hint">Active alarms (top) come live from the running control loop's telemetry snapshot — the SCADA-style banner latches what is currently tripped and clears itself when every interlock is healthy again. The table below is the persisted event journal (<code>events.journal_jsonl</code>) merged with the UI's configuration-audit log, newest first.</p>
+<div class="panel">
+  <h2>Event journal</h2>
+  <p class="hint" id="eventLogEmpty">No events recorded yet.</p>
+  <table>
+    <thead><tr><th>Time</th><th>Severity</th><th>Source</th><th>Kind</th><th>Message</th></tr></thead>
+    <tbody id="eventLogRows"></tbody>
+  </table>
+</div>
