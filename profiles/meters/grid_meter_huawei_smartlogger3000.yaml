@@ -1,4 +1,4 @@
-model: Example Grid Meter
+model: Huawei SmartLogger3000
 protocol: modbus_tcp
 default_port: 502
 registers:
