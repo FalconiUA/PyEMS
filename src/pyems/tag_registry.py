@@ -30,6 +30,7 @@ from pyems.ems import (
     EXPORT_LIMIT_MODE,
     PROFILES,
     _generation_gate_config,
+    _generator_minimum_load_config,
     _hard_switch_config,
     _setpoint_headroom_config,
     control_mode,
@@ -42,6 +43,8 @@ from pyems.system_tags import (
     GENERATION_ALLOWED_CHANNEL,
     GENERATION_GATE_ACTIVE_CHANNEL,
     GENERATION_GATE_REQUESTER,
+    GENERATOR_MIN_LOAD_REQUESTER,
+    GENERATOR_RUNNING_CHANNEL,
     IMPORT_LIMIT_REQUESTER,
     INVERTER_COMMAND_CHANNEL,
     INVERTER_COMMAND_ID_CHANNEL,
@@ -198,6 +201,26 @@ def collect(site: dict) -> dict[str, TagEntry]:
             f" / down {ch_cfg.get('ramp_down_w_per_s', ch_cfg.get('ramp_rate_w_per_s'))} W/s)"
         )
 
+    # 8a) generator minimum load (island operation, opt-in)
+    gen_cfg = _generator_minimum_load_config(site)
+    if gen_cfg:
+        entries[GENERATOR_RUNNING_CHANNEL] = TagEntry(
+            GENERATOR_RUNNING_CHANNEL,
+            origin="system_tags.py (GeneratorMinimumLoadController)", access="status",
+            writes=["GeneratorMinimumLoadController (1 = generator detected running)"],
+        )
+        entry(gen_cfg["generator_active_power_channel"]).reads.append(
+            f"{GENERATOR_MIN_LOAD_REQUESTER} (generator_active_power_channel)"
+        )
+        entry(gen_cfg["unit_active_power_channel"]).reads.append(
+            f"{GENERATOR_MIN_LOAD_REQUESTER} (unit_active_power_channel)"
+        )
+        entry(gen_cfg["unit_active_power_setpoint_channel"]).writes.append(
+            f"{GENERATOR_MIN_LOAD_REQUESTER} -> cap P_unit + P_gen - "
+            f"{gen_cfg['minimum_load_pct']:g}% of {gen_cfg['rated_active_power_w']:g} W "
+            f"while the generator runs (priority {gen_cfg['priority']})"
+        )
+
     # 8b) generation gate (operational interlock, opt-in via control.command_json)
     gate_cfg = _generation_gate_config(site)
     if gate_cfg:
@@ -282,6 +305,10 @@ def requester_rows(site: dict) -> list[tuple[str, str, str]]:
     if gate_cfg:
         rows.append((GENERATION_GATE_REQUESTER, str(gate_cfg["priority"]),
                      "pin unit to safe floor while generation disabled (operator interlock)"))
+    gen_cfg = _generator_minimum_load_config(site)
+    if gen_cfg:
+        rows.append((GENERATOR_MIN_LOAD_REQUESTER, str(gen_cfg["priority"]),
+                     "upper bound: P_unit + P_gen - minimum load, while the generator runs"))
     return sorted(rows, key=lambda r: (r[1], r[0]))
 
 

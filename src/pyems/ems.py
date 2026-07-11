@@ -23,6 +23,7 @@ from pyems.commands import DEFAULT_COMMAND_MAX_AGE_S, CommandFileReader
 from pyems.control.pid import PIDGains
 from pyems.controllers.connection_point_power import ConnectionPointPowerController
 from pyems.controllers.generation_gate import GenerationGateController
+from pyems.controllers.generator_minimum_load import GeneratorMinimumLoadController
 from pyems.controllers.grid_export_limit import GridExportLimitController
 from pyems.controllers.hard_switch import HardSwitchController
 from pyems.controllers.safety import SafetyController
@@ -44,6 +45,8 @@ from pyems.system_tags import (
     GENERATION_ALLOWED_CHANNEL,
     GENERATION_GATE_ACTIVE_CHANNEL,
     GENERATION_GATE_REQUESTER,
+    GENERATOR_MIN_LOAD_REQUESTER,
+    GENERATOR_RUNNING_CHANNEL,
     IMPORT_LIMIT_REQUESTER,
     INVERTER_COMMAND_CHANNEL,
     INVERTER_COMMAND_ID_CHANNEL,
@@ -179,6 +182,43 @@ def _generation_gate_config(site: dict) -> dict | None:
     }
 
 
+def _generator_minimum_load_config(site: dict) -> dict | None:
+    """Resolve the generator minimum-load config, or None when not enabled.
+
+    Opt-in via the `generator_minimum_load:` section. Nameplate values are
+    required (an EMS guessing a genset rating is how engines get glazed);
+    the unit bindings default to the scenario's regulation unit, so a plain
+    site only names the generator meter channel and the nameplate. The
+    priority defaults to the export-limit band (5): the minimum-load cap is
+    machine protection, arbitrated like the grid-code export cap.
+    """
+    cfg = site.get("generator_minimum_load")
+    if not cfg:
+        return None
+    for key in ("rated_apparent_power_va", "rated_active_power_w", "minimum_load_pct",
+                "generator_active_power_channel"):
+        if cfg.get(key) is None:
+            raise ValueError(f"generator_minimum_load.{key} is required")
+    cp_cfg = site["connection_point_active_power"]
+    threshold = cfg.get("running_threshold_w")
+    return {
+        "priority": int(cfg.get("priority", 5)),
+        "rated_apparent_power_va": float(cfg["rated_apparent_power_va"]),
+        "rated_active_power_w": float(cfg["rated_active_power_w"]),
+        "minimum_load_pct": float(cfg["minimum_load_pct"]),
+        "generator_active_power_channel": cfg["generator_active_power_channel"],
+        "unit_active_power_channel": cfg.get(
+            "unit_active_power_channel", cp_cfg["unit_active_power_channel"]
+        ),
+        "unit_active_power_setpoint_channel": cfg.get(
+            "unit_active_power_setpoint_channel",
+            cp_cfg["unit_active_power_setpoint_channel"],
+        ),
+        "running_threshold_w": None if threshold is None else float(threshold),
+        "off_delay_s": float(cfg.get("off_delay_s", 5.0)),
+    }
+
+
 def _hard_switch_config(site: dict) -> dict | None:
     """Resolve the hard inverter switch config, or None when not enabled.
 
@@ -267,6 +307,14 @@ def required_channels(site: dict) -> list[str]:
             head_cfg["unit_active_power_channel"],
             head_cfg["unit_active_power_setpoint_channel"],
         ]
+    gen_cfg = _generator_minimum_load_config(site)
+    if gen_cfg:
+        tags += [
+            gen_cfg["generator_active_power_channel"],
+            gen_cfg["unit_active_power_channel"],
+            gen_cfg["unit_active_power_setpoint_channel"],
+            GENERATOR_RUNNING_CHANNEL,
+        ]
     if _generation_gate_config(site):
         tags += [GENERATION_ALLOWED_CHANNEL, GENERATION_GATE_ACTIVE_CHANNEL]
     if _hard_switch_config(site):
@@ -302,6 +350,12 @@ def _measurement_binding_channels(site: dict) -> list[str]:
     comp_cfg = site.get("setpoint_compliance")
     if comp_cfg:
         tags.append(comp_cfg["unit_active_power_channel"])
+    gen_cfg = _generator_minimum_load_config(site)
+    if gen_cfg:
+        tags += [
+            gen_cfg["generator_active_power_channel"],
+            gen_cfg["unit_active_power_channel"],
+        ]
     return tags
 
 
@@ -572,6 +626,35 @@ def build_tasks(site: dict, command_sink=None, journal=None) -> list[Task]:
             )
         )
 
+    # Generator minimum load (island operation, opt-in): while the generator
+    # meter shows the genset running, cap the unit so the generator never
+    # drops below its minimum load; withdrawn on grid operation, where the
+    # connection-point program governs alone.
+    gen_cfg = _generator_minimum_load_config(site)
+    if gen_cfg:
+        logger.info(
+            "Generator minimum load: %s held >= %g%% of P_rated %g W "
+            "(S_rated %g VA) by capping %s (priority %d)",
+            gen_cfg["generator_active_power_channel"],
+            gen_cfg["minimum_load_pct"], gen_cfg["rated_active_power_w"],
+            gen_cfg["rated_apparent_power_va"],
+            gen_cfg["unit_active_power_setpoint_channel"], gen_cfg["priority"],
+        )
+        fast_controllers.append(
+            GeneratorMinimumLoadController(
+                name=GENERATOR_MIN_LOAD_REQUESTER,
+                priority=gen_cfg["priority"],
+                rated_apparent_power_va=gen_cfg["rated_apparent_power_va"],
+                rated_active_power_w=gen_cfg["rated_active_power_w"],
+                minimum_load_pct=gen_cfg["minimum_load_pct"],
+                generator_active_power_channel=gen_cfg["generator_active_power_channel"],
+                unit_active_power_channel=gen_cfg["unit_active_power_channel"],
+                unit_active_power_setpoint_channel=gen_cfg["unit_active_power_setpoint_channel"],
+                running_threshold_w=gen_cfg["running_threshold_w"],
+                off_delay_s=gen_cfg["off_delay_s"],
+            )
+        )
+
     # Generation gate (operational interlock, opt-in via control.command_json):
     # a priority-1 pin to a safe floor while the operator has not enabled
     # production. Below safety (0), above every economic requester.
@@ -812,6 +895,13 @@ def build_ems(site_path: str | Path = DEFAULT_SITE) -> Scheduler:
         Channel(SAFE_MODE_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
         Channel(SETPOINT_VIOLATION_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
     ]
+
+    # Generator minimum load (opt-in): the running status word. Added only when
+    # the section is configured so the tag pool stays unchanged for grid-only sites.
+    if _generator_minimum_load_config(site):
+        channels.append(
+            Channel(GENERATOR_RUNNING_CHANNEL, unit="", min_val=0, max_val=1, writable=True)
+        )
 
     # Generation gate (opt-in): the command tag the gate reads, its active flag,
     # and the age of the UI command file. Added only when the gate is enabled so

@@ -29,6 +29,11 @@ GENERATION_ALLOWED_CHANNEL = "sys.generation_allowed"      # 1.0 = production pe
 GENERATION_GATE_ACTIVE_CHANNEL = "sys.generation_gate_active"  # 1.0 = gate is actively pinning the unit
 COMMAND_AGE_CHANNEL = "sys.command_age_s"        # seconds since the UI command file was issued; inf if none
 
+# ── generator minimum load (island operation on a genset) ─────────────────────
+# 1.0 = the generator is detected running (its meter reports active power above
+# the running threshold), so the minimum-load cap is being enforced on the unit.
+GENERATOR_RUNNING_CHANNEL = "sys.generator_running"
+
 # ── hard inverter switch (latched remote start/stop — an OPERATOR ACTION) ─────
 # Separate level from the soft gate: this drives the device's own start/stop
 # command register(s), de-energizing the inverter, not just curtailing to 0 W.
@@ -52,3 +57,4 @@ CONNECTION_POINT_POWER_REQUESTER = "connection_point_active_power"  # PID regula
 IMPORT_LIMIT_REQUESTER = "connection_point_import_limit"     # ConnectionPointPowerController import mode
 SETPOINT_HEADROOM_REQUESTER = "setpoint_headroom"            # available-power tracking cap
 GENERATION_GATE_REQUESTER = "generation_gate"               # priority-1 pin-to-floor when generation disabled
+GENERATOR_MIN_LOAD_REQUESTER = "generator_minimum_load"      # genset minimum-load cap while the generator runs

@@ -24,6 +24,7 @@ readers → writers), run:
 | `sys.generation_allowed` | `GENERATION_ALLOWED_CHANNEL` | `CommandFileReader` (from the UI command file, fail-closed) | `GenerationGateController`, UI, recorder | 1.0 = operator has enabled production, 0.0 = pinned to floor. Disabled on a missing/corrupt/stale command, or a `true` left over from a previous EMS run. Only present when `control.command_json` is set. |
 | `sys.generation_gate_active` | `GENERATION_GATE_ACTIVE_CHANNEL` | `GenerationGateController` | UI, SCADA/history, recorder | 1.0 = the gate is actively pinning the unit to its safe floor (generation disabled). Status word; the actual interlock is the priority-1 board claim. |
 | `sys.command_age_s` | `COMMAND_AGE_CHANNEL` | `CommandFileReader` | UI, recorder | Seconds since the UI command file was issued (`inf` when no file); feeds the fail-closed staleness check. |
+| `sys.generator_running` | `GENERATOR_RUNNING_CHANNEL` | `GeneratorMinimumLoadController` | UI, SCADA/history, recorder | 1.0 = the generator is detected running (its meter reports \|P\| above the running threshold), so the minimum-load cap is enforced on the unit; 0.0 = grid operation, cap withdrawn. Only present when `generator_minimum_load` is configured. |
 | `sys.inverter_command` | `INVERTER_COMMAND_CHANNEL` | `CommandFileReader` (from the UI command file) | `HardSwitchController` | Latest hard switch action: 1.0 = start, 0.0 = stop, NaN = none. Only present when `hard_switch` is configured. |
 | `sys.inverter_command_id` | `INVERTER_COMMAND_ID_CHANNEL` | `CommandFileReader` | `HardSwitchController` | Wall-clock id of the hard action; NaN for none or a leftover command from a previous run (restart guard). The controller fires once per NEW id. |
 | `sys.inverter_run_state` | `INVERTER_RUN_STATE_CHANNEL` | `HardSwitchController` | UI, recorder | What the EMS last COMMANDED the inverter: 1.0 = started, 0.0 = stopped, NaN = never. Status word (the device's actual state needs a readback register). |
@@ -48,6 +49,7 @@ A claim is keyed `(channel, requester)`; these names appear in logs
 | `connection_point_active_power` | `CONNECTION_POINT_POWER_REQUESTER` | `connection_point_active_power.priority` (10) | regulation target (feed-forward + PID trim) |
 | `connection_point_import_limit` | `IMPORT_LIMIT_REQUESTER` | `connection_point_active_power.priority` (10) | `ConnectionPointPowerController` import-limit mode |
 | `generation_gate` | `GENERATION_GATE_REQUESTER` | `control.generation_gate_priority` (1) | pin to a safe floor (min=max=target=floor_w) while generation is disabled; below safety, above all economic requesters |
+| `generator_minimum_load` | `GENERATOR_MIN_LOAD_REQUESTER` | `generator_minimum_load.priority` (5) | pure upper bound while the generator runs: `max_w = P_unit + P_gen − minimum_load_pct% × P_rated`; withdrawn on grid operation |
 
 ## Binding keys in site.yaml (IEC VAR_INPUT/VAR_OUTPUT names)
 
@@ -61,6 +63,7 @@ Controllers never hardcode tag strings; these config keys wire them:
 | `unit_active_power_setpoint_channels` | setpoint list (safety claims) | `safety` |
 | `frozen_measurement_channels` | measurement list (freeze guard) | `safety` |
 | `device_comms_max_age_s` | device-id map to per-device age limit | `safety` |
+| `generator_active_power_channel` | measurement (read) | `generator_minimum_load` |
 | `command_json` | path to the UI→EMS operator command file (enables the generation gate) | `control` |
 | `hard_switch` | latched remote start/stop write scheme: `start_writes`/`stop_writes` lists of `{channel, value}` onto `command: true` device registers | top-level |
 
