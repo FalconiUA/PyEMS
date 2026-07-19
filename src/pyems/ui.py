@@ -43,6 +43,7 @@ from pyems.system_tags import (
     COMMS_AGE_CHANNEL,
     GENERATION_ALLOWED_CHANNEL,
     GENERATION_GATE_ACTIVE_CHANNEL,
+    GENERATOR_RUNNING_CHANNEL,
     INVERTER_COMMAND_CHANNEL,
     INVERTER_COMMAND_ID_CHANNEL,
     INVERTER_RUN_STATE_CHANNEL,
@@ -254,6 +255,10 @@ def _generation_channels(site: dict[str, Any]) -> list[Channel]:
             Channel(INVERTER_COMMAND_ID_CHANNEL, unit=""),
             Channel(INVERTER_RUN_STATE_CHANNEL, unit="", min_val=0, max_val=1, writable=True),
         ]
+    if site.get("generator_minimum_load"):
+        channels.append(
+            Channel(GENERATOR_RUNNING_CHANNEL, unit="", min_val=0, max_val=1, writable=True)
+        )
     return channels
 
 

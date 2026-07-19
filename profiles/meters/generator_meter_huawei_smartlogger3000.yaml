@@ -1,0 +1,94 @@
+# Generator meter behind a Huawei SmartLogger3000 (DATA, not code).
+# Same register map as meters/grid_meter_huawei_smartlogger3000.yaml — the
+# SmartLogger exposes any DL/T-645 / Modbus meter it aggregates through the
+# same block; only the channel CLASS differs (`gen.` instead of `grid.`) so
+# the profile documents what the meter measures: the GENERATOR feeder, not
+# the connection point. The site id from site.yaml replaces the class anyway
+# (see namespaced() in src/pyems/drivers/modbus_device.py), e.g.:
+#
+#   devices:
+#     - id: gen
+#       profile: meters/generator_meter_huawei_smartlogger3000.yaml
+#       host: 192.168.0.200
+#       slave_id: 2          # the SmartLogger address of the generator meter
+#
+# Sign convention: generating — gen.W > 0 = the generator injects into the
+# AC bus. If the meter is wired load-convention, fix it with `scale: -1`.
+model: Generator Meter (Huawei SmartLogger3000)
+protocol: modbus_tcp
+default_port: 502
+registers:
+- channel: gen.W
+  address: 32278
+  type: int32
+  scale: 1
+  unit: W
+  access: read
+  min_val: -10000000
+  max_val: 10000000
+- channel: gen.WphA
+  address: 32335
+  type: int32
+  scale: 1
+  unit: W
+  access: read
+- channel: gen.WphB
+  address: 32337
+  type: int32
+  scale: 1
+  unit: W
+  access: read
+- channel: gen.WphC
+  address: 32339
+  type: int32
+  scale: 1
+  unit: W
+  access: read
+- channel: gen.VAR
+  address: 40009
+  type: int32
+  scale: 1
+  unit: var
+  access: read
+- channel: gen.VA
+  address: 32287
+  type: int32
+  scale: 1
+  unit: VA
+  access: read
+- channel: gen.AphA
+  address: 32272
+  type: int32
+  scale: 0.1
+  unit: A
+  access: read
+- channel: gen.AphB
+  address: 32274
+  type: int32
+  scale: 0.1
+  unit: A
+  access: read
+- channel: gen.AphC
+  address: 32276
+  type: int32
+  scale: 0.1
+  unit: A
+  access: read
+- channel: gen.PhVphA
+  address: 32260
+  type: uint32
+  scale: 0.01
+  unit: V
+  access: read
+- channel: gen.PhVphB
+  address: 32262
+  type: uint32
+  scale: 0.01
+  unit: V
+  access: read
+- channel: gen.PhVphC
+  address: 32264
+  type: uint32
+  scale: 0.01
+  unit: V
+  access: read

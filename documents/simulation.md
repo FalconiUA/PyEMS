@@ -41,6 +41,25 @@ The charts show PV available/actual/EMS setpoint and load/connection-point
 power against the configured export limit, so curtailment and ramping are
 visible as they happen.
 
+## Generator / island (the ATS toggle)
+
+When the site yaml has a `generator_minimum_load:` section and a generator
+meter device (the sim one serves `profiles/meters/
+generator_meter_huawei_smartlogger3000.yaml` on port 15023), the panel shows
+a **Grid (ATS)** panel and the connection-point chart gains the generator
+power line plus its minimum-load floor:
+
+- **Drop the grid** — island on the genset: the grid meter reads 0 (open
+  ATS) and the generator covers `load − PV`, including *reverse power* when
+  PV over-produces at the moment of transfer. Watch the EMS detect the
+  running generator (`sys.generator_running`), cap PV within a couple of
+  cycles and hold the generator at or above its minimum load. Then drive the
+  load below the floor — PV must go to 0 while the generator carries the
+  whole site.
+- **Restore the grid** — the generator meter falls to 0; after the
+  configured `off_delay_s` the EMS withdraws the minimum-load cap and the
+  normal export/import program ramps PV back.
+
 ## Fault injection (per device)
 
 | Fault | What the EMS sees | Expected reaction |

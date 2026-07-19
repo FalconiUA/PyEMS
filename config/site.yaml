@@ -40,6 +40,23 @@ allocation:
     ramp_rate_w_per_s: 100
     deadband_w: 200
     ramp_down_w_per_s: 1000
+# Generator minimum load (island operation) — uncomment when the site has a
+# genset with its own meter (add the `gen` device below). While the generator
+# meter shows the genset running, the unit (PV) is capped so the generator
+# never drops below `minimum_load_pct` of its rated ACTIVE power; when the
+# grid is back (generator meter ~0 W), the cap is withdrawn and the normal
+# export/import program governs alone.
+# generator_minimum_load:
+#   rated_apparent_power_va: 125000    # S_rated — nameplate apparent power [VA]
+#   rated_active_power_w: 100000       # P_rated — nameplate active power [W]
+#   minimum_load_pct: 30               # generator floor, % of P_rated
+#   generator_active_power_channel: gen.W
+#   # unit bindings default to connection_point_active_power's unit (pv.*):
+#   # unit_active_power_channel: pv.W
+#   # unit_active_power_setpoint_channel: pv.WSet
+#   # priority: 5                      # machine-protection band, like export_limit
+#   # running_threshold_w: 2000        # default: 2% of P_rated
+#   # off_delay_s: 5                   # |P_gen| below threshold this long = stopped
 telemetry:
   live_json: logs/live_state.json
 events:
@@ -54,6 +71,11 @@ devices:
   profile: inverters/huawei_sun2000_100ktl_m1.yaml
   host: 192.168.0.100
   slave_id: 1
+# Generator meter (uncomment together with generator_minimum_load above):
+# - id: gen
+#   profile: meters/generator_meter_huawei_smartlogger3000.yaml
+#   host: 192.168.0.200
+#   slave_id: 2
 setpoint_compliance:
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet

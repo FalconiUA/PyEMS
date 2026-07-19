@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from pyems.commands import write_command_file, write_inverter_command
-from pyems.system_tags import SAFE_MODE_CHANNEL
+from pyems.system_tags import GENERATOR_RUNNING_CHANNEL, SAFE_MODE_CHANNEL
 from pyems.ems import ROOT, build_ems
 from pyems.sim.harness import SimHarness, make_handler
 
@@ -39,8 +39,8 @@ def fast_sim_site(tmp_path: Path) -> dict:
     site["export_limit"]["limit_w"] = 30000
     site["connection_point_active_power"]["export_limit_w"] = 30000
     site["connection_point_active_power"]["import_limit_w"] = 1000000000.0
-    site["devices"][0]["port"] = free_port()
-    site["devices"][1]["port"] = free_port()
+    for dev in site["devices"]:
+        dev["port"] = free_port()
     site["control"]["fast_cycle_s"] = 0.2
     site["control"]["poll_interval_s"] = 0.1
     site["safety"]["max_comms_age_s"] = 1.0
@@ -158,6 +158,66 @@ def test_import_limit_recovers_after_hard_stop_and_restart(tmp_path):
         harness.stop()
 
 
+def test_grid_loss_holds_generator_minimum_load(tmp_path):
+    """Grid lost → the genset carries the site → the REAL EMS (over Modbus)
+    caps PV so the generator stays at/above its minimum load; grid restored →
+    the cap is withdrawn and the export program ramps PV back."""
+    site = fast_sim_site(tmp_path)
+    site["generator_minimum_load"]["off_delay_s"] = 1.0
+    Path(site["_path"]).write_text(yaml.safe_dump(site, sort_keys=False), encoding="utf-8")
+
+    harness = SimHarness(site)
+    harness.start()
+    sched = None
+    try:
+        # deterministic plant: 100 kW PV available, 50 kW load. On grid the
+        # 30 kW export limit rules; on the island the 30 kW generator floor
+        # must rule instead (steady PV ≈ 50 − 30 = 20 kW).
+        harness.set_source("pv", {"mode": "manual", "value_w": 100000.0})
+        harness.set_source("load", {"mode": "manual", "value_w": 50000.0})
+
+        sched = build_ems(site["_path"])
+        write_command_file(site["control"]["command_json"], generation_enabled=True)
+        run_cycles(sched, seconds=6.0)
+        assert sched._state.get(GENERATOR_RUNNING_CHANNEL) == 0.0
+
+        # ── grid lost: island on the genset ──────────────────────────────────
+        harness.set_grid(False)
+        run_cycles(sched, seconds=8.0)
+        snap = harness.world.snapshot()
+        state = sched._state
+        assert state.get(GENERATOR_RUNNING_CHANNEL) == 1.0, (
+            "EMS never detected the running generator"
+        )
+        assert snap["generator_active_power_w"] > 28000.0, (
+            f"generator below its minimum load: {snap['generator_active_power_w']:.0f} W"
+        )
+        assert snap["unit_active_power_w"] < 25000.0, "PV was not curtailed on the island"
+        # the island must not over-curtail either: with a 50 kW load and a
+        # 30 kW floor, PV keeps producing ~load − floor (the suspended
+        # connection-point regulators must not drag it to 0)
+        assert snap["unit_active_power_w"] > 12000.0, (
+            f"PV over-curtailed on the island: {snap['unit_active_power_w']:.0f} W"
+        )
+        assert state.get(SAFE_MODE_CHANNEL) == 0.0
+
+        # ── grid restored: cap withdrawn, export program ramps PV back ──────
+        harness.set_grid(True)
+        run_cycles(sched, seconds=8.0)
+        snap = harness.world.snapshot()
+        assert sched._state.get(GENERATOR_RUNNING_CHANNEL) == 0.0, (
+            "running flag never released after the grid returned"
+        )
+        assert snap["unit_active_power_w"] > 35000.0, (
+            "PV did not ramp back once the export program took over"
+        )
+        assert snap["connection_point_w"] > -36000.0, "export limit not enforced after return"
+    finally:
+        if sched is not None:
+            sched._driver.disconnect()
+        harness.stop()
+
+
 def test_control_panel_http_api(tmp_path):
     site = fast_sim_site(tmp_path)
     harness = SimHarness(site)
@@ -173,7 +233,9 @@ def test_control_panel_http_api(tmp_path):
         with urllib.request.urlopen(f"{base}/api/state", timeout=5) as resp:
             state = json.loads(resp.read())
         assert state["scenario"]["active_power_limit_w"] == site["scenario"]["active_power_limit_w"]
-        assert {d["id"] for d in state["devices"]} == {"grid", "pv"}
+        assert {d["id"] for d in state["devices"]} == {"grid", "pv", "gen"}
+        assert state["generator"]["grid_present"] is True
+        assert state["generator"]["floor_w"] == 30000.0
         assert state["history_keys"][0] == "t_s"
         # EMS link diagnostics: no EMS is running in this test
         assert all(d["read_age_s"] is None for d in state["devices"])

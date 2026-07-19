@@ -20,9 +20,16 @@ def test_collect_cross_references_the_sim_site():
     entries = collect(sim_site())
 
     grid_w = entries["grid.W"]
-    assert "reg @40001" in grid_w.origin
+    assert "reg @32278" in grid_w.origin  # grid_meter_huawei_smartlogger3000 map
     assert any("connection_point_" in r for r in grid_w.reads)
-    assert any("freeze guard" in r for r in grid_w.reads)
+    # freeze guard sits on a voltage channel (a W channel legitimately
+    # freezes at 0 behind an open ATS — see site.sim.yaml comment)
+    assert any("freeze guard" in r for r in entries["grid.PhVphA"].reads)
+
+    # generator minimum load (the sim site configures it)
+    gen_w = entries["gen.W"]
+    assert any("generator_minimum_load" in r for r in gen_w.reads)
+    assert any("generator_minimum_load" in w for w in entries["pv.WSet"].writes)
 
     wset = entries["pv.WSet"]
     assert any("SOLE WRITER" in w for w in wset.writes)
