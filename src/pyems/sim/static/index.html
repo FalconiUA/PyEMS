@@ -84,12 +84,14 @@
       </div>
     </div>
     <div class="panel">
-      <h2>Connection point</h2>
+      <h2>Connection point &amp; generator</h2>
       <canvas id="chartCp" height="220"></canvas>
       <div class="legend">
         <span><i style="background:#ffb454"></i>load</span>
         <span><i style="background:#ff6b6b"></i>P at connection point (import +)</span>
+        <span><i style="background:#c792ea"></i>generator P</span>
         <span><i style="background:#ff6b6b; height:1px; border-top:1px dashed #ff6b6b; background:none"></i>export limit</span>
+        <span><i style="background:#c792ea; height:1px; border-top:1px dashed #c792ea; background:none"></i>generator minimum load</span>
       </div>
     </div>
     <div class="panel">
@@ -98,6 +100,15 @@
     </div>
   </div>
   <div class="col">
+    <div class="panel" id="grid-panel" hidden>
+      <h2>Grid (ATS)</h2>
+      <div id="grid-state" class="emslink ok" style="margin-bottom:10px"></div>
+      <button class="primary" id="grid-toggle" style="width:100%"></button>
+      <p class="hint">Grid lost = island on the genset: the generator covers
+      load − PV (reverse power if PV over-produces) and the EMS must cap PV so
+      the generator stays at or above its minimum load. Grid restored =
+      generator off, the export/import program governs again.</p>
+    </div>
     <div class="panel">
       <h2>PV generation source</h2>
       <div id="src-pv"></div>
@@ -125,7 +136,7 @@ const FAULT_LABELS = {
   ignore_setpoint: "Ignore setpoint (no remote ctrl)",
 };
 let state = null;
-let history = [];   // rows of [t, available, unitW, wset, load, cp]
+let history = [];   // rows of [t, available, unitW, wset, load, cp, genW]
 let lastT = -Infinity;
 
 async function api(path, body) {
@@ -208,6 +219,7 @@ function drawChart(canvas, series, opts) {
 function render() {
   if (!state) return;
   const snap = state.snapshot || {};
+  const gen = state.generator;
   const kpis = [
     ["PV available", fmtW(snap.unit_available_w)],
     ["PV actual", fmtW(snap.unit_active_power_w)],
@@ -215,6 +227,10 @@ function render() {
     ["Load", fmtW(snap.load_w)],
     ["Connection point", fmtW(snap.connection_point_w)],
   ];
+  if (gen) {
+    kpis.push(["Generator", fmtW(snap.generator_active_power_w)]);
+    kpis.push(["Grid", gen.grid_present ? "present" : "LOST — island"]);
+  }
   document.getElementById("kpis").innerHTML = kpis.map(
     ([l, v]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`
   ).join("");
@@ -223,9 +239,14 @@ function render() {
     {idx: 1, color: "#8b98a8"}, {idx: 2, color: "#4cd97b"}, {idx: 3, color: "#57b2ff"},
   ], {});
   const limit = state.scenario && state.scenario.active_power_limit_w;
-  drawChart(document.getElementById("chartCp"), [
-    {idx: 4, color: "#ffb454"}, {idx: 5, color: "#ff6b6b"},
-  ], {hlines: limit == null ? [] : [{v: -limit, color: "#ff6b6b"}]});
+  const cpSeries = [{idx: 4, color: "#ffb454"}, {idx: 5, color: "#ff6b6b"}];
+  const cpLines = limit == null ? [] : [{v: -limit, color: "#ff6b6b"}];
+  if (gen) {
+    cpSeries.push({idx: 6, color: "#c792ea"});
+    if (gen.floor_w != null) cpLines.push({v: gen.floor_w, color: "#c792ea"});
+  }
+  drawChart(document.getElementById("chartCp"), cpSeries, {hlines: cpLines});
+  renderGrid();
 
   document.getElementById("events").innerHTML = (state.events || []).map(
     e => `<li><span class="t">${e.at}</span>${e.message}</li>`
@@ -233,6 +254,25 @@ function render() {
   renderEmsLink();
   renderFaults();
   renderSourceStatus("pv"); renderSourceStatus("load");
+}
+
+function renderGrid() {
+  const gen = state.generator;
+  const panel = document.getElementById("grid-panel");
+  panel.hidden = !gen;
+  if (!gen) return;
+  const stateEl = document.getElementById("grid-state");
+  const btn = document.getElementById("grid-toggle");
+  if (gen.grid_present) {
+    stateEl.className = "emslink ok";
+    stateEl.textContent = "Grid present — network carries the site, generator off";
+    btn.textContent = "Drop the grid (island on generator)";
+  } else {
+    stateEl.className = "emslink bad";
+    stateEl.textContent = "Grid LOST — island: the generator carries load − PV";
+    btn.textContent = "Restore the grid";
+  }
+  btn.onclick = () => api("/api/grid", {present: !gen.grid_present}).then(poll);
 }
 
 function renderFaults() {

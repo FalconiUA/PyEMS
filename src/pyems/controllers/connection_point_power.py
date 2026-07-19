@@ -3,6 +3,13 @@
 The controller is unit-agnostic: it reads a connection-point active-power tag,
 the unit active-power tag, and posts a request for a bound setpoint tag. It does
 not write setpoints directly; PowerAllocator remains the sole writer.
+
+Island suspend (`suspend_channel`, optional): connection-point regulation is
+meaningless while the changeover switch has disconnected the plant from the
+network — the bound meter reads a dead feeder (0 W), the loop error freezes and
+a wound-up integrator can pin the unit at a stale target. While the bound status
+word (e.g. `sys.generator_running`) is 1, the controller withdraws its claim and
+resets its PID; the island constraint (generator minimum load) governs instead.
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ class ConnectionPointPowerController(Controller):
         import_limit_w: float = math.inf,
         mode: str = EXPORT_LIMIT_MODE,
         deadband_w: float = 200.0,
+        suspend_channel: str | None = None,
     ) -> None:
         if export_limit_w < 0:
             raise ValueError("export_limit_w must be >= 0 (magnitude)")
@@ -71,12 +79,33 @@ class ConnectionPointPowerController(Controller):
         self._last_now: float | None = None
         self._last_requested_w: float | None = None
         self._limiting = False
+        # Optional island suspend: status word (0/1); while 1 the claim is
+        # withdrawn and the PID reset (see module docstring). None = never.
+        self._suspend_ch = suspend_channel
+        self._suspended = False  # last state — log only on transition
 
     @property
     def pid(self) -> PIDController:
         return self._pid
 
     def execute(self, state: SystemState, board: RequestBoard) -> None:
+        if self._suspend_ch is not None and state.get(self._suspend_ch) >= 0.5:
+            board.withdraw(self._setpoint_ch, self._name)
+            self._pid.reset()
+            self._last_now = None
+            self._last_requested_w = None
+            if not self._suspended:
+                logger.info(
+                    "Connection-point regulation SUSPENDED: %s active — "
+                    "connection point disconnected, claim withdrawn", self._suspend_ch,
+                )
+                self._suspended = True
+                self._limiting = False
+            return
+        if self._suspended:
+            logger.info("Connection-point regulation RESUMED: %s cleared", self._suspend_ch)
+            self._suspended = False
+
         if self._mode == IMPORT_LIMIT_MODE:
             self._execute_import_limit(state, board)
         else:

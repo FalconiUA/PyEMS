@@ -30,6 +30,12 @@ connection_point_active_power:
   connection_point_active_power_channel: grid.W
   unit_active_power_channel: pv.W
   unit_active_power_setpoint_channel: pv.WSet
+generator_minimum_load:
+  rated_apparent_power_va: 125000
+  rated_active_power_w: 100000
+  minimum_load_pct: 30
+  generator_active_power_channel: gen.W
+  off_delay_s: 5
 safety:
   safe_active_power_w: 0
   max_comms_age_s: 10
@@ -38,10 +44,16 @@ safety:
   device_comms_max_age_s:
     grid: 6
     pv: 6
+    gen: 6
   max_write_age_s: 15
   max_measurement_frozen_s: 30
+  # Freeze-guard a channel that always moves (measurement noise), NOT an
+  # active-power channel: behind an open ATS (island on the generator) the
+  # grid meter legitimately reads a constant 0 W, which would false-trip a
+  # guard on grid.W after max_measurement_frozen_s. A stuck gateway freezes
+  # ALL registers, so a voltage channel catches it just as well.
   frozen_measurement_channels:
-  - grid.W
+  - grid.PhVphA
   device_comms_watchdog_s: 60
 allocation:
   channels:
@@ -69,6 +81,13 @@ devices:
   profile: inverters/sim_sun2000_switch.yaml
   host: 127.0.0.1
   port: 15022
+  slave_id: 1
+  timeout_s: 1
+  retries: 1
+- id: gen
+  profile: meters/generator_meter_huawei_smartlogger3000.yaml
+  host: 127.0.5.2
+  port: 15023
   slave_id: 1
   timeout_s: 1
   retries: 1

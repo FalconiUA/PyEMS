@@ -59,7 +59,7 @@ def posted_cap(board: RequestBoard, now: float = 0.0) -> float:
     r = reqs[0]
     assert r.requester == GENERATOR_MIN_LOAD_REQUESTER
     assert r.priority == 5
-    assert r.target_w is None          # pure constraint, no preference
+    assert r.target_w == r.max_w       # island target: run at the allowed maximum
     assert r.min_w == float("-inf")    # only narrows from above
     return r.max_w
 
@@ -155,9 +155,10 @@ def test_claim_withdrawn_after_off_delay(gen_state):
     assert gen_state.get(GENERATOR_RUNNING_CHANNEL) == 0.0
 
 
-def test_transient_dip_through_zero_keeps_the_cap(gen_state):
-    # A PV overshoot swings gen.W through 0 for one cycle; the latch + off
-    # delay must keep the (fully curtailing) cap alive, not withdraw it.
+def test_transient_dip_through_zero_holds_the_last_cap(gen_state):
+    # A dip into the dead zone (|gen.W| < threshold) is ambiguous — transient
+    # or disconnected generator — so the latch keeps the claim and the cap is
+    # HELD at the last computed value, not recomputed from the ~0 W reading.
     ctrl = make_ctrl(off_delay_s=5.0)
     board = RequestBoard([CH])
     gen_state.apply_driver_value("pv.W", 60000.0)
@@ -165,17 +166,44 @@ def test_transient_dip_through_zero_keeps_the_cap(gen_state):
     board.tick(0.0)
     gen_state.apply_driver_value("gen.W", 31000.0)
     ctrl.execute(gen_state, board)
+    cap0 = posted_cap(board, now=0.0)
+    assert cap0 == pytest.approx(60000.0 + 31000.0 - FLOOR_W)
 
     board.tick(1.0)
     gen_state.apply_driver_value("gen.W", 500.0)  # inside ±threshold for a cycle
     ctrl.execute(gen_state, board)
-    cap = posted_cap(board, now=1.0)
-    assert cap == pytest.approx(60000.0 + 500.0 - FLOOR_W)
+    assert posted_cap(board, now=1.0) == pytest.approx(cap0)  # held, not recomputed
 
     board.tick(2.0)
-    gen_state.apply_driver_value("gen.W", 35000.0)  # recovered
+    gen_state.apply_driver_value("gen.W", 35000.0)  # recovered → recompute
     ctrl.execute(gen_state, board)
+    assert posted_cap(board, now=2.0) == pytest.approx(60000.0 + 35000.0 - FLOOR_W)
     assert gen_state.get(GENERATOR_RUNNING_CHANNEL) == 1.0
+
+
+def test_grid_return_holds_cap_until_off_delay_then_withdraws(gen_state):
+    # Grid back → the generator meter reads ~0 W. During the off-delay the
+    # cap must NOT collapse to ~0 (that would slam the unit on every grid
+    # return); it holds, then the whole claim is withdrawn.
+    ctrl = make_ctrl(off_delay_s=5.0)
+    board = RequestBoard([CH])
+
+    board.tick(0.0)
+    gen_state.apply_driver_value("gen.W", 30000.0)  # island steady at the floor
+    gen_state.apply_driver_value("pv.W", 30000.0)
+    ctrl.execute(gen_state, board)
+    steady_cap = posted_cap(board, now=0.0)
+    assert steady_cap == pytest.approx(30000.0)
+
+    board.tick(1.0)
+    gen_state.apply_driver_value("gen.W", 0.0)  # ATS back on the network
+    ctrl.execute(gen_state, board)
+    assert posted_cap(board, now=1.0) == pytest.approx(steady_cap)  # held, no slam
+
+    board.tick(6.5)  # off-delay elapsed
+    ctrl.execute(gen_state, board)
+    assert board.valid_requests(CH, now=6.5) == []
+    assert gen_state.get(GENERATOR_RUNNING_CHANNEL) == 0.0
 
 
 def test_custom_running_threshold(gen_state):
@@ -204,6 +232,62 @@ def test_engaged_release_logging(gen_state, caplog):
     assert len([r for r in caplog.records if "RUNNING detected" in r.message]) == 1
     assert len([r for r in caplog.records if "ENGAGED" in r.message]) == 1
     assert len([r for r in caplog.records if "RELEASED" in r.message]) == 1
+
+
+# ── island suspend of the connection-point regulators ───────────────────────
+
+def test_export_limit_suspends_while_generator_running(gen_state):
+    from pyems.controllers.grid_export_limit import GridExportLimitController
+
+    ctrl = GridExportLimitController(
+        name="export_limit", priority=5, export_limit_w=30000.0,
+        connection_point_active_power_channel="gen.W",  # any P channel works here
+        unit_active_power_channel="pv.W",
+        unit_active_power_setpoint_channel=CH,
+        suspend_channel=GENERATOR_RUNNING_CHANNEL,
+    )
+    board = RequestBoard([CH])
+    gen_state.apply_driver_value("gen.W", 0.0)
+    gen_state.apply_driver_value("pv.W", 20000.0)
+
+    gen_state.set(GENERATOR_RUNNING_CHANNEL, 0.0)
+    ctrl.execute(gen_state, board)
+    assert len(board.valid_requests(CH, now=0.0)) == 1  # normal operation posts
+
+    gen_state.set(GENERATOR_RUNNING_CHANNEL, 1.0)
+    ctrl.execute(gen_state, board)
+    assert board.valid_requests(CH, now=0.0) == []      # suspended: claim withdrawn
+
+    gen_state.set(GENERATOR_RUNNING_CHANNEL, 0.0)
+    ctrl.execute(gen_state, board)
+    assert len(board.valid_requests(CH, now=0.0)) == 1  # resumed
+
+
+def test_connection_point_regulation_suspends_and_resets_pid(gen_state):
+    from pyems.controllers.connection_point_power import ConnectionPointPowerController
+
+    ctrl = ConnectionPointPowerController(
+        name="connection_point_active_power", priority=10,
+        export_limit_w=30000.0,
+        connection_point_active_power_channel="gen.W",
+        unit_active_power_channel="pv.W",
+        unit_active_power_setpoint_channel=CH,
+        suspend_channel=GENERATOR_RUNNING_CHANNEL,
+    )
+    board = RequestBoard([CH])
+    gen_state.apply_driver_value("gen.W", -50000.0)  # heavy export → PID engaged
+    gen_state.apply_driver_value("pv.W", 70000.0)
+    board.tick(0.0)
+    ctrl.execute(gen_state, board)
+    board.tick(1.0)
+    ctrl.execute(gen_state, board)
+    assert len(board.valid_requests(CH, now=1.0)) == 1
+
+    gen_state.set(GENERATOR_RUNNING_CHANNEL, 1.0)
+    board.tick(2.0)
+    ctrl.execute(gen_state, board)
+    assert board.valid_requests(CH, now=2.0) == []          # claim withdrawn
+    assert ctrl.pid.integral == 0.0                          # PID reset for a clean resume
 
 
 # ── ems.py wiring ────────────────────────────────────────────────────────────
@@ -241,6 +325,8 @@ def _site_with_generator() -> dict:
 
 
 def test_build_tasks_adds_generator_controller():
+    from pyems.controllers.connection_point_power import ConnectionPointPowerController
+    from pyems.controllers.grid_export_limit import GridExportLimitController
     from pyems.ems import build_tasks
 
     fast = next(t for t in build_tasks(_site_with_generator()) if t.name == "fast")
@@ -252,6 +338,12 @@ def test_build_tasks_adds_generator_controller():
     assert ctrl._unit_active_power_ch == "pv.W"
     assert ctrl._setpoint_ch == CH
     assert ctrl.minimum_load_w == pytest.approx(FLOOR_W)
+    # runs FIRST so sys.generator_running is fresh for the suspended regulators
+    assert isinstance(fast.controllers[0], GeneratorMinimumLoadController)
+    # the connection-point regulators suspend on the running flag
+    for cls in (GridExportLimitController, ConnectionPointPowerController):
+        reg = next(c for c in fast.controllers if isinstance(c, cls))
+        assert reg._suspend_ch == GENERATOR_RUNNING_CHANNEL
 
 
 def test_required_channels_include_generator_tags():

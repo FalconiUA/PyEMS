@@ -550,6 +550,39 @@ def build_tasks(site: dict, command_sink=None, journal=None) -> list[Task]:
     )
 
     fast_controllers = []
+
+    # Generator minimum load (island operation, opt-in): while the generator
+    # meter shows the genset running, cap the unit so the generator never
+    # drops below its minimum load. Runs FIRST in the task so the
+    # sys.generator_running status word is fresh for the connection-point
+    # regulators, which suspend on it (their bound meter reads a dead feeder
+    # while the changeover switch has the network disconnected).
+    gen_cfg = _generator_minimum_load_config(site)
+    suspend_channel = GENERATOR_RUNNING_CHANNEL if gen_cfg else None
+    if gen_cfg:
+        logger.info(
+            "Generator minimum load: %s held >= %g%% of P_rated %g W "
+            "(S_rated %g VA) by capping %s (priority %d)",
+            gen_cfg["generator_active_power_channel"],
+            gen_cfg["minimum_load_pct"], gen_cfg["rated_active_power_w"],
+            gen_cfg["rated_apparent_power_va"],
+            gen_cfg["unit_active_power_setpoint_channel"], gen_cfg["priority"],
+        )
+        fast_controllers.append(
+            GeneratorMinimumLoadController(
+                name=GENERATOR_MIN_LOAD_REQUESTER,
+                priority=gen_cfg["priority"],
+                rated_apparent_power_va=gen_cfg["rated_apparent_power_va"],
+                rated_active_power_w=gen_cfg["rated_active_power_w"],
+                minimum_load_pct=gen_cfg["minimum_load_pct"],
+                generator_active_power_channel=gen_cfg["generator_active_power_channel"],
+                unit_active_power_channel=gen_cfg["unit_active_power_channel"],
+                unit_active_power_setpoint_channel=gen_cfg["unit_active_power_setpoint_channel"],
+                running_threshold_w=gen_cfg["running_threshold_w"],
+                off_delay_s=gen_cfg["off_delay_s"],
+            )
+        )
+
     if mode == EXPORT_LIMIT_MODE:
         fast_controllers.extend(
             [
@@ -560,6 +593,7 @@ def build_tasks(site: dict, command_sink=None, journal=None) -> list[Task]:
                     connection_point_active_power_channel=exp_cfg["connection_point_active_power_channel"],
                     unit_active_power_channel=exp_cfg["unit_active_power_channel"],
                     unit_active_power_setpoint_channel=exp_cfg["unit_active_power_setpoint_channel"],
+                    suspend_channel=suspend_channel,
                 ),
                 ConnectionPointPowerController(
                     name=CONNECTION_POINT_POWER_REQUESTER,
@@ -570,6 +604,7 @@ def build_tasks(site: dict, command_sink=None, journal=None) -> list[Task]:
                     unit_active_power_channel=cp_cfg["unit_active_power_channel"],
                     unit_active_power_setpoint_channel=cp_cfg["unit_active_power_setpoint_channel"],
                     gains=PIDGains(**cp_cfg["gains"]),
+                    suspend_channel=suspend_channel,
                 ),
             ]
         )
@@ -586,6 +621,7 @@ def build_tasks(site: dict, command_sink=None, journal=None) -> list[Task]:
                 gains=PIDGains(**cp_cfg["gains"]),
                 mode=IMPORT_LIMIT_MODE,
                 deadband_w=site["allocation"]["channels"][0].get("deadband_w", 200.0),
+                suspend_channel=suspend_channel,
             )
         )
 
@@ -623,35 +659,6 @@ def build_tasks(site: dict, command_sink=None, journal=None) -> list[Task]:
                 headroom_pct=head_cfg["headroom_pct"],
                 unit_active_power_channel=head_cfg["unit_active_power_channel"],
                 unit_active_power_setpoint_channel=head_cfg["unit_active_power_setpoint_channel"],
-            )
-        )
-
-    # Generator minimum load (island operation, opt-in): while the generator
-    # meter shows the genset running, cap the unit so the generator never
-    # drops below its minimum load; withdrawn on grid operation, where the
-    # connection-point program governs alone.
-    gen_cfg = _generator_minimum_load_config(site)
-    if gen_cfg:
-        logger.info(
-            "Generator minimum load: %s held >= %g%% of P_rated %g W "
-            "(S_rated %g VA) by capping %s (priority %d)",
-            gen_cfg["generator_active_power_channel"],
-            gen_cfg["minimum_load_pct"], gen_cfg["rated_active_power_w"],
-            gen_cfg["rated_apparent_power_va"],
-            gen_cfg["unit_active_power_setpoint_channel"], gen_cfg["priority"],
-        )
-        fast_controllers.append(
-            GeneratorMinimumLoadController(
-                name=GENERATOR_MIN_LOAD_REQUESTER,
-                priority=gen_cfg["priority"],
-                rated_apparent_power_va=gen_cfg["rated_apparent_power_va"],
-                rated_active_power_w=gen_cfg["rated_active_power_w"],
-                minimum_load_pct=gen_cfg["minimum_load_pct"],
-                generator_active_power_channel=gen_cfg["generator_active_power_channel"],
-                unit_active_power_channel=gen_cfg["unit_active_power_channel"],
-                unit_active_power_setpoint_channel=gen_cfg["unit_active_power_setpoint_channel"],
-                running_threshold_w=gen_cfg["running_threshold_w"],
-                off_delay_s=gen_cfg["off_delay_s"],
             )
         )
 

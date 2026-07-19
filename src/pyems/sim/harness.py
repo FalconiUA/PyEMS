@@ -37,7 +37,12 @@ from pyems.drivers.modbus_device import DeviceProfile
 from pyems.ems import PROFILES, ROOT, control_mode
 from pyems.logging import setup_logging
 from pyems.sim.device import FAULTS, SimulatedDevice
-from pyems.sim.plant import SimWorld, meter_register_fields, unit_register_fields
+from pyems.sim.plant import (
+    SimWorld,
+    generator_register_fields,
+    meter_register_fields,
+    unit_register_fields,
+)
 from pyems.sim.sources import (
     ManualSource,
     ReplaySource,
@@ -54,7 +59,8 @@ HISTORY_POINTS = 1200          # at one point per tick decimated to 0.5 s = 10 m
 MAX_EVENTS = 200
 UNIT_FAULTS = FAULTS + ("ignore_setpoint",)
 
-# History keys, in the order the UI receives them.
+# History keys, in the order the UI receives them. New keys are appended so
+# existing chart indices stay stable.
 HISTORY_KEYS = (
     "t_s",
     "unit_available_w",
@@ -62,6 +68,7 @@ HISTORY_KEYS = (
     "unit_active_power_setpoint_w",
     "load_w",
     "connection_point_w",
+    "generator_active_power_w",
 )
 
 
@@ -80,6 +87,17 @@ class SimHarness:
         scenario = site.get("scenario", {})
         self.unit_device_id = scenario.get("unit_device_id", "pv")
         self.cp_device_id = scenario.get("connection_point_device_id", "grid")
+        # Generator (optional): follows the EMS-side generator_minimum_load
+        # section, so the sim models a genset exactly when the EMS controls one.
+        gen_cfg = site.get("generator_minimum_load") or {}
+        gen_channel = gen_cfg.get("generator_active_power_channel", "")
+        self.gen_device_id = gen_channel.split(".", 1)[0] if gen_channel else None
+        self.generator_floor_w = None
+        if gen_cfg:
+            self.generator_floor_w = (
+                float(gen_cfg["minimum_load_pct"]) / 100.0
+                * float(gen_cfg["rated_active_power_w"])
+            )
         _p_min, p_max = _default_unit_envelope(site)
         self.unit_p_max_w = float(sim_cfg.get("unit_p_max_w", p_max))
 
@@ -134,6 +152,11 @@ class SimHarness:
             raise ValueError(f"scenario unit device '{self.unit_device_id}' not in devices")
         if self.cp_device_id not in self.devices:
             raise ValueError(f"scenario meter device '{self.cp_device_id}' not in devices")
+        if self.gen_device_id is not None and self.gen_device_id not in self.devices:
+            raise ValueError(
+                f"generator_minimum_load binds '{gen_channel}' but device "
+                f"'{self.gen_device_id}' is not in devices"
+            )
 
         self._lock = threading.Lock()
         self._history: deque[tuple[float, ...]] = deque(maxlen=HISTORY_POINTS)
@@ -174,6 +197,10 @@ class SimHarness:
         self.devices[self.cp_device_id].set_fields(
             meter_register_fields(snap, self._rng)
         )
+        if self.gen_device_id is not None:
+            self.devices[self.gen_device_id].set_fields(
+                generator_register_fields(snap, self._rng)
+            )
         with self._lock:
             if now_s - self._last_history_t >= 0.5:
                 self._history.append(tuple(snap[k] for k in HISTORY_KEYS))
@@ -237,6 +264,20 @@ class SimHarness:
         else:
             raise ValueError(f"unknown source mode {mode!r}")
 
+    def set_grid(self, present: bool) -> None:
+        """Flip the ATS: grid carries the site vs island on the genset."""
+        if self.gen_device_id is None:
+            raise ValueError(
+                "no generator configured (add a generator_minimum_load section "
+                "and a generator meter device to the site yaml)"
+            )
+        self.world.set_grid_present(present)
+        self.log_event(
+            "grid RESTORED — ATS back on the network, generator off"
+            if present else
+            "grid LOST — island on the generator (ATS switched)"
+        )
+
     def set_fault(self, device_id: str, fault: str, active: bool) -> None:
         if device_id not in self.devices:
             raise ValueError(f"unknown device {device_id!r}")
@@ -277,6 +318,7 @@ class SimHarness:
                     "role": (
                         "unit" if dev_id == self.unit_device_id
                         else "connection_point" if dev_id == self.cp_device_id
+                        else "generator" if dev_id == self.gen_device_id
                         else "other"
                     ),
                     "endpoint": f"{dev.host}:{dev.port}",
@@ -295,6 +337,13 @@ class SimHarness:
                 "active_power_limit_w": scenario.get("active_power_limit_w"),
                 "unit_p_max_w": self.unit_p_max_w,
             },
+            "generator": (
+                None if self.gen_device_id is None else {
+                    "device_id": self.gen_device_id,
+                    "floor_w": self.generator_floor_w,
+                    "grid_present": self.world.grid_present,
+                }
+            ),
             "events": list(reversed(events)),
         }
 
@@ -369,6 +418,9 @@ def make_handler(harness: SimHarness) -> type[BaseHTTPRequestHandler]:
                 payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
                 if path == "/api/source":
                     harness.set_source(payload.get("target", ""), payload)
+                    self._send_json({"ok": True})
+                elif path == "/api/grid":
+                    harness.set_grid(bool(payload.get("present", True)))
                     self._send_json({"ok": True})
                 elif path == "/api/fault":
                     harness.set_fault(

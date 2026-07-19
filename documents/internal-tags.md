@@ -49,7 +49,7 @@ A claim is keyed `(channel, requester)`; these names appear in logs
 | `connection_point_active_power` | `CONNECTION_POINT_POWER_REQUESTER` | `connection_point_active_power.priority` (10) | regulation target (feed-forward + PID trim) |
 | `connection_point_import_limit` | `IMPORT_LIMIT_REQUESTER` | `connection_point_active_power.priority` (10) | `ConnectionPointPowerController` import-limit mode |
 | `generation_gate` | `GENERATION_GATE_REQUESTER` | `control.generation_gate_priority` (1) | pin to a safe floor (min=max=target=floor_w) while generation is disabled; below safety, above all economic requesters |
-| `generator_minimum_load` | `GENERATOR_MIN_LOAD_REQUESTER` | `generator_minimum_load.priority` (5) | pure upper bound while the generator runs: `max_w = P_unit + P_gen − minimum_load_pct% × P_rated`; withdrawn on grid operation |
+| `generator_minimum_load` | `GENERATOR_MIN_LOAD_REQUESTER` | `generator_minimum_load.priority` (5) | island constraint AND target while the generator runs: `max_w = target_w = P_unit + P_gen − minimum_load_pct% × P_rated`; withdrawn on grid operation. Its `sys.generator_running` flag also suspends the connection-point regulators (their meter reads a dead feeder behind the open ATS) |
 
 ## Binding keys in site.yaml (IEC VAR_INPUT/VAR_OUTPUT names)
 

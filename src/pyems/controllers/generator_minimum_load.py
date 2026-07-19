@@ -49,11 +49,26 @@ returns and the changeover switch disconnects the generator, its meter reads
 ~0 W and the claim is withdrawn after the delay; the connection-point program
 takes over untouched (it never stopped posting).
 
-This controller is a **pure constraint**: it posts the cap as an upper bound
-(`max_w`) request and expresses no preferred value. The PowerAllocator owns
-the setpoint channel; the tightest cap among requesters wins by range
-intersection, so this coexists with the export-limit and headroom caps
-without special-casing.
+Dead zone: while the latch is running but |P_gen| sits BELOW the threshold,
+the meter reading is ambiguous — a disconnected generator (grid just
+returned) and a transient dip both read ~0 W. Recomputing the cap from that
+near-zero value would slam the unit to ~0 for the whole off-delay on every
+grid return. Instead the LAST computed cap is held: the unit cannot rise
+(the previous cap was computed from a real reading and is at most as loose),
+and a genuine reverse-power event keeps |P_gen| above the threshold, so the
+tight recomputed cap still applies there.
+
+While the generator runs, this controller is both the island **constraint
+and the island target**: it posts the cap as an upper bound (`max_w`) AND as
+the preferred value (`target_w = cap`). The constraint protects the engine;
+the target drives the unit to the maximum the floor allows — for PV on a
+genset island that is the economic optimum (every W of PV is fuel not
+burned), and without a target the allocator would only hold the last
+setpoint, so a unit dipped by an anti-islanding trip would never recover.
+The connection-point regulators are suspended on `sys.generator_running`
+(see their `suspend_channel`), so on the island this is the sole target
+owner; the headroom limiter still paces the climb and the allocator still
+applies envelope, ramp and deadband.
 """
 import logging
 
@@ -126,9 +141,10 @@ class GeneratorMinimumLoadController(Controller):
         # Hysteresis for the ENGAGED/RELEASED log transition only (control
         # deadband lives in the channel's allocator config, not here).
         self._deadband_w = deadband_w
-        # RETAIN state: run detection latch + curtailment log state.
+        # RETAIN state: run detection latch + held cap + curtailment log state.
         self._running = False
         self._below_since: float | None = None
+        self._last_cap_w: float | None = None
         self._curtailing = False
 
     @property
@@ -170,6 +186,7 @@ class GeneratorMinimumLoadController(Controller):
             # Grid operation (or generator off): the connection-point program
             # governs; this controller holds no claim on the setpoint channel.
             board.withdraw(self._setpoint_ch, self._name)
+            self._last_cap_w = None
             if self._curtailing:
                 logger.info(
                     "Generator-min-load RELEASED: generator stopped, %s cap withdrawn",
@@ -178,18 +195,28 @@ class GeneratorMinimumLoadController(Controller):
                 self._curtailing = False
             return
 
-        # feed-forward cap (see module docstring derivation). Lower-bounded at 0
-        # (full curtailment); the unit's P_max upper bound is enforced by the
-        # allocator's device envelope.
-        cap = max(0.0, p_unit + p_gen - self._minimum_load_w)
+        if abs(p_gen) < self._running_threshold_w and self._last_cap_w is not None:
+            # Dead zone (see module docstring): ~0 W is ambiguous between a
+            # disconnected generator and a transient dip — hold the last cap
+            # instead of recomputing from a reading that may mean "no generator".
+            cap = self._last_cap_w
+        else:
+            # feed-forward cap (see module docstring derivation). Lower-bounded
+            # at 0 (full curtailment); the unit's P_max upper bound is enforced
+            # by the allocator's device envelope.
+            cap = max(0.0, p_unit + p_gen - self._minimum_load_w)
+        self._last_cap_w = cap
 
-        # VAR_OUTPUT: post the cap as a pure upper-bound constraint (no target).
+        # VAR_OUTPUT: the cap is both the upper bound (engine protection) and
+        # the island target (run the unit at the maximum the floor allows —
+        # see module docstring).
         board.post(
             self._setpoint_ch,
             ActivePowerRequest(
                 requester=self._name,
                 priority=self._priority,
-                max_w=cap,  # min stays -inf; no target_w
+                max_w=cap,      # min stays -inf
+                target_w=cap,
             ),
         )
 

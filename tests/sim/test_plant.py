@@ -3,6 +3,7 @@ import pytest
 from pyems.sim.plant import (
     GeneratingUnitSim,
     SimWorld,
+    generator_register_fields,
     meter_register_fields,
     unit_register_fields,
 )
@@ -67,6 +68,60 @@ def test_setpoint_write_path_reaches_unit():
     snap = world.tick(0.0)
     assert snap["unit_active_power_w"] == pytest.approx(25000.0)
     assert snap["unit_active_power_setpoint_w"] == 25000.0
+
+
+def test_grid_present_generator_reads_zero():
+    world = make_world(pv_w=5000.0, load_w=20000.0)
+    snap = world.tick(0.0)
+    assert world.grid_present is True
+    assert snap["generator_active_power_w"] == 0.0
+    assert snap["grid_present"] == 1.0
+
+
+def test_island_generator_covers_the_balance():
+    world = make_world(pv_w=5000.0, load_w=20000.0)
+    world.set_grid_present(False)
+    snap = world.tick(0.0)
+    # ATS open: grid meter reads 0; the genset carries load − PV
+    assert snap["connection_point_w"] == 0.0
+    assert snap["generator_active_power_w"] == pytest.approx(15000.0)
+    assert snap["grid_present"] == 0.0
+
+
+def test_island_reverse_power_when_unit_overproduces():
+    world = make_world(pv_w=50000.0, load_w=20000.0)
+    world.set_grid_present(False)
+    snap = world.tick(0.0)
+    # PV above the load pushes power INTO the generator — the case the EMS
+    # minimum-load controller must correct
+    assert snap["generator_active_power_w"] == pytest.approx(-30000.0)
+
+
+def test_grid_return_swaps_the_roles_back():
+    world = make_world(pv_w=5000.0, load_w=20000.0)
+    world.set_grid_present(False)
+    world.tick(0.0)
+    world.set_grid_present(True)
+    snap = world.tick(1.0)
+    assert snap["connection_point_w"] == pytest.approx(15000.0)
+    assert snap["generator_active_power_w"] == 0.0
+
+
+def test_generator_register_fields_cover_the_profile():
+    import random
+    world = make_world(pv_w=5000.0, load_w=20000.0)
+    world.set_grid_present(False)
+    snap = world.tick(0.0)
+    fields = generator_register_fields(snap, random.Random(0))
+    assert fields["W"] == pytest.approx(15000.0)
+    from pyems.drivers.modbus_device import DeviceProfile
+    from pyems.ems import PROFILES
+    profile = DeviceProfile.load(
+        PROFILES / "meters/generator_meter_huawei_smartlogger3000.yaml"
+    )
+    for reg in profile.registers:
+        field = reg.channel.split(".", 1)[-1]
+        assert field in fields, f"generator meter field {field} missing"
 
 
 def test_register_fields_cover_profile_channels():

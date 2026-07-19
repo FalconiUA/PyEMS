@@ -1,4 +1,4 @@
-"""Plant model: one generating unit + the connection-point meter.
+"""Plant model: one generating unit + the connection-point meter + a genset.
 
 Pure simulation physics — no Modbus, no threads — so it is unit-testable and
 the register/server layer (device.py) stays a thin codec around it.
@@ -7,6 +7,14 @@ Sign conventions match the controllers:
   - unit active power P >= 0 (generating-unit convention, injection into AC bus)
   - connection point P_cp: import positive, export negative
         P_cp = site load - unit production
+  - generator P_gen: generating convention, injection into the AC bus positive
+
+Grid / island (the ATS): `grid_present` selects which source carries the site
+balance. On grid, P_cp = load − unit and the generator meter reads 0 (its
+breaker is open). On the island the roles swap: P_cp = 0 (grid meter behind
+the open ATS) and P_gen = load − unit — including P_gen < 0 (reverse power)
+when the unit over-produces, which is exactly the case the EMS generator
+minimum-load controller must correct.
 """
 from __future__ import annotations
 
@@ -80,6 +88,9 @@ class SimWorld:
         self.load_source = load_source
         self.unit = GeneratingUnitSim(unit_p_max_w, unit_tau_s)
         self.meter_noise_w = meter_noise_w
+        # ATS state: True = the network carries the site, generator breaker
+        # open; False = island, the genset covers the balance.
+        self.grid_present = True
         self._rng = random.Random(seed)
         self._last_t: float | None = None
         self._snapshot: dict[str, float] = {}
@@ -98,6 +109,14 @@ class SimWorld:
         with self._lock:
             self.unit.enabled = enabled
 
+    def set_grid_present(self, present: bool) -> None:
+        """Flip the ATS from the sim UI: grid carries the site vs island on
+        the genset. The swap is instantaneous — the interesting dynamics
+        (reverse power into the generator until the EMS curtails the unit)
+        are exactly what the toggle is for."""
+        with self._lock:
+            self.grid_present = present
+
     def tick(self, now_s: float) -> dict[str, float]:
         available_w = self.unit_available_source.value_w(now_s)
         load_w = self.load_source.value_w(now_s)
@@ -105,9 +124,17 @@ class SimWorld:
             dt = 0.0 if self._last_t is None else max(0.0, now_s - self._last_t)
             self._last_t = now_s
             unit_w = self.unit.step(dt, available_w)
-            cp_w = load_w - unit_w
-            if self.meter_noise_w:
-                cp_w += self._rng.gauss(0.0, self.meter_noise_w)
+            balance_w = load_w - unit_w
+            if self.grid_present:
+                cp_w, gen_w = balance_w, 0.0
+                if self.meter_noise_w:
+                    cp_w += self._rng.gauss(0.0, self.meter_noise_w)
+            else:
+                # Island: grid meter sits behind the open ATS and reads 0;
+                # the genset covers the balance (negative = reverse power).
+                cp_w, gen_w = 0.0, balance_w
+                if self.meter_noise_w:
+                    gen_w += self._rng.gauss(0.0, self.meter_noise_w)
             self._snapshot = {
                 "t_s": now_s,
                 "unit_available_w": available_w,
@@ -115,6 +142,8 @@ class SimWorld:
                 "unit_active_power_setpoint_w": self.unit.active_power_setpoint_w,
                 "load_w": load_w,
                 "connection_point_w": cp_w,
+                "generator_active_power_w": gen_w,
+                "grid_present": 1.0 if self.grid_present else 0.0,
             }
             return dict(self._snapshot)
 
@@ -146,6 +175,30 @@ def unit_register_fields(snap: dict[str, float], rng: random.Random) -> dict[str
         "AphC": phase_a,
         "Status": 512.0,  # Huawei: on-grid
         "Alarm": 0.0,
+    }
+
+
+def generator_register_fields(snap: dict[str, float], rng: random.Random) -> dict[str, float]:
+    """Generator meter fields from a world snapshot (generating convention:
+    positive = the genset injects into the AC bus). Same shape as the
+    connection-point meter — it IS a meter, just on the generator feeder."""
+    w = snap.get("generator_active_power_w", 0.0)
+    per_phase = w / 3
+    amps = abs(per_phase) / NOMINAL_PHASE_VOLTAGE_V
+    return {
+        "W": w,
+        "WphA": per_phase,
+        "WphB": per_phase,
+        "WphC": per_phase,
+        "VAR": 0.0,
+        "VA": abs(w),
+        "Hz": _jitter(rng, NOMINAL_FREQUENCY_HZ, 0.01),
+        "PhVphA": _jitter(rng, NOMINAL_PHASE_VOLTAGE_V, 0.3),
+        "PhVphB": _jitter(rng, NOMINAL_PHASE_VOLTAGE_V, 0.3),
+        "PhVphC": _jitter(rng, NOMINAL_PHASE_VOLTAGE_V, 0.3),
+        "AphA": amps,
+        "AphB": amps,
+        "AphC": amps,
     }
 
 

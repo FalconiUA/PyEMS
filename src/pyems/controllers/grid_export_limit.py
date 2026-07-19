@@ -44,6 +44,13 @@ deadband, and arbitration against other requesters. A lower-priority target
 request (e.g. a TOU plan) naturally clamps under this cap — no special-casing.
 The old safe-mode yield is gone: safety now posts a priority-0 claim the
 allocator honors above this one.
+
+Island suspend (`suspend_channel`, optional): export limitation is defined AT
+the connection point (EN 50549 §4.6.2) — it is meaningless while the changeover
+switch has disconnected the plant from the network and the bound meter reads a
+dead feeder. While the bound status word (e.g. `sys.generator_running`) is 1,
+the controller withdraws its claim; the island constraint (generator minimum
+load) governs instead.
 """
 import logging
 
@@ -64,6 +71,7 @@ class GridExportLimitController(Controller):
         unit_active_power_channel: str,
         unit_active_power_setpoint_channel: str,
         deadband_w: float = 200.0,
+        suspend_channel: str | None = None,
     ) -> None:
         if export_limit_w < 0:
             raise ValueError("export_limit_w must be >= 0 (magnitude)")
@@ -79,9 +87,27 @@ class GridExportLimitController(Controller):
         # Hysteresis for the ENGAGED/RELEASED log transition only (control
         # deadband lives in the channel's allocator config, not here).
         self._deadband_w = deadband_w
+        # Optional island suspend: status word (0/1); while 1 the claim is
+        # withdrawn (see module docstring). None = never suspended.
+        self._suspend_ch = suspend_channel
+        self._suspended = False   # last state — log only on transition
         self._curtailing = False  # last state — log only on transition, not per cycle
 
     def execute(self, state: SystemState, board: RequestBoard) -> None:
+        if self._suspend_ch is not None and state.get(self._suspend_ch) >= 0.5:
+            board.withdraw(self._setpoint_ch, self._name)
+            if not self._suspended:
+                logger.info(
+                    "Export-limit SUSPENDED: %s active — connection point "
+                    "disconnected, claim withdrawn", self._suspend_ch,
+                )
+                self._suspended = True
+                self._curtailing = False
+            return
+        if self._suspended:
+            logger.info("Export-limit RESUMED: %s cleared", self._suspend_ch)
+            self._suspended = False
+
         # VAR_INPUT reads (P = active power)
         p_cp = state.get(self._cp_active_power_ch)      # + import, - export (connection point)
         p_unit = state.get(self._unit_active_power_ch)  # actual unit active power
